@@ -421,11 +421,23 @@ function App() {
   const menuRef = useRef(null)
 
   // Telegram Folders Tab State (Image 1)
-  const [folderTab, setFolderTab] = useState('all') // 'all' | 'friends'
+  const [folderTab, setFolderTab] = useState('all') // 'all' | 'friends' | 'requests'
 
   // Contacts Modal State
   const [showContactsModal, setShowContactsModal] = useState(false)
   const [friendRequests, setFriendRequests] = useState([])
+  const [sentFriendRequests, setSentFriendRequests] = useState([])
+
+  // Friend Requests Modal State (Quản lý lời mời đã nhận & đã gửi)
+  const [showFriendRequestsModal, setShowFriendRequestsModal] = useState(false)
+  const [friendRequestsModalTab, setFriendRequestsModalTab] = useState('received') // 'received' | 'sent'
+
+  // Automatically switch back to 'all' if friendRequests becomes empty while on 'requests' tab
+  useEffect(() => {
+    if (folderTab === 'requests' && friendRequests.length === 0) {
+      setFolderTab('all')
+    }
+  }, [folderTab, friendRequests.length])
 
   // Add Friend Modal State
   const [showAddFriendModal, setShowAddFriendModal] = useState(false)
@@ -1252,9 +1264,13 @@ function App() {
     if (!currentUser) return
 
     loadFriends()
+    loadFriendRequests()
+    loadSentFriendRequests()
 
     const interval = setInterval(() => {
       loadFriends()
+      loadFriendRequests()
+      loadSentFriendRequests()
     }, 10000)
 
     return () => clearInterval(interval)
@@ -1563,6 +1579,8 @@ function App() {
     setError('')
     setAuthSuccess('')
     setShowPassword(false)
+    setFriendRequests([])
+    setSentFriendRequests([])
   }
 
   const loadFriendRequests = async () => {
@@ -1580,6 +1598,24 @@ function App() {
       }
     } catch (e) {
       console.error('Load friend requests failed', e)
+    }
+  }
+
+  const loadSentFriendRequests = async () => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/friends/requests/sent`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (data.success) {
+        setSentFriendRequests(data.requests || [])
+      }
+    } catch (e) {
+      console.error('Load sent friend requests failed', e)
     }
   }
 
@@ -1602,6 +1638,54 @@ function App() {
         await loadFriendRequests()
       } else {
         alert(data.message || 'Không thể chấp nhận lời mời')
+      }
+    } catch {
+      alert('Không thể kết nối đến CloudChat Backend')
+    }
+  }
+
+  const handleRejectFriendRequest = async (friendshipId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/friends/${friendshipId}/reject`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      const data = await response.json()
+      if (data.success) {
+        await loadFriendRequests()
+      } else {
+        alert(data.message || 'Không thể từ chối lời mời')
+      }
+    } catch {
+      alert('Không thể kết nối đến CloudChat Backend')
+    }
+  }
+
+  const handleCancelFriendRequest = async (friendshipId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/friends/${friendshipId}/cancel`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      const data = await response.json()
+      if (data.success) {
+        await loadSentFriendRequests()
+      } else {
+        alert(data.message || 'Không thể thu hồi lời mời')
       }
     } catch {
       alert('Không thể kết nối đến CloudChat Backend')
@@ -1661,6 +1745,8 @@ function App() {
         setSearchFriendError(data.message || 'Không thể gửi lời mời')
       } else {
         setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công!')
+        loadFriendRequests()
+        loadSentFriendRequests()
       }
     } catch {
       setSearchFriendError('Không thể kết nối đến CloudChat Backend')
@@ -2036,6 +2122,7 @@ function App() {
                 <line x1="3" y1="6" x2="21" y2="6"></line>
                 <line x1="3" y1="18" x2="21" y2="18"></line>
               </svg>
+              {friendRequests.length > 0 && <span className="tg-menu-badge-dot" />}
             </button>
 
             {/* Telegram Hamburger Dropdown Menu (Image 2) */}
@@ -2126,6 +2213,34 @@ function App() {
                   </span>
                   <span>Bạn bè</span>
                   <span className="tg-menu-badge">{friends.length}</span>
+                </button>
+
+                {/* ✉️ Lời mời kết bạn */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    loadFriendRequests()
+                    loadSentFriendRequests()
+                    setFriendRequestsModalTab(friendRequests.length > 0 ? 'received' : 'sent')
+                    setShowFriendRequestsModal(true)
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="8.5" cy="7" r="4"></circle>
+                      <polyline points="17 11 19 13 23 9"></polyline>
+                    </svg>
+                  </span>
+                  <span>Lời mời kết bạn</span>
+                  {friendRequests.length > 0 ? (
+                    <span className="tg-menu-badge tg-badge-highlight">{friendRequests.length}</span>
+                  ) : sentFriendRequests.length > 0 ? (
+                    <span className="tg-menu-badge">{sentFriendRequests.length}</span>
+                  ) : (
+                    <span className="tg-menu-badge">0</span>
+                  )}
                 </button>
 
                 {/* ⚙ Settings */}
@@ -2280,11 +2395,129 @@ function App() {
               >
                 <span>Bạn bè</span>
               </button>
+              {friendRequests.length > 0 && (
+                <button
+                  className={`tg-folder-tab ${folderTab === 'requests' ? 'active' : ''}`}
+                  onClick={() => setFolderTab('requests')}
+                >
+                  <span>Lời mời</span>
+                  <span className="tg-tab-badge">{friendRequests.length}</span>
+                </button>
+              )}
             </div>
 
-            {/* Chat / Friends List */}
+            {/* Chat / Friends / Requests List */}
             <div className="tg-chat-list">
-              {friends.length > 0 ? (
+              {folderTab === 'requests' ? (
+                friendRequests.length > 0 ? (
+                  <div className="tg-friend-requests-list">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 6px' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#8b96a7', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                        Lời mời đã nhận ({friendRequests.length})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          loadSentFriendRequests()
+                          setFriendRequestsModalTab('sent')
+                          setShowFriendRequestsModal(true)
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#8774e1',
+                          fontSize: 12,
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          padding: '2px 4px',
+                        }}
+                        title="Xem và thu hồi lời mời bạn đã gửi"
+                      >
+                        Đã gửi ({sentFriendRequests.length}) ↗
+                      </button>
+                    </div>
+                    {friendRequests.map((req) => {
+                      const reqName = req.display_name || req.username
+                      return (
+                        <div className="tg-friend-req-card" key={req.id}>
+                          <div className="tg-friend-req-user">
+                            <div
+                              className="tg-avatar sm"
+                              style={{
+                                background: !req.avatar_url
+                                  ? getAvatarGradient(req.user_id || req.username)
+                                  : undefined,
+                              }}
+                            >
+                              {req.avatar_url ? (
+                                <img
+                                  src={req.avatar_url}
+                                  alt=""
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
+                              ) : (
+                                getFriendInitials(reqName)
+                              )}
+                            </div>
+                            <div className="tg-friend-req-info">
+                              <div className="tg-friend-req-top">
+                                <span className="tg-friend-req-name" title={reqName}>
+                                  {reqName}
+                                </span>
+                                <span className="tg-friend-req-time">
+                                  {formatChatListTime(req.created_at)}
+                                </span>
+                              </div>
+                              <span className="tg-friend-req-uname">@{req.username}</span>
+                              {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
+                            </div>
+                          </div>
+
+                          <div className="tg-friend-req-actions">
+                            <button
+                              className="tg-req-accept-btn"
+                              onClick={() => handleAcceptFriendRequest(req.id)}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                              </svg>
+                              Đồng ý
+                            </button>
+                            <button
+                              className="tg-req-reject-btn"
+                              onClick={() => handleRejectFriendRequest(req.id)}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                              </svg>
+                              Từ chối
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="tg-empty-list">
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>📬</div>
+                    <p>Không có lời mời kết bạn nào</p>
+                    <span style={{ fontSize: 12, color: '#727e90', display: 'block', maxWidth: 220, margin: '4px auto 0' }}>
+                      Khi có người gửi lời mời, bạn có thể đồng ý hoặc từ chối tại đây.
+                    </span>
+                    <button
+                      className="secondary-button"
+                      style={{ marginTop: 14, fontSize: 12, padding: '7px 14px' }}
+                      onClick={() => setShowAddFriendModal(true)}
+                    >
+                      + Thêm bạn bè mới
+                    </button>
+                  </div>
+                )
+              ) : friends.length > 0 ? (
                 folderTab === 'all' ? (
                   friends.map((friend) => (
                     <button
@@ -2838,18 +3071,35 @@ function App() {
 
       {/* Thông tin hội thoại Panel (Khớp với Ảnh 1 & Ảnh 2) */}
       {activeChat && showChatInfo && (
-        <aside className="tg-info-panel">
-          {/* Header */}
-          <div className="tg-info-header">
-            <h3>Thông tin hội thoại</h3>
-            <button
-              className="tg-icon-btn"
-              onClick={() => setShowChatInfo(false)}
-              title="Đóng thông tin hội thoại"
-            >
-              ✕
-            </button>
-          </div>
+        <>
+          <div
+            className="tg-info-backdrop"
+            onClick={() => setShowChatInfo(false)}
+          />
+          <aside className="tg-info-panel">
+            {/* Header */}
+            <div className="tg-info-header">
+              <div className="tg-info-header-title-wrap">
+                <button
+                  className="tg-icon-btn tg-info-back-btn"
+                  onClick={() => setShowChatInfo(false)}
+                  title="Quay lại đoạn chat"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="19" y1="12" x2="5" y2="12"></line>
+                    <polyline points="12 19 5 12 12 5"></polyline>
+                  </svg>
+                </button>
+                <h3>Thông tin hội thoại</h3>
+              </div>
+              <button
+                className="tg-icon-btn tg-info-close-btn"
+                onClick={() => setShowChatInfo(false)}
+                title="Đóng thông tin hội thoại"
+              >
+                ✕
+              </button>
+            </div>
 
           <div className="tg-info-body">
             {/* User Card: Avatar lớn + Tên + Nút sửa biệt danh (Ảnh 1) */}
@@ -3076,7 +3326,8 @@ function App() {
             </div>
           </div>
         </aside>
-      )}
+      </>
+    )}
 
       {/* Lightbox Preview Modal cho Ảnh / Video */}
       {previewMediaUrl && (
@@ -3105,6 +3356,214 @@ function App() {
               </button>
             </div>
             <img src={previewMediaUrl} alt="Preview" className="tg-lightbox-img" />
+          </div>
+        </div>
+      )}
+
+      {/* Modal Quản lý lời mời kết bạn (Đã nhận & Đã gửi) */}
+      {showFriendRequestsModal && (
+        <div className="modal-overlay" onClick={() => setShowFriendRequestsModal(false)}>
+          <div className="modal-card tg-requests-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">✉️</div>
+                <div>
+                  <h3>Lời mời kết bạn</h3>
+                  <p>Quản lý các lời mời kết bạn đã nhận và đã gửi</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowFriendRequestsModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-tabs">
+              <button
+                type="button"
+                className={`modal-tab ${friendRequestsModalTab === 'received' ? 'active' : ''}`}
+                onClick={() => setFriendRequestsModalTab('received')}
+              >
+                Lời mời đã nhận {friendRequests.length > 0 && `(${friendRequests.length})`}
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${friendRequestsModalTab === 'sent' ? 'active' : ''}`}
+                onClick={() => setFriendRequestsModalTab('sent')}
+              >
+                Lời mời đã gửi {sentFriendRequests.length > 0 && `(${sentFriendRequests.length})`}
+              </button>
+            </div>
+
+            <div className="tg-modal-requests-body">
+              {friendRequestsModalTab === 'received' ? (
+                friendRequests.length > 0 ? (
+                  <div className="tg-friend-requests-list">
+                    {friendRequests.map((req) => {
+                      const reqName = req.display_name || req.username
+                      return (
+                        <div className="tg-friend-req-card" key={req.id}>
+                          <div className="tg-friend-req-user">
+                            <div
+                              className="tg-avatar sm"
+                              style={{
+                                background: !req.avatar_url
+                                  ? getAvatarGradient(req.user_id || req.username)
+                                  : undefined,
+                              }}
+                            >
+                              {req.avatar_url ? (
+                                <img
+                                  src={req.avatar_url}
+                                  alt=""
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
+                              ) : (
+                                getFriendInitials(reqName)
+                              )}
+                            </div>
+                            <div className="tg-friend-req-info">
+                              <div className="tg-friend-req-top">
+                                <span className="tg-friend-req-name" title={reqName}>
+                                  {reqName}
+                                </span>
+                                <span className="tg-friend-req-time">
+                                  {formatChatListTime(req.created_at)}
+                                </span>
+                              </div>
+                              <span className="tg-friend-req-uname">@{req.username}</span>
+                              {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
+                            </div>
+                          </div>
+
+                          <div className="tg-friend-req-actions">
+                            <button
+                              className="tg-req-accept-btn"
+                              onClick={() => handleAcceptFriendRequest(req.id)}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                              </svg>
+                              Đồng ý
+                            </button>
+                            <button
+                              className="tg-req-reject-btn"
+                              onClick={() => handleRejectFriendRequest(req.id)}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                              </svg>
+                              Từ chối
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="tg-empty-list" style={{ padding: '36px 0' }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>📬</div>
+                    <p>Chưa có lời mời kết bạn nào gửi đến bạn</p>
+                    <span style={{ fontSize: 12, color: '#727e90' }}>
+                      Khi có người gửi lời mời, bạn có thể đồng ý hoặc từ chối tại đây.
+                    </span>
+                  </div>
+                )
+              ) : (
+                sentFriendRequests.length > 0 ? (
+                  <div className="tg-friend-requests-list">
+                    {sentFriendRequests.map((req) => {
+                      const reqName = req.display_name || req.username
+                      return (
+                        <div className="tg-friend-req-card" key={req.id}>
+                          <div className="tg-friend-req-user">
+                            <div
+                              className="tg-avatar sm"
+                              style={{
+                                background: !req.avatar_url
+                                  ? getAvatarGradient(req.friend_id || req.username)
+                                  : undefined,
+                              }}
+                            >
+                              {req.avatar_url ? (
+                                <img
+                                  src={req.avatar_url}
+                                  alt=""
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
+                              ) : (
+                                getFriendInitials(reqName)
+                              )}
+                            </div>
+                            <div className="tg-friend-req-info">
+                              <div className="tg-friend-req-top">
+                                <span className="tg-friend-req-name" title={reqName}>
+                                  {reqName}
+                                </span>
+                                <span className="tg-friend-req-time">
+                                  {formatChatListTime(req.created_at)}
+                                </span>
+                              </div>
+                              <span className="tg-friend-req-uname">@{req.username}</span>
+                              <span className="tg-friend-req-status-tag">Đang chờ đối phương phản hồi...</span>
+                              {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
+                            </div>
+                          </div>
+
+                          <div className="tg-friend-req-actions">
+                            <button
+                              className="tg-req-cancel-btn"
+                              onClick={() => handleCancelFriendRequest(req.id)}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="1 4 1 10 7 10"></polyline>
+                                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+                              </svg>
+                              Thu hồi lời mời
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="tg-empty-list" style={{ padding: '36px 0' }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>📤</div>
+                    <p>Bạn chưa gửi lời mời kết bạn nào đang chờ</p>
+                    <button
+                      className="secondary-button"
+                      style={{ marginTop: 14, fontSize: 12, padding: '7px 14px' }}
+                      onClick={() => {
+                        setShowFriendRequestsModal(false)
+                        setShowAddFriendModal(true)
+                      }}
+                    >
+                      + Tìm và kết bạn mới
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+
+            <div className="modal-footer" style={{ marginTop: 20 }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowFriendRequestsModal(false)}
+              >
+                Đóng
+              </button>
+            </div>
           </div>
         </div>
       )}

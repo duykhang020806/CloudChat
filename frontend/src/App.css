@@ -587,6 +587,24 @@ button {
   font-weight: 700;
 }
 
+.tg-menu-badge.tg-badge-highlight {
+  background: #8774e1;
+  color: #ffffff;
+  box-shadow: 0 0 10px rgba(135, 116, 225, 0.4);
+}
+
+.tg-menu-badge-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #8774e1;
+  box-shadow: 0 0 8px rgba(135, 116, 225, 0.9);
+  border: 1.5px solid #212328;
+}
+
 /* Telegram Search Bar */
 .tg-search-bar {
   flex: 1;
@@ -654,10 +672,11 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   color: #94a3b8;
   font-size: 13.5px;
   font-weight: 550;
-  padding: 0 16px;
+  padding: 0 15px;
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
@@ -673,6 +692,201 @@ button {
   color: #ffffff;
   border-color: rgba(255, 255, 255, 0.22);
   font-weight: 600;
+}
+
+.tg-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: #8774e1;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Friend Request Cards in Sidebar */
+.tg-friend-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 4px;
+}
+
+.tg-friend-req-card {
+  background: #212328;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.tg-friend-req-card:hover {
+  background: #252830;
+  border-color: rgba(135, 116, 225, 0.35);
+}
+
+.tg-friend-req-user {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.tg-friend-req-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-friend-req-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tg-friend-req-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-friend-req-time {
+  font-size: 11px;
+  color: #727e90;
+  flex-shrink: 0;
+}
+
+.tg-friend-req-uname {
+  display: block;
+  font-size: 12px;
+  color: #8774e1;
+  margin-top: 1px;
+}
+
+.tg-friend-req-bio {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tg-friend-req-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.tg-req-accept-btn {
+  flex: 1;
+  height: 32px;
+  border-radius: 8px;
+  border: 0;
+  background: #8774e1;
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.tg-req-accept-btn:hover {
+  background: #735ed4;
+}
+
+.tg-req-accept-btn:active {
+  transform: scale(0.98);
+}
+
+.tg-req-reject-btn {
+  flex: 1;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  font-size: 12.5px;
+  font-weight: 550;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.tg-req-reject-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.tg-req-reject-btn:active {
+  transform: scale(0.98);
+}
+
+.tg-friend-req-status-tag {
+  display: inline-block;
+  font-size: 11.5px;
+  color: #fbbf24;
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+.tg-req-cancel-btn {
+  width: 100%;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cbd5e1;
+  font-size: 12.5px;
+  font-weight: 550;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tg-req-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+}
+
+.tg-req-cancel-btn:active {
+  transform: scale(0.98);
+}
+
+.tg-requests-modal {
+  max-width: 480px;
+  width: 95%;
+}
+
+.tg-modal-requests-body {
+  max-height: 420px;
+  overflow-y: auto;
+  margin-top: 14px;
+  padding-right: 4px;
 }
 
 /* Friend List Alphabetical Grouping (Matching user screenshot) */
@@ -1741,23 +1955,89 @@ button {
   display: none;
 }
 
-/* 1. Thông tin hội thoại ẩn trước */
+.tg-info-backdrop {
+  display: none;
+}
+
+.tg-info-back-btn {
+  display: none;
+}
+
+.tg-info-header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 1. Màn hình thu hẹp / Zoom to (<= 1200px):
+   Thông tin hội thoại hiển thị dạng Drawer trượt từ bên phải kèm lớp nền làm mờ,
+   không bao giờ bị ẩn hoặc biến mất! */
 @media (max-width: 1200px) {
+  .tg-info-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 998;
+    animation: fadeInBackdrop 0.2s ease-out;
+  }
+
   .tg-info-panel {
-    display: none !important;
+    position: fixed !important;
+    top: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 380px !important;
+    max-width: 90vw !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border-left: 1px solid rgba(255, 255, 255, 0.1) !important;
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.75) !important;
+    z-index: 999 !important;
+    animation: slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+
+  .tg-info-back-btn {
+    display: grid !important;
   }
 }
 
-/* 2. List bạn bè / đoạn chat ẩn tiếp theo khi có cuộc trò chuyện */
+@keyframes fadeInBackdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 2. Thiết bị di động & màn hình dọc (<= 860px):
+   - Sidebar ẩn khi đang chat, nút back hiện
+   - Khung chat full màn hình (100dvh), thanh nhập liệu CỐ ĐỊNH ở đáy, không bao giờ bị tràn hay phải kéo xuống mới thấy
+   - Vùng tin nhắn tự cuộn bên trong (flex: 1 1 0%, min-height: 0) */
 @media (max-width: 860px) {
+  .telegram-app {
+    width: 100vw;
+    height: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+
   .tg-back-btn {
     display: grid !important;
     margin-right: 6px;
   }
 
   .tg-sidebar {
-    width: calc(100vw - 16px);
-    margin: 8px;
+    width: 100vw !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
   }
 
   .telegram-app.has-active-chat .tg-sidebar {
@@ -1767,40 +2047,86 @@ button {
   .telegram-app.has-active-chat .tg-main-area {
     display: flex !important;
     width: 100vw !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+
+  .tg-chat-window {
+    width: 100% !important;
+    height: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
   }
 
   .tg-chat-header {
-    margin: 8px 8px 0 8px;
-    padding: 0 14px;
-    height: 56px;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+    padding: 0 12px !important;
+    height: 56px !important;
+    flex-shrink: 0 !important;
+    box-shadow: none !important;
   }
 
   .tg-inchat-search-bar {
-    margin: 6px 8px 0 8px;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important;
+    padding: 6px 12px !important;
+    flex-shrink: 0 !important;
   }
 
   .tg-messages-scroll {
-    padding: 14px 4%;
+    flex: 1 1 0% !important;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: 10px 10px 12px !important;
+    overflow-y: auto !important;
+    overscroll-behavior-y: contain !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .tg-reply-bar-container {
+    width: calc(100% - 16px) !important;
+    margin: 4px auto 4px !important;
+    padding: 6px 10px !important;
+    flex-shrink: 0 !important;
   }
 
   .tg-input-area {
-    width: calc(100% - 16px);
-    margin-bottom: 8px;
-  }
-}
-
-@media (max-width: 680px) {
-  .tg-sidebar {
-    width: 100vw;
-    margin: 0;
-    border-radius: 0;
+    width: calc(100% - 16px) !important;
+    max-width: 100% !important;
+    margin: 4px auto !important;
+    margin-bottom: max(6px, env(safe-area-inset-bottom, 6px)) !important;
+    padding: 4px 6px 4px 12px !important;
+    border-radius: 22px !important;
+    flex-shrink: 0 !important;
   }
 
-  .tg-chat-header {
-    margin: 0;
-    border-radius: 0;
-    border-left: 0;
-    border-right: 0;
+  .tg-msg-input {
+    height: 38px !important;
+    font-size: 16px !important; /* Tránh tình trạng iOS Safari tự động phóng to làm lệch giao diện */
+  }
+
+  .tg-send-btn {
+    width: 38px !important;
+    height: 38px !important;
+  }
+
+  .tg-info-panel {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    border-left: none !important;
   }
 }
 
