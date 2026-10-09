@@ -1340,3 +1340,580 @@ button {
   padding: 0 22px;
   height: 44px;
 }
+
+/* ===================================================
+   IN-CHAT SEARCH BAR & HIGHLIGHTS
+   =================================================== */
+
+.tg-inchat-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  background: rgba(23, 24, 28, 0.95);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  z-index: 4;
+  animation: slideDownSearch 0.2s ease-out;
+}
+
+@keyframes slideDownSearch {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tg-inchat-search-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 19px;
+  background: #212328;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tg-inchat-search-input-wrap input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #f3f5f8;
+  font-size: 13.5px;
+}
+
+.tg-inchat-search-input-wrap input::placeholder {
+  color: #636d7d;
+}
+
+.tg-search-count-badge {
+  font-size: 12px;
+  color: #8774e1;
+  font-weight: 600;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.tg-inchat-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tg-search-nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0;
+  background: #212328;
+  color: #8b96a7;
+  display: grid;
+  place-items: center;
+  transition: 0.15s;
+}
+
+.tg-search-nav-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+.tg-search-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Highlight in speech bubble */
+mark.search-highlight {
+  background: rgba(234, 179, 8, 0.38);
+  color: #fef08a;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.tg-msg-bubble.search-active-bubble {
+  box-shadow: 0 0 0 2px #8774e1, 0 4px 16px rgba(135, 116, 225, 0.35) !important;
+}
+
+/* ===================================================
+   CONVERSATION INFO PANEL (THÔNG TIN HỘI THOẠI)
+   =================================================== */
+
+.tg-info-panel {
+  width: 380px;
+  flex-shrink: 0;
+  height: 100vh;
+  background: #17181c;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  z-index: 15;
+  animation: slideInRight 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.tg-info-header {
+  height: 64px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(23, 24, 28, 0.95);
+  flex-shrink: 0;
+}
+
+.tg-info-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f3f5f8;
+}
+
+.tg-info-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* User Card in Info Panel */
+.tg-info-user-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.tg-info-avatar-large {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #6366f1, #3b82f6);
+  color: white;
+  font-size: 34px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  position: relative;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.tg-info-avatar-large img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.tg-info-name-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.tg-info-name-wrap h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.tg-edit-nickname-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0;
+  background: #252830;
+  color: #94a3b8;
+  display: grid;
+  place-items: center;
+  transition: 0.2s;
+  cursor: pointer;
+}
+
+.tg-edit-nickname-btn:hover {
+  background: #333844;
+  color: #f1f5f9;
+  transform: scale(1.05);
+}
+
+.tg-info-original-name {
+  margin: 4px 0 0;
+  color: #6a7485;
+  font-size: 12px;
+}
+
+.tg-info-bio {
+  margin: 8px 0 0;
+  color: #8e99a8;
+  font-size: 13px;
+  max-width: 280px;
+}
+
+/* Inline Nickname Editor */
+.tg-nickname-edit-box {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #101217;
+  border: 1px solid #2b303d;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+
+.tg-nickname-edit-box label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8774e1;
+  text-transform: uppercase;
+}
+
+.tg-nickname-edit-box input {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #1b1e26;
+  border: 1px solid #2a303e;
+  color: #f1f5f9;
+  font-size: 13px;
+}
+
+.tg-nickname-edit-box input:focus {
+  border-color: #8774e1;
+  outline: 0;
+}
+
+.tg-nickname-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tg-nickname-actions button {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+
+/* Accordion sections */
+.tg-accordion-section {
+  background: #1c1e24;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.tg-accordion-header {
+  width: 100%;
+  padding: 13px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: 0;
+  color: #e2e6ed;
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tg-accordion-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tg-accordion-header .chevron {
+  color: #727e90;
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.tg-accordion-header.open .chevron {
+  transform: rotate(180deg);
+}
+
+.tg-accordion-content {
+  padding: 4px 14px 14px;
+}
+
+/* Media (Ảnh / Video) 4-column grid (Image 2) */
+.tg-media-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tg-media-thumb {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1017;
+  cursor: pointer;
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.tg-media-thumb:hover {
+  transform: scale(1.04);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+}
+
+.tg-media-thumb img,
+.tg-media-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tg-view-all-btn {
+  width: 100%;
+  height: 38px;
+  border-radius: 10px;
+  border: 0;
+  background: #242731;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 600;
+  transition: 0.15s;
+}
+
+.tg-view-all-btn:hover {
+  background: #2e323e;
+  color: white;
+}
+
+/* Files section */
+.tg-file-empty-note {
+  color: #7e8796;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+  padding: 12px 8px;
+}
+
+.tg-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tg-file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #13151b;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.tg-file-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: #252834;
+  color: #8774e1;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.tg-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-file-info strong {
+  display: block;
+  font-size: 13px;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-file-info span {
+  display: block;
+  font-size: 11px;
+  color: #6c7789;
+  margin-top: 2px;
+}
+
+/* Links Section (Image 2) */
+.tg-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tg-link-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #13151b;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  text-decoration: none;
+  transition: 0.15s;
+}
+
+.tg-link-row:hover {
+  background: #1b1e28;
+  border-color: rgba(135, 116, 225, 0.3);
+}
+
+.tg-link-icon-box {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #232733;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.tg-link-icon-box.github {
+  background: #24292e;
+  color: #ffffff;
+}
+
+.tg-link-icon-box.meet {
+  background: #ea4335;
+  color: #ffffff;
+}
+
+.tg-link-icon-box.generic {
+  background: #252b3b;
+  color: #8774e1;
+}
+
+.tg-link-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-link-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f5f9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-link-domain {
+  display: block;
+  font-size: 11.5px;
+  color: #38bdf8;
+  margin-top: 2px;
+}
+
+.tg-link-date {
+  font-size: 11px;
+  color: #64748b;
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
+/* Lightbox Modal */
+.tg-lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  backdrop-filter: blur(8px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: modalFadeIn 0.2s ease-out;
+}
+
+.tg-lightbox-content {
+  max-width: 90vw;
+  max-height: 90vh;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tg-lightbox-img {
+  max-width: 100%;
+  max-height: 85vh;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+}
+
+.tg-lightbox-close {
+  position: absolute;
+  top: -46px;
+  right: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  font-size: 18px;
+  display: grid;
+  place-items: center;
+}
+
+/* Responsive adjustment when info panel is open */
+@media (max-width: 1100px) {
+  .tg-info-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    box-shadow: -10px 0 35px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@media (max-width: 680px) {
+  .tg-info-panel {
+    width: 100vw;
+  }
+}
