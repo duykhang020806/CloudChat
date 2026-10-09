@@ -3,10 +3,21 @@ import './App.css'
 
 const API_BASE = 'http://localhost:8787'
 
+const PRESET_AVATARS = [
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Luna',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Leo',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Milo',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Chloe',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Jack',
+]
+
 function App() {
   const [page, setPage] = useState('loading')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [registerDisplayName, setRegisterDisplayName] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
@@ -19,6 +30,53 @@ function App() {
   const [message, setMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const messagesEndRef = useRef(null)
+
+  // Profile Modal State
+  const [showProfileModal, setShowProfileModal] = useState(false)
+  const [profileTab, setProfileTab] = useState('info') // 'info' | 'password'
+  const [profileDisplayName, setProfileDisplayName] = useState('')
+  const [profileBio, setProfileBio] = useState('')
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState('')
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileSuccess, setProfileSuccess] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+
+  // Telegram Hamburger Menu State (Image 2)
+  const [showMenu, setShowMenu] = useState(false)
+  const menuRef = useRef(null)
+
+  // Telegram Folders Tab State (Image 1)
+  const [folderTab, setFolderTab] = useState('all') // 'all' | 'friends'
+
+  // Contacts Modal State
+  const [showContactsModal, setShowContactsModal] = useState(false)
+  const [friendRequests, setFriendRequests] = useState([])
+
+  // Add Friend Modal State
+  const [showAddFriendModal, setShowAddFriendModal] = useState(false)
+  const [searchFriendInput, setSearchFriendInput] = useState('')
+  const [searchFriendResult, setSearchFriendResult] = useState(null)
+  const [searchFriendError, setSearchFriendError] = useState('')
+  const [searchFriendSuccess, setSearchFriendSuccess] = useState('')
+  const [searchFriendLoading, setSearchFriendLoading] = useState(false)
+
+  // Close hamburger menu on click outside
+  useEffect(() => {
+    const handleOutsideClick = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowMenu(false)
+      }
+    }
+    if (showMenu) {
+      document.addEventListener('mousedown', handleOutsideClick)
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick)
+    }
+  }, [showMenu])
 
   const loadFriends = async () => {
     const token = localStorage.getItem('cloudchat_token')
@@ -56,7 +114,8 @@ function App() {
           return current
         }
 
-        return nextFriends[0]
+        // Do not auto-select: user must click on a chat to open it
+        return null
       })
     } catch (error) {
       console.error('Load friends error:', error)
@@ -279,8 +338,18 @@ function App() {
       return
     }
 
+    if (username.length < 3 || username.length > 30) {
+      setError('Username phải từ 3 đến 30 ký tự')
+      return
+    }
+
     if (password.length < 6) {
       setError('Mật khẩu phải có ít nhất 6 ký tự')
+      return
+    }
+
+    if (password !== confirmPassword) {
+      setError('Mật khẩu xác nhận không khớp')
       return
     }
 
@@ -296,6 +365,7 @@ function App() {
         body: JSON.stringify({
           username: username.trim(),
           password,
+          display_name: registerDisplayName.trim() || undefined,
         }),
       })
 
@@ -308,6 +378,8 @@ function App() {
 
       setUsername('')
       setPassword('')
+      setConfirmPassword('')
+      setRegisterDisplayName('')
       setPage('login')
       setError('Đăng ký thành công. Hãy đăng nhập.')
     } catch {
@@ -315,6 +387,127 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleOpenProfileModal = () => {
+    setProfileDisplayName(currentUser?.display_name || '')
+    setProfileBio(currentUser?.bio || '')
+    setProfileAvatarUrl(currentUser?.avatar_url || '')
+    setProfileTab('info')
+    setProfileError('')
+    setProfileSuccess('')
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmNewPassword('')
+    setShowProfileModal(true)
+  }
+
+  const handleUpdateProfile = async (event) => {
+    event.preventDefault()
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    setProfileLoading(true)
+    setProfileError('')
+    setProfileSuccess('')
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          display_name: profileDisplayName.trim(),
+          bio: profileBio.trim(),
+          avatar_url: profileAvatarUrl.trim(),
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        setProfileError(data.message || 'Cập nhật thất bại')
+        return
+      }
+
+      setCurrentUser(data.user)
+      setProfileSuccess('Cập nhật thông tin cá nhân thành công!')
+    } catch {
+      setProfileError('Không thể kết nối đến CloudChat Backend')
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  const handleChangePassword = async (event) => {
+    event.preventDefault()
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    if (!currentPassword || !newPassword) {
+      setProfileError('Vui lòng nhập mật khẩu hiện tại và mật khẩu mới')
+      return
+    }
+
+    if (newPassword.length < 6) {
+      setProfileError('Mật khẩu mới phải có ít nhất 6 ký tự')
+      return
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      setProfileError('Mật khẩu mới xác nhận không khớp')
+      return
+    }
+
+    setProfileLoading(true)
+    setProfileError('')
+    setProfileSuccess('')
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/profile/change-password`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword,
+          }),
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        setProfileError(data.message || 'Đổi mật khẩu thất bại')
+        return
+      }
+
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
+      setProfileSuccess('Đổi mật khẩu thành công!')
+    } catch {
+      setProfileError('Không thể kết nối đến CloudChat Backend')
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  const formatDate = (value) => {
+    if (!value) return ''
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+    return date.toLocaleDateString('vi-VN', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    })
   }
 
   const handleLogout = () => {
@@ -345,9 +538,116 @@ function App() {
     })
   }
 
-  const filteredFriends = friends.filter((friend) =>
-    friend.username.toLowerCase().includes(search.toLowerCase())
-  )
+  const loadFriendRequests = async () => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/friends/requests`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (data.success) {
+        setFriendRequests(data.requests || [])
+      }
+    } catch (e) {
+      console.error('Load friend requests failed', e)
+    }
+  }
+
+  const handleAcceptFriendRequest = async (friendshipId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/friends/${friendshipId}/accept`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      const data = await response.json()
+      if (data.success) {
+        await loadFriends()
+        await loadFriendRequests()
+      } else {
+        alert(data.message || 'Không thể chấp nhận lời mời')
+      }
+    } catch {
+      alert('Không thể kết nối đến CloudChat Backend')
+    }
+  }
+
+  const handleSearchFriend = async (e) => {
+    e.preventDefault()
+    if (!searchFriendInput.trim()) return
+    setSearchFriendLoading(true)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    setSearchFriendResult(null)
+    const token = localStorage.getItem('cloudchat_token')
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/users/search?username=${encodeURIComponent(
+          searchFriendInput.trim()
+        )}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        setSearchFriendError(data.message || 'Không tìm thấy người dùng')
+      } else {
+        setSearchFriendResult(data.user)
+      }
+    } catch {
+      setSearchFriendError('Không thể kết nối đến CloudChat Backend')
+    } finally {
+      setSearchFriendLoading(false)
+    }
+  }
+
+  const handleSendFriendRequest = async (targetId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    setSearchFriendLoading(true)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/friends/request/${targetId}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        setSearchFriendError(data.message || 'Không thể gửi lời mời')
+      } else {
+        setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công!')
+      }
+    } catch {
+      setSearchFriendError('Không thể kết nối đến CloudChat Backend')
+    } finally {
+      setSearchFriendLoading(false)
+    }
+  }
+
+  const filteredFriends = friends.filter((friend) => {
+    const query = search.toLowerCase()
+    const nameMatch = (friend.display_name || '').toLowerCase().includes(query)
+    const usernameMatch = friend.username.toLowerCase().includes(query)
+    return nameMatch || usernameMatch
+  })
 
   if (page === 'loading') {
     return (
@@ -443,10 +743,20 @@ function App() {
 
           <form onSubmit={handleRegister} className="auth-form">
             <label>
+              Tên hiển thị (Tùy chọn)
+              <input
+                type="text"
+                placeholder="Ví dụ: Duy Khang"
+                value={registerDisplayName}
+                onChange={(event) => setRegisterDisplayName(event.target.value)}
+              />
+            </label>
+
+            <label>
               Username
               <input
                 type="text"
-                placeholder="Nhập username"
+                placeholder="Nhập username (3-30 ký tự)"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
               />
@@ -462,6 +772,16 @@ function App() {
               />
             </label>
 
+            <label>
+              Xác nhận mật khẩu
+              <input
+                type="password"
+                placeholder="Nhập lại mật khẩu"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </label>
+
             {error && <div className="auth-error">{error}</div>}
 
             <button className="primary-button" type="submit" disabled={loading}>
@@ -473,6 +793,8 @@ function App() {
             <span>Đã có tài khoản?</span>
             <button type="button" onClick={() => {
               setError('')
+              setConfirmPassword('')
+              setRegisterDisplayName('')
               setPage('login')
             }}>
               Đăng nhập
@@ -484,124 +806,353 @@ function App() {
   }
 
   return (
-    <div className="chat-app">
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div className="brand compact">
-            <div className="brand-icon">C</div>
-            <div>
-              <h1>CloudChat</h1>
-              <span>Online</span>
-            </div>
+    <div className={`telegram-app ${activeChat ? 'has-active-chat' : ''}`}>
+      {/* Telegram Floating Left Sidebar */}
+      <aside className="tg-sidebar">
+        {/* Top Header: Hamburger Button + Search Bar */}
+        <div className="tg-sidebar-header">
+          <div className="tg-menu-wrapper" ref={menuRef}>
+            <button
+              className={`tg-menu-btn ${showMenu ? 'active' : ''}`}
+              onClick={() => setShowMenu((prev) => !prev)}
+              title="Menu"
+              aria-label="Menu"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+
+            {/* Telegram Hamburger Dropdown Menu (Image 2) */}
+            {showMenu && (
+              <div className="tg-dropdown-menu" onClick={(e) => e.stopPropagation()}>
+                {/* User Info Header */}
+                <div
+                  className="tg-menu-user"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleOpenProfileModal()
+                  }}
+                  title="Xem hồ sơ cá nhân"
+                >
+                  <div className="tg-avatar sm">
+                    {currentUser?.avatar_url ? (
+                      <img
+                        src={currentUser.avatar_url}
+                        alt=""
+                        className="avatar-img"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div className="tg-menu-user-info">
+                    <strong>{currentUser?.display_name || currentUser?.username || 'DuyKhang'}</strong>
+                    <span>@{currentUser?.username || 'user'}</span>
+                  </div>
+                </div>
+
+                <div className="tg-menu-divider" />
+
+                {/* + Add Account */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    setShowAddFriendModal(true)
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                  </span>
+                  <span>Add Account</span>
+                </button>
+
+                {/* 👤 My Profile */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleOpenProfileModal()
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                  </span>
+                  <span>My Profile</span>
+                </button>
+
+                {/* 🔖 Saved Messages */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    alert('Saved Messages: Không gian lưu trữ đám mây và tin nhắn cá nhân của bạn trên CloudChat!')
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                  </span>
+                  <span>Saved Messages</span>
+                </button>
+
+                {/* 👥 Contacts */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    loadFriendRequests()
+                    setShowContactsModal(true)
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="9" cy="7" r="4"></circle>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                  </span>
+                  <span>Contacts</span>
+                  <span className="tg-menu-badge">{friends.length}</span>
+                </button>
+
+                {/* ⚙ Settings */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleOpenProfileModal()
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="3"></circle>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                  </span>
+                  <span>Settings</span>
+                </button>
+
+                <div className="tg-menu-divider" />
+
+                {/* Log Out */}
+                <button
+                  className="tg-menu-item danger"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleLogout()
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                      <polyline points="16 17 21 12 16 7"></polyline>
+                      <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                  </span>
+                  <span>Log Out</span>
+                </button>
+              </div>
+            )}
           </div>
 
-          <button className="icon-button" title="Tạo cuộc trò chuyện">
-            +
+          {/* Telegram Search Bar */}
+          <div className="tg-search-bar">
+            <svg className="tg-search-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input
+              type="text"
+              placeholder="Search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button
+                className="tg-search-clear"
+                onClick={() => setSearch('')}
+                title="Xóa tìm kiếm"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Telegram Folders / Tabs Bar (Image 1) */}
+        <div className="tg-folders-bar">
+          <button
+            className={`tg-folder-tab ${folderTab === 'all' ? 'active' : ''}`}
+            onClick={() => setFolderTab('all')}
+          >
+            <span>All</span>
+            <span className="tg-folder-badge">{friends.length}</span>
+          </button>
+          <button
+            className={`tg-folder-tab ${folderTab === 'friends' ? 'active' : ''}`}
+            onClick={() => setFolderTab('friends')}
+          >
+            <span>Bạn bè</span>
           </button>
         </div>
 
-        <div className="search-box">
-          <span>⌕</span>
-          <input
-            type="text"
-            placeholder="Tìm kiếm bạn bè"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </div>
-
-        <div className="sidebar-section-title">
-          <span>Cuộc trò chuyện</span>
-          <span>{friends.length}</span>
-        </div>
-
-        <div className="chat-list">
+        {/* Telegram Chat List */}
+        <div className="tg-chat-list">
           {filteredFriends.length > 0 ? (
             filteredFriends.map((friend) => (
               <button
-                className={`chat-item ${
-                  activeChat?.id === friend.id ? 'active' : ''
-                }`}
+                className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
                 key={friend.id}
                 onClick={() => setActiveChat(friend)}
               >
-                <div className="avatar">
-                  {friend.username.charAt(0).toUpperCase()}
+                <div className="tg-avatar">
+                  {friend.avatar_url ? (
+                    <img
+                      src={friend.avatar_url}
+                      alt={friend.username}
+                      className="avatar-img"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  ) : (
+                    (friend.display_name || friend.username).charAt(0).toUpperCase()
+                  )}
+                  <div className="tg-online-dot" />
                 </div>
 
-                <div className="chat-info">
-                  <div className="chat-name-row">
-                    <strong>{friend.username}</strong>
+                <div className="tg-chat-info">
+                  <div className="tg-chat-top">
+                    <span className="tg-chat-name">
+                      {friend.display_name || friend.username}
+                    </span>
+                    <span className="tg-chat-time">
+                      {friend.created_at ? formatTime(friend.created_at) : ''}
+                    </span>
                   </div>
-                  <p>Nhấn để mở cuộc trò chuyện</p>
+                  <div className="tg-chat-bottom">
+                    <span className="tg-chat-preview">
+                      {friend.bio || 'Nhấn để mở cuộc trò chuyện'}
+                    </span>
+                  </div>
                 </div>
               </button>
             ))
           ) : (
-            <div className="empty-chat-list">
-              {friends.length === 0
-                ? 'Chưa có bạn bè. Hãy thêm bạn trước.'
-                : 'Không tìm thấy người dùng.'}
+            <div className="tg-empty-list">
+              {friends.length === 0 ? (
+                <div>
+                  <p>Chưa có cuộc trò chuyện nào.</p>
+                  <button
+                    className="secondary-button"
+                    style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
+                    onClick={() => setShowAddFriendModal(true)}
+                  >
+                    + Thêm bạn bè để bắt đầu
+                  </button>
+                </div>
+              ) : (
+                <p>Không tìm thấy kết quả nào phù hợp.</p>
+              )}
             </div>
           )}
         </div>
-
-        <div className="sidebar-bottom">
-          <div className="profile">
-            <div className="avatar small">
-              {(currentUser?.username || 'K').charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <strong>{currentUser?.username || 'Khang'}</strong>
-              <span>@{currentUser?.username || 'khang'}</span>
-            </div>
-          </div>
-
-          <button
-            className="logout-button"
-            onClick={handleLogout}
-            title="Đăng xuất"
-          >
-            ↪
-          </button>
-        </div>
       </aside>
 
-      <main className="chat-window">
+      {/* Telegram Right Main Area: When no chat is clicked, shows wallpaper with centered pill */}
+      <main className="tg-main-area">
         {activeChat ? (
-          <>
-            <header className="chat-header">
-              <div className="avatar">
-                {activeChat.username.charAt(0).toUpperCase()}
+          <div className="tg-chat-window">
+            {/* Chat Header */}
+            <header className="tg-chat-header">
+              <div className="tg-chat-header-left">
+                <button
+                  className="tg-icon-btn tg-back-btn"
+                  onClick={() => setActiveChat(null)}
+                  title="Quay lại danh sách chat"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="19" y1="12" x2="5" y2="12"></line>
+                    <polyline points="12 19 5 12 12 5"></polyline>
+                  </svg>
+                </button>
+                <div className="tg-avatar sm">
+                  {activeChat.avatar_url ? (
+                    <img
+                      src={activeChat.avatar_url}
+                      alt={activeChat.username}
+                      className="avatar-img"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  ) : (
+                    (activeChat.display_name || activeChat.username).charAt(0).toUpperCase()
+                  )}
+                  <div className="tg-online-dot" />
+                </div>
+                <div className="tg-header-details">
+                  <strong>{activeChat.display_name || activeChat.username}</strong>
+                  <span>{activeChat.bio ? `${activeChat.bio}` : 'online'}</span>
+                </div>
               </div>
 
-              <div className="chat-header-info">
-                <strong>{activeChat.username}</strong>
-                <span>Cuộc trò chuyện 1-1</span>
-              </div>
-
-              <div className="chat-actions">
-                <button title="Tìm kiếm">⌕</button>
-                <button title="Thông tin">ⓘ</button>
+              <div className="tg-header-actions">
+                <button className="tg-icon-btn" title="Tìm kiếm tin nhắn">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                </button>
+                <button
+                  className="tg-icon-btn"
+                  title="Thông tin người dùng"
+                  onClick={handleOpenProfileModal}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                  </svg>
+                </button>
               </div>
             </header>
 
-            <section className="messages">
-              <div className="conversation-date">Hôm nay</div>
+            {/* Telegram Messages Scroll */}
+            <div className="tg-messages-scroll">
+              <div className="tg-bubble-date">Hôm nay</div>
 
               {chatLoading ? (
-                <div className="empty-messages">
-                  Đang tải tin nhắn...
+                <div className="tg-messages-loading">
+                  <div className="tg-spinner" />
+                  <span>Đang tải tin nhắn...</span>
                 </div>
               ) : messages.length === 0 ? (
-                <div className="welcome-message">
-                  <div className="large-avatar">
-                    {activeChat.username.charAt(0).toUpperCase()}
+                <div className="tg-empty-chat-state">
+                  <div className="tg-avatar lg">
+                    {activeChat.avatar_url ? (
+                      <img src={activeChat.avatar_url} alt="" className="avatar-img" />
+                    ) : (
+                      (activeChat.display_name || activeChat.username).charAt(0).toUpperCase()
+                    )}
                   </div>
-                  <h3>{activeChat.username}</h3>
-                  <p>
-                    Đây là cuộc trò chuyện 1-1. Hãy gửi tin nhắn đầu tiên.
-                  </p>
+                  <h3>{activeChat.display_name || activeChat.username}</h3>
+                  <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
                 </div>
               ) : (
                 messages.map((item) => {
@@ -612,28 +1163,35 @@ function App() {
 
                   return (
                     <div
-                      className={`message-row ${isMine ? 'mine' : ''}`}
+                      className={`tg-msg-row ${isMine ? 'mine' : 'theirs'}`}
                       key={item.id}
                     >
-                      <div className="message-bubble">
-                        <span>{item.content}</span>
-                        <small>{formatTime(item.created_at)}</small>
+                      <div className="tg-msg-bubble">
+                        <span className="tg-msg-text">{item.content}</span>
+                        <div className="tg-msg-meta">
+                          <small>{formatTime(item.created_at)}</small>
+                          {isMine && <span className="tg-msg-check">✓✓</span>}
+                        </div>
                       </div>
                     </div>
                   )
                 })
               )}
               <div ref={messagesEndRef} />
-            </section>
+            </div>
 
-            <div className="message-input-area">
-              <button className="attachment-button" title="Gửi file">
-                +
+            {/* Telegram Message Input Pill */}
+            <div className="tg-input-area">
+              <button className="tg-icon-btn tg-attach-btn" title="Đính kèm tệp">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                </svg>
               </button>
 
               <input
                 type="text"
-                placeholder="Nhập tin nhắn..."
+                className="tg-msg-input"
+                placeholder="Viết tin nhắn..."
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 onKeyDown={(event) => {
@@ -646,23 +1204,459 @@ function App() {
               />
 
               <button
-                className="send-button"
+                className="tg-send-btn"
                 onClick={handleSend}
                 disabled={!message.trim() || chatLoading}
                 title="Gửi"
               >
-                ➤
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
               </button>
             </div>
-          </>
+          </div>
         ) : (
-          <div className="empty-chat">
-            <div className="large-avatar">C</div>
-            <h2>CloudChat</h2>
-            <p>Chọn một người bạn để bắt đầu trò chuyện.</p>
+          <div className="tg-no-chat-selected">
+            <div className="tg-no-chat-badge">
+              Chọn một đoạn chat để bắt đầu nhắn tin
+            </div>
           </div>
         )}
       </main>
+
+      {/* Contacts Modal (Danh bạ bạn bè) */}
+      {showContactsModal && (
+        <div className="modal-overlay" onClick={() => setShowContactsModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">👥</div>
+                <div>
+                  <h3>Danh bạ (Contacts)</h3>
+                  <p>{friends.length} người bạn trong danh bạ</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowContactsModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {friendRequests.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <h4 style={{ color: '#8774e1', margin: '0 0 10px', fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Lời mời kết bạn ({friendRequests.length})
+                </h4>
+                <div className="contacts-list">
+                  {friendRequests.map((req) => (
+                    <div className="contact-item" key={req.id}>
+                      <div className="contact-user">
+                        <div className="tg-avatar sm">
+                          {req.username.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <strong>{req.username}</strong>
+                          <span>Đã gửi lời mời kết bạn</span>
+                        </div>
+                      </div>
+                      <button
+                        className="primary-button"
+                        style={{ height: 34, padding: '0 14px', fontSize: 12 }}
+                        onClick={() => handleAcceptFriendRequest(req.id)}
+                      >
+                        Chấp nhận
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h4 style={{ color: '#8995a5', margin: 0, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Danh sách bạn bè
+              </h4>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ padding: '6px 12px', fontSize: 12 }}
+                onClick={() => {
+                  setShowContactsModal(false)
+                  setShowAddFriendModal(true)
+                }}
+              >
+                + Thêm bạn mới
+              </button>
+            </div>
+
+            <div className="contacts-list">
+              {friends.length > 0 ? (
+                friends.map((friend) => (
+                  <div className="contact-item" key={friend.id}>
+                    <div className="contact-user">
+                      <div className="tg-avatar sm">
+                        {friend.avatar_url ? (
+                          <img src={friend.avatar_url} alt="" className="avatar-img" />
+                        ) : (
+                          (friend.display_name || friend.username).charAt(0).toUpperCase()
+                        )}
+                        <div className="tg-online-dot" />
+                      </div>
+                      <div>
+                        <strong>{friend.display_name || friend.username}</strong>
+                        <span>@{friend.username}</span>
+                      </div>
+                    </div>
+                    <button
+                      className="primary-button"
+                      style={{ height: 34, padding: '0 14px', fontSize: 12 }}
+                      onClick={() => {
+                        setActiveChat(friend)
+                        setShowContactsModal(false)
+                      }}
+                    >
+                      Nhắn tin
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div style={{ textAlign: 'center', padding: '24px 0', color: '#6a7485', fontSize: 13 }}>
+                  Chưa có bạn bè nào. Nhấn "+ Thêm bạn mới" để kết nối.
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer" style={{ marginTop: 20 }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowContactsModal(false)}
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Friend Modal (Thêm tài khoản / bạn bè) */}
+      {showAddFriendModal && (
+        <div className="modal-overlay" onClick={() => setShowAddFriendModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">➕</div>
+                <div>
+                  <h3>Thêm bạn bè / Tài khoản</h3>
+                  <p>Tìm kiếm người dùng CloudChat theo username</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => {
+                  setShowAddFriendModal(false)
+                  setSearchFriendResult(null)
+                  setSearchFriendError('')
+                  setSearchFriendSuccess('')
+                }}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {searchFriendError && <div className="modal-alert error">{searchFriendError}</div>}
+            {searchFriendSuccess && <div className="modal-alert success">{searchFriendSuccess}</div>}
+
+            <form onSubmit={handleSearchFriend} className="profile-form">
+              <label>
+                Username người dùng
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    type="text"
+                    placeholder="Nhập chính xác username..."
+                    value={searchFriendInput}
+                    onChange={(e) => setSearchFriendInput(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    style={{ minWidth: 100, height: 48, marginTop: 0 }}
+                    disabled={searchFriendLoading || !searchFriendInput.trim()}
+                  >
+                    {searchFriendLoading ? 'Đang tìm...' : 'Tìm kiếm'}
+                  </button>
+                </div>
+              </label>
+            </form>
+
+            {searchFriendResult && (
+              <div style={{ marginTop: 20, padding: 16, borderRadius: 14, background: '#0d1017', border: '1px solid #1e2432', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="tg-avatar sm">
+                    {searchFriendResult.avatar_url ? (
+                      <img src={searchFriendResult.avatar_url} alt="" className="avatar-img" />
+                    ) : (
+                      (searchFriendResult.display_name || searchFriendResult.username).charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div>
+                    <strong style={{ display: 'block', color: '#f1f5f9', fontSize: 14 }}>
+                      {searchFriendResult.display_name || searchFriendResult.username}
+                    </strong>
+                    <span style={{ display: 'block', color: '#6d7889', fontSize: 11 }}>
+                      @{searchFriendResult.username}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  className="primary-button"
+                  style={{ height: 36, padding: '0 16px', fontSize: 12 }}
+                  disabled={searchFriendLoading}
+                  onClick={() => handleSendFriendRequest(searchFriendResult.id)}
+                >
+                  Kết bạn
+                </button>
+              </div>
+            )}
+
+            <div className="modal-footer" style={{ marginTop: 24 }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  setShowAddFriendModal(false)
+                  setSearchFriendResult(null)
+                  setSearchFriendError('')
+                  setSearchFriendSuccess('')
+                }}
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProfileModal && (
+        <div className="modal-overlay" onClick={() => setShowProfileModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">👤</div>
+                <div>
+                  <h3>Thông tin tài khoản</h3>
+                  <p>Quản lý thông tin cá nhân và bảo mật</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowProfileModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-tabs">
+              <button
+                type="button"
+                className={`modal-tab ${profileTab === 'info' ? 'active' : ''}`}
+                onClick={() => {
+                  setProfileTab('info')
+                  setProfileError('')
+                  setProfileSuccess('')
+                }}
+              >
+                Thông tin cá nhân
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${profileTab === 'password' ? 'active' : ''}`}
+                onClick={() => {
+                  setProfileTab('password')
+                  setProfileError('')
+                  setProfileSuccess('')
+                }}
+              >
+                Đổi mật khẩu
+              </button>
+            </div>
+
+            {profileError && <div className="modal-alert error">{profileError}</div>}
+            {profileSuccess && <div className="modal-alert success">{profileSuccess}</div>}
+
+            {profileTab === 'info' ? (
+              <form onSubmit={handleUpdateProfile} className="profile-form">
+                <div className="avatar-section">
+                  <div className="avatar large-preview">
+                    {profileAvatarUrl ? (
+                      <img
+                        src={profileAvatarUrl}
+                        alt="Avatar preview"
+                        className="avatar-img"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      (profileDisplayName || currentUser?.username || 'K').charAt(0).toUpperCase()
+                    )}
+                  </div>
+
+                  <div className="avatar-picker">
+                    <span className="picker-label">Chọn nhanh avatar đại diện:</span>
+                    <div className="preset-avatars">
+                      {PRESET_AVATARS.map((url, idx) => (
+                        <button
+                          type="button"
+                          key={idx}
+                          className={`preset-avatar-btn ${profileAvatarUrl === url ? 'selected' : ''}`}
+                          onClick={() => setProfileAvatarUrl(url)}
+                          title={`Avatar mẫu ${idx + 1}`}
+                        >
+                          <img src={url} alt={`Preset ${idx + 1}`} />
+                        </button>
+                      ))}
+                      {profileAvatarUrl && (
+                        <button
+                          type="button"
+                          className="preset-avatar-clear"
+                          onClick={() => setProfileAvatarUrl('')}
+                          title="Xóa avatar (dùng chữ cái)"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <label>
+                  Link ảnh avatar (URL)
+                  <input
+                    type="url"
+                    placeholder="https://... hoặc chọn ảnh mẫu ở trên"
+                    value={profileAvatarUrl}
+                    onChange={(e) => setProfileAvatarUrl(e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  Tên hiển thị
+                  <input
+                    type="text"
+                    placeholder="Nhập tên hiển thị (tối đa 50 ký tự)"
+                    value={profileDisplayName}
+                    maxLength={50}
+                    onChange={(e) => setProfileDisplayName(e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  Tên đăng nhập (Username)
+                  <input
+                    type="text"
+                    value={currentUser?.username || ''}
+                    disabled
+                    className="disabled-input"
+                  />
+                  <small className="field-hint">Tên đăng nhập cố định không thể thay đổi</small>
+                </label>
+
+                <label>
+                  Tiểu sử / Trạng thái
+                  <textarea
+                    placeholder="Mô tả ngắn về bạn..."
+                    value={profileBio}
+                    maxLength={200}
+                    rows={3}
+                    onChange={(e) => setProfileBio(e.target.value)}
+                  />
+                  <small className="field-hint text-right">{profileBio.length}/200 ký tự</small>
+                </label>
+
+                {currentUser?.created_at && (
+                  <div className="account-meta">
+                    🗓 Ngày tham gia: <strong>{formatDate(currentUser.created_at)}</strong>
+                  </div>
+                )}
+
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setShowProfileModal(false)}
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={profileLoading}
+                  >
+                    {profileLoading ? 'Đang lưu...' : 'Lưu thay đổi'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleChangePassword} className="profile-form">
+                <label>
+                  Mật khẩu hiện tại
+                  <input
+                    type="password"
+                    placeholder="Nhập mật khẩu đang dùng"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  Mật khẩu mới
+                  <input
+                    type="password"
+                    placeholder="Ít nhất 6 ký tự"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  Xác nhận mật khẩu mới
+                  <input
+                    type="password"
+                    placeholder="Nhập lại mật khẩu mới"
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  />
+                </label>
+
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setShowProfileModal(false)}
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={profileLoading}
+                  >
+                    {profileLoading ? 'Đang cập nhật...' : 'Cập nhật mật khẩu'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
