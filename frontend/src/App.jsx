@@ -12,6 +12,288 @@ const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Jack',
 ]
 
+function parseUtcDate(value) {
+  if (!value) return null
+  let str = String(value)
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str) && !str.endsWith('Z') && !str.includes('+')) {
+    str = str.replace(' ', 'T') + 'Z'
+  }
+  const date = new Date(str)
+  if (Number.isNaN(date.getTime())) return null
+  return date
+}
+
+function formatTime(value) {
+  const date = parseUtcDate(value)
+  if (!date) return ''
+  return date.toLocaleTimeString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+function formatDate(value) {
+  const date = parseUtcDate(value)
+  if (!date) return ''
+  return date.toLocaleDateString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+}
+
+function formatChatListTime(value) {
+  const date = parseUtcDate(value)
+  if (!date) return ''
+
+  const now = new Date()
+  const vnNowStr = now.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+  const vnDateStr = date.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+
+  if (vnNowStr === vnDateStr) {
+    return date.toLocaleTimeString('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  }
+
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const vnYesterdayStr = yesterday.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+  if (vnDateStr === vnYesterdayStr) {
+    return 'Hôm qua'
+  }
+
+  return date.toLocaleDateString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+  })
+}
+
+function formatUserStatus(user) {
+  if (!user) return ''
+  if (user.is_online) return 'Đang hoạt động'
+  if (!user.last_seen) return 'Ngoại tuyến'
+
+  const date = parseUtcDate(user.last_seen)
+  if (!date) return 'Ngoại tuyến'
+
+  const diffMs = Date.now() - date.getTime()
+  const diffSec = Math.floor(diffMs / 1000)
+  const diffMin = Math.floor(diffSec / 60)
+  const diffHours = Math.floor(diffMin / 60)
+  const diffDays = Math.floor(diffHours / 24)
+
+  if (diffMin < 1) return 'Vừa mới truy cập'
+  if (diffMin < 60) return `Lần cuối ${diffMin} phút trước`
+  if (diffHours < 24) return `Lần cuối ${diffHours} giờ trước`
+  if (diffDays === 1) return 'Lần cuối hôm qua'
+  if (diffDays < 7) return `Lần cuối ${diffDays} ngày trước`
+  return `Lần cuối ${date.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit' })}`
+}
+
+function formatLastMessagePreview(friend, currentUser) {
+  if (!friend.last_message) {
+    return 'Chưa có tin nhắn nào'
+  }
+  const isMine = friend.last_message_sender_id === currentUser?.id
+  const prefix = isMine ? 'Bạn: ' : ''
+  const content = friend.last_message.trim()
+
+  const att = parseAttachment(content)
+  if (att) {
+    return `${prefix}📎 ${att.fileName || 'Tệp đính kèm'}`
+  }
+
+  if (content.startsWith('data:image/') || /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(content)) {
+    return `${prefix}📷 Hình ảnh`
+  }
+
+  if (content.startsWith('data:video/') || /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?$/i.test(content)) {
+    return `${prefix}🎥 Video`
+  }
+
+  return `${prefix}${content}`
+}
+
+function renderHighlightedSnippet(content, query) {
+  if (!content) return null
+  let text = content
+  const att = parseAttachment(content)
+  if (att) {
+    text = `📎 ${att.fileName || 'Tệp đính kèm'}`
+  } else if (content.startsWith('data:image/') || /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)/i.test(content)) {
+    text = '📷 Hình ảnh'
+  } else if (content.startsWith('data:video/') || /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)/i.test(content)) {
+    text = '🎥 Video'
+  }
+
+  const q = (query || '').trim()
+  if (!q) return text
+
+  const idx = text.toLowerCase().indexOf(q.toLowerCase())
+  if (idx === -1) {
+    return text.length > 70 ? text.slice(0, 70) + '...' : text
+  }
+
+  const start = Math.max(0, idx - 25)
+  const end = Math.min(text.length, idx + q.length + 35)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < text.length ? '...' : ''
+  const snippet = text.slice(start, end)
+
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = snippet.split(new RegExp(`(${escaped})`, 'gi'))
+
+  return (
+    <span>
+      {prefix}
+      {parts.map((part, pIdx) =>
+        part.toLowerCase() === q.toLowerCase() ? (
+          <mark key={pIdx} className="tg-search-pill">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+      {suffix}
+    </span>
+  )
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || Number.isNaN(Number(bytes))) return 'Tệp đính kèm'
+  const b = Number(bytes)
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function getFileBadgeType(name, type) {
+  const n = (name || '').toLowerCase()
+  const t = (type || '').toLowerCase()
+  if (n.endsWith('.docx') || n.endsWith('.doc') || t.includes('word') || t.includes('officedocument.wordprocessingml')) return 'docx'
+  if (n.endsWith('.xlsx') || n.endsWith('.xls') || n.endsWith('.csv') || t.includes('sheet') || t.includes('excel')) return 'xlsx'
+  if (n.endsWith('.pdf') || t.includes('pdf')) return 'pdf'
+  if (n.endsWith('.zip') || n.endsWith('.rar') || n.endsWith('.7z') || t.includes('zip') || t.includes('compressed')) return 'zip'
+  return 'generic'
+}
+
+function getFileIconSvg(name, type) {
+  const badge = getFileBadgeType(name, type)
+  if (badge === 'docx') {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="16" y1="13" x2="8" y2="13"></line>
+        <line x1="16" y1="17" x2="8" y2="17"></line>
+      </svg>
+    )
+  }
+  if (badge === 'xlsx') {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="8" y1="13" x2="16" y2="17"></line>
+        <line x1="16" y1="13" x2="8" y2="17"></line>
+      </svg>
+    )
+  }
+  if (badge === 'pdf') {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <path d="M10 12h1a2 2 0 1 0 0-4h-1v8"></path>
+      </svg>
+    )
+  }
+  if (badge === 'zip') {
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+        <line x1="12" y1="22.08" x2="12" y2="12"></line>
+      </svg>
+    )
+  }
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+      <polyline points="13 2 13 9 20 9"></polyline>
+    </svg>
+  )
+}
+
+function parseAttachment(content) {
+  if (!content) return null
+  const trimmed = content.trim()
+
+  // 1. JSON attachment format
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const p = JSON.parse(trimmed)
+      if (p && (p.isAttachment || p.fileName)) {
+        return {
+          fileName: p.fileName || 'Tài liệu đính kèm',
+          fileSize: p.fileSize,
+          fileType: p.fileType || '',
+          url: p.data || '',
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Data URL document (non-image, non-video)
+  if (trimmed.startsWith('data:') && !trimmed.startsWith('data:image/') && !trimmed.startsWith('data:video/')) {
+    let fileName = 'Tài liệu.docx'
+    let fileType = 'application/octet-stream'
+    const mimeMatch = trimmed.match(/^data:([^;,]+)/)
+    if (mimeMatch) fileType = mimeMatch[1]
+
+    if (fileType.includes('pdf')) fileName = 'Tài liệu.pdf'
+    else if (fileType.includes('sheet') || fileType.includes('excel')) fileName = 'Bảng tính.xlsx'
+    else if (fileType.includes('word') || fileType.includes('officedocument')) fileName = 'Tài liệu Word.docx'
+    else if (fileType.includes('presentation') || fileType.includes('powerpoint')) fileName = 'Bài thuyết trình.pptx'
+    else if (fileType.includes('zip') || fileType.includes('rar')) fileName = 'Tệp nén.zip'
+
+    return {
+      fileName,
+      fileSize: Math.round((trimmed.length * 3) / 4),
+      fileType,
+      url: trimmed,
+    }
+  }
+
+  // 3. Raw base64 of Word docx or ZIP
+  if (
+    trimmed.includes('word/') ||
+    trimmed.includes('docProps/') ||
+    trimmed.startsWith('AIAAOcH') ||
+    trimmed.startsWith('UEsDB')
+  ) {
+    const dataUrl = trimmed.startsWith('data:')
+      ? trimmed
+      : `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${trimmed}`
+    return {
+      fileName: 'Tài liệu Word.docx',
+      fileSize: Math.round((trimmed.length * 3) / 4),
+      fileType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      url: dataUrl,
+    }
+  }
+
+  return null
+}
+
 function App() {
   const [page, setPage] = useState('loading')
   const [username, setUsername] = useState('')
@@ -27,6 +309,8 @@ function App() {
   const [messages, setMessages] = useState([])
 
   const [search, setSearch] = useState('')
+  const [globalSearchResults, setGlobalSearchResults] = useState([])
+  const [searchLoading, setSearchLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const messagesEndRef = useRef(null)
@@ -131,6 +415,42 @@ function App() {
     setEditingNickname(false)
   }, [activeChat?.id])
 
+  // Global message search across all chats
+  useEffect(() => {
+    const q = search.trim()
+    if (!q) {
+      setGlobalSearchResults([])
+      setSearchLoading(false)
+      return
+    }
+
+    const timer = setTimeout(async () => {
+      const token = localStorage.getItem('cloudchat_token')
+      if (!token) return
+      setSearchLoading(true)
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/protected/messages/search?q=${encodeURIComponent(q)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        )
+        const data = await response.json()
+        if (data.success && data.results) {
+          setGlobalSearchResults(data.results)
+        }
+      } catch (err) {
+        console.error('Search messages error:', err)
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 200)
+
+    return () => clearTimeout(timer)
+  }, [search])
+
   // Calculate matching messages for in-chat search
   const matchingMessageIds = useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase()
@@ -166,43 +486,8 @@ function App() {
     )
   }
 
-  // Extract media, files and links from messages + seeded items matching Image 2
+  // Extract media, files and links exclusively from conversation messages
   const { chatMediaItems, chatFileItems, chatLinkItems } = useMemo(() => {
-    const defaultMedia = [
-      { id: 'm1', type: 'image', url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&h=400&fit=crop' },
-      { id: 'm2', type: 'image', url: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=400&h=400&fit=crop' },
-      { id: 'm3', type: 'image', url: 'https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=400&fit=crop' },
-      { id: 'm4', type: 'image', url: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=400&h=400&fit=crop' },
-      { id: 'm5', type: 'image', url: 'https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=400&h=400&fit=crop' },
-      { id: 'm6', type: 'image', url: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=400&h=400&fit=crop' },
-      { id: 'm7', type: 'image', url: 'https://images.unsplash.com/photo-1504639725590-34d0984388bd?w=400&h=400&fit=crop' },
-      { id: 'm8', type: 'image', url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400&h=400&fit=crop' },
-    ]
-
-    const defaultLinks = [
-      {
-        url: 'https://github.com/duykhang020806/CloudChat',
-        title: 'GitHub - duykhang020806/CloudChat: Web application chat on cloud',
-        domain: 'github.com',
-        iconType: 'github',
-        date: 'Hôm nay',
-      },
-      {
-        url: 'https://meet.google.com/abc-defg-hij',
-        title: 'Meet',
-        domain: 'meet.google.com',
-        iconType: 'meet',
-        date: 'Hôm nay',
-      },
-      {
-        url: 'http://localhost:8787/api/auth/login',
-        title: 'http://localhost:8787/api/auth/login',
-        domain: 'localhost',
-        iconType: 'generic',
-        date: 'Hôm qua',
-      },
-    ]
-
     const foundMedia = []
     const foundFiles = []
     const foundLinks = []
@@ -211,61 +496,96 @@ function App() {
       if (!m.content) return
       const text = m.content
 
-      // Check media
-      const imgMatch = text.match(/(https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg))|(data:image\/[a-z]+;base64,[^\s]+)/gi)
-      if (imgMatch) {
-        imgMatch.forEach((url) => {
+      // Check media (images)
+      const imgMatches = text.match(
+        /(https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?)|(data:image\/[a-z0-9+]+;base64,[^\s]+)/gi
+      )
+      if (imgMatches) {
+        imgMatches.forEach((url) => {
           foundMedia.unshift({ id: m.id, type: 'image', url })
         })
       }
 
       // Check video
-      const vidMatch = text.match(/https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)/gi)
-      if (vidMatch) {
-        vidMatch.forEach((url) => {
+      const vidMatches = text.match(
+        /(https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?)|(data:video\/[a-z0-9+]+;base64,[^\s]+)/gi
+      )
+      if (vidMatches) {
+        vidMatches.forEach((url) => {
           foundMedia.unshift({ id: m.id, type: 'video', url })
         })
       }
 
       // Check files
-      const fileMatch = text.match(/https?:\/\/[^\s]+?\.(?:pdf|docx?|xlsx?|zip|rar|txt|csv)/gi)
-      if (fileMatch || m.type === 'file') {
+      const att = parseAttachment(text)
+      if (att) {
         foundFiles.unshift({
           id: m.id,
-          name: text.split('/').pop() || 'Tài liệu chia sẻ',
-          size: '1.2 MB',
+          name: att.fileName,
+          size: formatFileSize(att.fileSize),
+          url: att.url,
           date: formatTime(m.created_at) || 'Hôm nay',
         })
-      }
-
-      // Check general links
-      const linkMatch = text.match(/https?:\/\/[^\s]+/gi)
-      if (linkMatch) {
-        linkMatch.forEach((url) => {
-          let domain = 'web'
-          let iconType = 'generic'
-          try {
-            const u = new URL(url)
-            domain = u.hostname
-            if (domain.includes('github.com')) iconType = 'github'
-            else if (domain.includes('meet.google.com')) iconType = 'meet'
-          } catch {}
-
-          foundLinks.unshift({
-            url,
-            title: url,
-            domain,
-            iconType,
+      } else {
+        const fileMatches = text.match(
+          /https?:\/\/[^\s]+?\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|txt|csv)(?:\?[^\s]*)?/gi
+        )
+        if (fileMatches || m.type === 'file') {
+          const fileName =
+            text.split('/').pop()?.split('?')[0] || 'Tài liệu chia sẻ'
+          foundFiles.unshift({
+            id: m.id,
+            name: fileName,
+            size: 'Tệp đính kèm',
+            url: text,
             date: formatTime(m.created_at) || 'Hôm nay',
           })
-        })
+        }
+      }
+
+      // Check general links (only if not an attachment and not data URL)
+      if (!att && !text.startsWith('data:')) {
+        const linkMatches = text.match(/https?:\/\/[^\s]+/gi)
+        if (linkMatches) {
+          linkMatches.forEach((url) => {
+            let domain = 'web'
+            let iconType = 'generic'
+            let title = url
+            try {
+              const u = new URL(url)
+              domain = u.hostname
+              if (domain.includes('github.com')) {
+                iconType = 'github'
+                title = u.pathname.slice(1) ? `GitHub - ${u.pathname.slice(1)}` : 'GitHub'
+              } else if (domain.includes('meet.google.com')) {
+                iconType = 'meet'
+                title = 'Google Meet'
+              } else if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                iconType = 'meet'
+                title = 'YouTube'
+              } else {
+                title = url
+              }
+            } catch {}
+
+            foundLinks.unshift({
+              id: m.id,
+              url,
+              title,
+              domain,
+              iconType,
+              date: formatTime(m.created_at) || 'Hôm nay',
+            })
+          })
+        }
       }
     })
 
+    // ONLY return what was actually exchanged between the two users!
     return {
-      chatMediaItems: foundMedia.length > 0 ? foundMedia : defaultMedia,
+      chatMediaItems: foundMedia,
       chatFileItems: foundFiles,
-      chatLinkItems: foundLinks.length > 0 ? foundLinks : defaultLinks,
+      chatLinkItems: foundLinks,
     }
   }, [messages])
 
@@ -282,9 +602,26 @@ function App() {
     const token = localStorage.getItem('cloudchat_token')
     if (!token) return
 
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Kích thước tệp tin tối đa là 5MB.')
+      e.target.value = ''
+      return
+    }
+
     const reader = new FileReader()
     reader.onload = async () => {
-      const content = reader.result
+      let content = reader.result
+      // If it's a document/file (not image and not video), package as structured JSON attachment
+      if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+        content = JSON.stringify({
+          isAttachment: true,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          data: reader.result,
+        })
+      }
+
       try {
         const response = await fetch(
           `${API_BASE}/api/protected/messages/${activeChat.id}`,
@@ -312,18 +649,102 @@ function App() {
     e.target.value = ''
   }
 
-  // Render message content with highlights and clickable links
+  // Handle clipboard paste (Ctrl + V to paste and send image)
+  const handleInputPaste = async (e) => {
+    const clipboardData = e.clipboardData
+    if (!clipboardData) return
+
+    const items = clipboardData.items
+    let imageFile = null
+
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.startsWith('image/')) {
+        imageFile = items[i].getAsFile()
+        break
+      }
+    }
+
+    if (imageFile) {
+      e.preventDefault()
+      if (!activeChat) return
+      const token = localStorage.getItem('cloudchat_token')
+      if (!token) return
+
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const content = reader.result
+        try {
+          const response = await fetch(
+            `${API_BASE}/api/protected/messages/${activeChat.id}`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ content }),
+            }
+          )
+          const data = await response.json()
+          if (data.success && data.message) {
+            setMessages((current) => [...current, data.message])
+          }
+        } catch (err) {
+          console.error('Paste send image error:', err)
+        }
+      }
+      reader.readAsDataURL(imageFile)
+    }
+  }
+
+  // Render message content with highlights, clickable links and file cards
   const renderMessageContent = (content, highlightQuery) => {
     if (!content) return null
 
-    // Check if whole content is image
-    const isImage =
-      content.startsWith('data:image/') ||
-      /\.(jpeg|jpg|gif|png|webp|svg)($|\?)/i.test(content)
-    if (isImage) {
+    const trimmed = content.trim()
+
+    // 1. Check if attachment (file, document, word, etc.)
+    const attachment = parseAttachment(trimmed)
+    if (attachment) {
+      const badgeType = getFileBadgeType(attachment.fileName, attachment.fileType)
+      return (
+        <div className="tg-file-bubble">
+          <div className={`tg-file-bubble-icon ${badgeType}`}>
+            {getFileIconSvg(attachment.fileName, attachment.fileType)}
+          </div>
+          <div className="tg-file-bubble-info">
+            <div className="tg-file-bubble-name" title={attachment.fileName}>
+              {attachment.fileName}
+            </div>
+            <div className="tg-file-bubble-size">
+              {formatFileSize(attachment.fileSize)}
+            </div>
+          </div>
+          <a
+            href={attachment.url || '#'}
+            download={attachment.fileName}
+            className="tg-file-download-btn"
+            title={`Tải xuống ${attachment.fileName}`}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+          </a>
+        </div>
+      )
+    }
+
+    // 2. Check if whole message is directly an image
+    const isStandaloneImageUrl =
+      trimmed.startsWith('data:image/') ||
+      /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(trimmed)
+
+    if (isStandaloneImageUrl) {
       return (
         <img
-          src={content}
+          src={trimmed}
           alt="attachment"
           style={{
             maxWidth: '100%',
@@ -332,66 +753,69 @@ function App() {
             display: 'block',
             cursor: 'pointer',
           }}
-          onClick={() => setPreviewMediaUrl(content)}
+          onClick={() => setPreviewMediaUrl(trimmed)}
         />
       )
     }
 
-    // Check if whole content is video
-    const isVideo =
-      content.startsWith('data:video/') ||
-      /\.(mp4|webm|mov|ogg)($|\?)/i.test(content)
-    if (isVideo) {
+    // 3. Check if whole message is directly a video
+    const isStandaloneVideoUrl =
+      trimmed.startsWith('data:video/') ||
+      /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?$/i.test(trimmed)
+
+    if (isStandaloneVideoUrl) {
       return (
         <video
           controls
-          src={content}
+          src={trimmed}
           style={{ maxWidth: '100%', borderRadius: 12, display: 'block' }}
         />
       )
     }
 
-    // If search highlight query is active
-    const q = highlightQuery.trim()
-    if (q) {
-      const parts = content.split(
-        new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
-      )
-      return (
-        <span>
-          {parts.map((part, index) =>
-            part.toLowerCase() === q.toLowerCase() ? (
-              <mark key={index} className="search-highlight">
-                {part}
-              </mark>
-            ) : (
-              part
-            )
-          )}
-        </span>
-      )
-    }
+    // 4. Tokenize content by URLs
+    const urlPattern = /(https?:\/\/[^\s]+)/g
+    const segments = content.split(urlPattern)
+    const q = (highlightQuery || '').trim()
 
-    // Make links clickable
-    const urlRegex = /(https?:\/\/[^\s]+)/gi
-    const parts = content.split(urlRegex)
     return (
       <span>
-        {parts.map((part, index) =>
-          urlRegex.test(part) ? (
-            <a
-              key={index}
-              href={part}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: '#93c5fd', textDecoration: 'underline' }}
-            >
-              {part}
-            </a>
-          ) : (
-            part
-          )
-        )}
+        {segments.map((seg, segIdx) => {
+          if (/^https?:\/\/[^\s]+$/i.test(seg)) {
+            return (
+              <a
+                key={segIdx}
+                href={seg}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  color: '#93c5fd',
+                  textDecoration: 'underline',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {seg}
+              </a>
+            )
+          }
+
+          if (q) {
+            const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const qPattern = new RegExp(`(${escaped})`, 'gi')
+            const parts = seg.split(qPattern)
+            return parts.map((part, pIdx) =>
+              part.toLowerCase() === q.toLowerCase() ? (
+                <mark key={`${segIdx}-${pIdx}`} className="search-highlight">
+                  {part}
+                </mark>
+              ) : (
+                part
+              )
+            )
+          }
+
+          return seg
+        })}
       </span>
     )
   }
@@ -443,11 +867,12 @@ function App() {
       }
 
       setActiveChat((current) => {
-        if (current && nextFriends.some((friend) => friend.id === current.id)) {
-          return current
+        if (current) {
+          const updated = nextFriends.find((friend) => friend.id === current.id)
+          if (updated) {
+            return { ...current, ...updated }
+          }
         }
-
-        // Do not auto-select: user must click on a chat to open it
         return null
       })
     } catch (error) {
@@ -489,7 +914,8 @@ function App() {
         if (
           prev.length === incoming.length &&
           prev.length > 0 &&
-          prev[prev.length - 1]?.id === incoming[incoming.length - 1]?.id
+          prev[prev.length - 1]?.id === incoming[incoming.length - 1]?.id &&
+          prev[prev.length - 1]?.is_read === incoming[incoming.length - 1]?.is_read
         ) {
           return prev
         }
@@ -832,17 +1258,6 @@ function App() {
     }
   }
 
-  const formatDate = (value) => {
-    if (!value) return ''
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return ''
-    return date.toLocaleDateString('vi-VN', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    })
-  }
-
   const handleLogout = () => {
     localStorage.removeItem('cloudchat_token')
     setCurrentUser(null)
@@ -854,21 +1269,6 @@ function App() {
     setUsername('')
     setPassword('')
     setError('')
-  }
-
-  const formatTime = (value) => {
-    if (!value) return ''
-
-    const date = new Date(value)
-
-    if (Number.isNaN(date.getTime())) {
-      return ''
-    }
-
-    return date.toLocaleTimeString('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
   }
 
   const loadFriendRequests = async () => {
@@ -1192,7 +1592,7 @@ function App() {
 
                 <div className="tg-menu-divider" />
 
-                {/* + Add Account */}
+                {/* ➕ Thêm bạn bè */}
                 <button
                   className="tg-menu-item"
                   onClick={() => {
@@ -1202,11 +1602,13 @@ function App() {
                 >
                   <span className="tg-menu-icon">
                     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="5" x2="12" y2="19"></line>
-                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="8.5" cy="7" r="4"></circle>
+                      <line x1="20" y1="8" x2="20" y2="14"></line>
+                      <line x1="23" y1="11" x2="17" y2="11"></line>
                     </svg>
                   </span>
-                  <span>Add Account</span>
+                  <span>Thêm bạn bè</span>
                 </button>
 
                 {/* 👤 My Profile */}
@@ -1223,43 +1625,26 @@ function App() {
                       <circle cx="12" cy="7" r="4"></circle>
                     </svg>
                   </span>
-                  <span>My Profile</span>
+                  <span>Hồ sơ</span>
                 </button>
 
-                {/* 🔖 Saved Messages */}
+                {/* 👥 Bạn bè */}
                 <button
                   className="tg-menu-item"
                   onClick={() => {
                     setShowMenu(false)
-                    alert('Saved Messages: Không gian lưu trữ đám mây và tin nhắn cá nhân của bạn trên CloudChat!')
+                    setFolderTab('friends')
                   }}
                 >
                   <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-                    </svg>
-                  </span>
-                  <span>Saved Messages</span>
-                </button>
-
-                {/* 👥 Contacts */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    loadFriendRequests()
-                    setShowContactsModal(true)
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                       <circle cx="9" cy="7" r="4"></circle>
                       <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
                       <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
                     </svg>
                   </span>
-                  <span>Contacts</span>
+                  <span>Bạn bè</span>
                   <span className="tg-menu-badge">{friends.length}</span>
                 </button>
 
@@ -1297,7 +1682,7 @@ function App() {
                       <line x1="21" y1="12" x2="9" y2="12"></line>
                     </svg>
                   </span>
-                  <span>Log Out</span>
+                  <span>Đăng xuất</span>
                 </button>
               </div>
             )}
@@ -1364,7 +1749,7 @@ function App() {
                       }}
                     />
                   ) : (
-                    (friend.display_name || friend.username).charAt(0).toUpperCase()
+                    getFriendName(friend).charAt(0).toUpperCase()
                   )}
                   <div className="tg-online-dot" />
                 </div>
@@ -1372,7 +1757,7 @@ function App() {
                 <div className="tg-chat-info">
                   <div className="tg-chat-top">
                     <span className="tg-chat-name">
-                      {friend.display_name || friend.username}
+                      {getFriendName(friend)}
                     </span>
                     <span className="tg-chat-time">
                       {friend.created_at ? formatTime(friend.created_at) : ''}
@@ -1413,10 +1798,18 @@ function App() {
           <div className="tg-chat-window">
             {/* Chat Header */}
             <header className="tg-chat-header">
-              <div className="tg-chat-header-left">
+              <div
+                className="tg-chat-header-left"
+                style={{ cursor: 'pointer' }}
+                onClick={() => setShowChatInfo((prev) => !prev)}
+                title="Bấm để xem thông tin hội thoại"
+              >
                 <button
                   className="tg-icon-btn tg-back-btn"
-                  onClick={() => setActiveChat(null)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setActiveChat(null)
+                  }}
                   title="Quay lại danh sách chat"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1435,27 +1828,34 @@ function App() {
                       }}
                     />
                   ) : (
-                    (activeChat.display_name || activeChat.username).charAt(0).toUpperCase()
+                    getFriendName(activeChat).charAt(0).toUpperCase()
                   )}
                   <div className="tg-online-dot" />
                 </div>
                 <div className="tg-header-details">
-                  <strong>{activeChat.display_name || activeChat.username}</strong>
+                  <strong>{getFriendName(activeChat)}</strong>
                   <span>{activeChat.bio ? `${activeChat.bio}` : 'online'}</span>
                 </div>
               </div>
 
               <div className="tg-header-actions">
-                <button className="tg-icon-btn" title="Tìm kiếm tin nhắn">
+                {/* Nút tìm kiếm trong đoạn chat */}
+                <button
+                  className={`tg-icon-btn ${showChatSearch ? 'active' : ''}`}
+                  title="Tìm kiếm trong đoạn chat"
+                  onClick={() => setShowChatSearch((prev) => !prev)}
+                >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                   </svg>
                 </button>
+
+                {/* Nút i để xem Thông tin hội thoại */}
                 <button
-                  className="tg-icon-btn"
-                  title="Thông tin người dùng"
-                  onClick={handleOpenProfileModal}
+                  className={`tg-icon-btn ${showChatInfo ? 'active' : ''}`}
+                  title="Thông tin hội thoại"
+                  onClick={() => setShowChatInfo((prev) => !prev)}
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10"></circle>
@@ -1465,6 +1865,61 @@ function App() {
                 </button>
               </div>
             </header>
+
+            {/* In-chat Search Bar (Thanh tìm kiếm trong đoạn chat) */}
+            {showChatSearch && (
+              <div className="tg-inchat-search-bar">
+                <div className="tg-inchat-search-input-wrap">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#727e90' }}>
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Tìm kiếm tin nhắn trong đoạn chat..."
+                    value={chatSearchQuery}
+                    onChange={(e) => setChatSearchQuery(e.target.value)}
+                    autoFocus
+                  />
+                  {chatSearchQuery && (
+                    <span className="tg-search-count-badge">
+                      {matchingMessageIds.length > 0
+                        ? `${chatSearchIndex + 1} / ${matchingMessageIds.length}`
+                        : '0 kết quả'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="tg-inchat-search-actions">
+                  <button
+                    className="tg-search-nav-btn"
+                    title="Tin nhắn trước"
+                    onClick={handlePrevSearchMatch}
+                    disabled={matchingMessageIds.length === 0}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    className="tg-search-nav-btn"
+                    title="Tin nhắn tiếp theo"
+                    onClick={handleNextSearchMatch}
+                    disabled={matchingMessageIds.length === 0}
+                  >
+                    ▼
+                  </button>
+                  <button
+                    className="tg-search-nav-btn"
+                    title="Đóng tìm kiếm"
+                    onClick={() => {
+                      setShowChatSearch(false)
+                      setChatSearchQuery('')
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Telegram Messages Scroll */}
             <div className="tg-messages-scroll">
@@ -1481,10 +1936,10 @@ function App() {
                     {activeChat.avatar_url ? (
                       <img src={activeChat.avatar_url} alt="" className="avatar-img" />
                     ) : (
-                      (activeChat.display_name || activeChat.username).charAt(0).toUpperCase()
+                      getFriendName(activeChat).charAt(0).toUpperCase()
                     )}
                   </div>
-                  <h3>{activeChat.display_name || activeChat.username}</h3>
+                  <h3>{getFriendName(activeChat)}</h3>
                   <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
                 </div>
               ) : (
@@ -1493,14 +1948,20 @@ function App() {
                     currentUser?.id != null &&
                     String(item.sender_id) === String(currentUser.id)
                   )
+                  const isCurrentMatch =
+                    matchingMessageIds.length > 0 &&
+                    matchingMessageIds[chatSearchIndex] === item.id
 
                   return (
                     <div
                       className={`tg-msg-row ${isMine ? 'mine' : 'theirs'}`}
+                      id={`msg-${item.id}`}
                       key={item.id}
                     >
-                      <div className="tg-msg-bubble">
-                        <span className="tg-msg-text">{item.content}</span>
+                      <div className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''}`}>
+                        <div className="tg-msg-text">
+                          {renderMessageContent(item.content, chatSearchQuery)}
+                        </div>
                         <div className="tg-msg-meta">
                           <small>{formatTime(item.created_at)}</small>
                           {isMine && <span className="tg-msg-check">✓✓</span>}
@@ -1513,9 +1974,22 @@ function App() {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Hidden File Picker Input */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+              style={{ display: 'none' }}
+            />
+
             {/* Telegram Message Input Pill */}
             <div className="tg-input-area">
-              <button className="tg-icon-btn tg-attach-btn" title="Đính kèm tệp">
+              <button
+                className="tg-icon-btn tg-attach-btn"
+                title="Đính kèm ảnh / video / tệp tin"
+                onClick={handleAttachmentClick}
+              >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
                 </svg>
@@ -1527,6 +2001,7 @@ function App() {
                 placeholder="Viết tin nhắn..."
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
+                onPaste={handleInputPaste}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault()
@@ -1557,6 +2032,252 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Thông tin hội thoại Panel (Khớp với Ảnh 1 & Ảnh 2) */}
+      {activeChat && showChatInfo && (
+        <aside className="tg-info-panel">
+          {/* Header */}
+          <div className="tg-info-header">
+            <h3>Thông tin hội thoại</h3>
+            <button
+              className="tg-icon-btn"
+              onClick={() => setShowChatInfo(false)}
+              title="Đóng thông tin hội thoại"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="tg-info-body">
+            {/* User Card: Avatar lớn + Tên + Nút sửa biệt danh (Ảnh 1) */}
+            <div className="tg-info-user-card">
+              <div className="tg-info-avatar-large">
+                {activeChat.avatar_url ? (
+                  <img
+                    src={activeChat.avatar_url}
+                    alt=""
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none'
+                    }}
+                  />
+                ) : (
+                  getFriendName(activeChat).charAt(0).toUpperCase()
+                )}
+              </div>
+
+              {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
+              <div className="tg-info-name-wrap">
+                <h2>{getFriendName(activeChat)}</h2>
+                <button
+                  className="tg-edit-nickname-btn"
+                  title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
+                  onClick={() => {
+                    setNicknameInput(
+                      nicknames[activeChat.id] ||
+                        activeChat.display_name ||
+                        activeChat.username ||
+                        ''
+                    )
+                    setEditingNickname(true)
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
+              </div>
+
+              {nicknames[activeChat.id] && (
+                <p className="tg-info-original-name">
+                  Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
+                </p>
+              )}
+              {!nicknames[activeChat.id] && (
+                <p className="tg-info-original-name">@{activeChat.username}</p>
+              )}
+
+              {activeChat.bio && <p className="tg-info-bio">{activeChat.bio}</p>}
+            </div>
+
+            {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
+            <div className="tg-accordion-section">
+              <button
+                className={`tg-accordion-header ${accordionOpen.media ? 'open' : ''}`}
+                onClick={() =>
+                  setAccordionOpen((prev) => ({ ...prev, media: !prev.media }))
+                }
+              >
+                <span>Ảnh/Video ({chatMediaItems.length})</span>
+                <span className="chevron">▾</span>
+              </button>
+
+              {accordionOpen.media && (
+                <div className="tg-accordion-content">
+                  {chatMediaItems.length > 0 ? (
+                    <>
+                      <div className="tg-media-grid">
+                        {chatMediaItems.slice(0, 8).map((media, idx) => (
+                          <div
+                            className="tg-media-thumb"
+                            key={idx}
+                            onClick={() => setPreviewMediaUrl(media.url)}
+                            title="Bấm để xem ảnh phóng to"
+                          >
+                            {media.type === 'video' ? (
+                              <video src={media.url} />
+                            ) : (
+                              <img
+                                src={media.url}
+                                alt=""
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none'
+                                }}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      {chatMediaItems.length > 8 && (
+                        <button
+                          className="tg-view-all-btn"
+                          onClick={() => {
+                            setPreviewMediaUrl(chatMediaItems[0].url)
+                          }}
+                        >
+                          Xem tất cả ({chatMediaItems.length})
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="tg-file-empty-note">
+                      Chưa có ảnh hoặc video nào được gửi
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Phần Lịch Sử File (Chỉ hiện file thực tế của 2 người) */}
+            <div className="tg-accordion-section">
+              <button
+                className={`tg-accordion-header ${accordionOpen.files ? 'open' : ''}`}
+                onClick={() =>
+                  setAccordionOpen((prev) => ({ ...prev, files: !prev.files }))
+                }
+              >
+                <span>File ({chatFileItems.length})</span>
+                <span className="chevron">▾</span>
+              </button>
+
+              {accordionOpen.files && (
+                <div className="tg-accordion-content">
+                  {chatFileItems.length > 0 ? (
+                    <div className="tg-files-list">
+                      {chatFileItems.map((file, idx) => (
+                        <a
+                          href={file.url || '#'}
+                          download={file.name}
+                          className="tg-file-row"
+                          key={idx}
+                          title={`Bấm để tải về: ${file.name}`}
+                          style={{ textDecoration: 'none', color: 'inherit' }}
+                        >
+                          <div className="tg-file-icon">📄</div>
+                          <div className="tg-file-info">
+                            <strong>{file.name}</strong>
+                            <span>{file.size} • {file.date}</span>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="tg-file-empty-note">
+                      Chưa có tệp tin nào được gửi
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Phần Lịch Sử Link (Chỉ hiện liên kết thực tế của 2 người) */}
+            <div className="tg-accordion-section">
+              <button
+                className={`tg-accordion-header ${accordionOpen.links ? 'open' : ''}`}
+                onClick={() =>
+                  setAccordionOpen((prev) => ({ ...prev, links: !prev.links }))
+                }
+              >
+                <span>Link ({chatLinkItems.length})</span>
+                <span className="chevron">▾</span>
+              </button>
+
+              {accordionOpen.links && (
+                <div className="tg-accordion-content">
+                  {chatLinkItems.length > 0 ? (
+                    <div className="tg-links-list">
+                      {chatLinkItems.map((link, idx) => (
+                        <a
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="tg-link-row"
+                          key={idx}
+                        >
+                          <div className={`tg-link-icon-box ${link.iconType || 'generic'}`}>
+                            {link.iconType === 'github' ? (
+                              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                              </svg>
+                            ) : link.iconType === 'meet' ? (
+                              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                <rect x="2" y="5" width="13" height="14" rx="2" fill="#ffbb00"/>
+                                <polygon points="17 9 22 6 22 18 17 15" fill="#f44336"/>
+                              </svg>
+                            ) : (
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                              </svg>
+                            )}
+                          </div>
+
+                          <div className="tg-link-details">
+                            <span className="tg-link-title">{link.title}</span>
+                            <span className="tg-link-domain">{link.domain}</span>
+                          </div>
+
+                          <span className="tg-link-date">{link.date}</span>
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="tg-file-empty-note">
+                      Chưa có liên kết nào được gửi
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {/* Lightbox Preview Modal cho Ảnh / Video */}
+      {previewMediaUrl && (
+        <div className="tg-lightbox-overlay" onClick={() => setPreviewMediaUrl(null)}>
+          <div className="tg-lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="tg-lightbox-close"
+              onClick={() => setPreviewMediaUrl(null)}
+              title="Đóng xem ảnh"
+            >
+              ✕
+            </button>
+            <img src={previewMediaUrl} alt="Preview" className="tg-lightbox-img" />
+          </div>
+        </div>
+      )}
 
       {/* Contacts Modal (Danh bạ bạn bè) */}
       {showContactsModal && (
@@ -1987,6 +2708,66 @@ function App() {
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Đặt tên gợi nhớ (Khớp theo ảnh người dùng) */}
+      {editingNickname && activeChat && (
+        <div className="modal-overlay" onClick={() => setEditingNickname(false)}>
+          <div className="tg-nickname-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="tg-nickname-modal-header">
+              <h3>Đặt tên gợi nhớ</h3>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                handleSaveNickname(activeChat.id, nicknameInput)
+              }}
+            >
+              <div className="tg-nickname-modal-body">
+                <img
+                  src={
+                    activeChat.avatar_url ||
+                    `https://api.dicebear.com/7.x/bottts/svg?seed=${activeChat.username}`
+                  }
+                  alt=""
+                  className="tg-nickname-avatar"
+                  onError={(e) => {
+                    e.currentTarget.src = `https://api.dicebear.com/7.x/bottts/svg?seed=${activeChat.username}`
+                  }}
+                />
+
+                <p className="tg-nickname-guide">
+                  Hãy đặt cho <strong>{activeChat.display_name || activeChat.username}</strong> một cái tên dễ nhớ.
+                  <span>Lưu ý: Tên gợi nhớ sẽ chỉ hiển thị riêng với bạn.</span>
+                </p>
+
+                <input
+                  type="text"
+                  className="tg-nickname-input"
+                  value={nicknameInput}
+                  onChange={(e) => setNicknameInput(e.target.value)}
+                  placeholder="Nhập tên gợi nhớ..."
+                  autoFocus
+                  onFocus={(e) => e.target.select()}
+                />
+              </div>
+
+              <div className="tg-nickname-modal-footer">
+                <button
+                  type="button"
+                  className="tg-nickname-cancel-btn"
+                  onClick={() => setEditingNickname(false)}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="tg-nickname-confirm-btn">
+                  Xác nhận
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
