@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import './App.css'
 
 const API_BASE = 'http://localhost:8787'
@@ -62,6 +62,339 @@ function App() {
   const [searchFriendError, setSearchFriendError] = useState('')
   const [searchFriendSuccess, setSearchFriendSuccess] = useState('')
   const [searchFriendLoading, setSearchFriendLoading] = useState(false)
+
+  // Custom Nicknames State (Chỉ 1 mình mình thấy tên)
+  const [nicknames, setNicknames] = useState({})
+  const [editingNickname, setEditingNickname] = useState(false)
+  const [nicknameInput, setNicknameInput] = useState('')
+
+  // In-Chat Search State (Nút tìm kiếm trong đoạn chat)
+  const [showChatSearch, setShowChatSearch] = useState(false)
+  const [chatSearchQuery, setChatSearchQuery] = useState('')
+  const [chatSearchIndex, setChatSearchIndex] = useState(0)
+
+  // Conversation Info Panel State ("Thông tin hội thoại" - Nút i)
+  const [showChatInfo, setShowChatInfo] = useState(false)
+  const [accordionOpen, setAccordionOpen] = useState({
+    media: true,
+    files: true,
+    links: true,
+  })
+  const [previewMediaUrl, setPreviewMediaUrl] = useState(null)
+  const fileInputRef = useRef(null)
+
+  // Sync nicknames per user account
+  useEffect(() => {
+    if (!currentUser?.id) return
+    try {
+      const key = `cloudchat_nicknames_${currentUser.id}`
+      const saved = localStorage.getItem(key)
+      if (saved) {
+        setNicknames(JSON.parse(saved))
+      } else {
+        setNicknames({})
+      }
+    } catch {
+      setNicknames({})
+    }
+  }, [currentUser?.id])
+
+  const getFriendName = (friend) => {
+    if (!friend) return ''
+    if (nicknames[friend.id]) return nicknames[friend.id]
+    return friend.display_name || friend.username
+  }
+
+  const handleSaveNickname = (friendId, newNickname) => {
+    const trimmed = newNickname.trim()
+    const updated = { ...nicknames }
+    if (trimmed) {
+      updated[friendId] = trimmed
+    } else {
+      delete updated[friendId]
+    }
+    setNicknames(updated)
+    if (currentUser?.id) {
+      localStorage.setItem(
+        `cloudchat_nicknames_${currentUser.id}`,
+        JSON.stringify(updated)
+      )
+    }
+    setEditingNickname(false)
+  }
+
+  // Reset in-chat search & info panel when activeChat changes
+  useEffect(() => {
+    setShowChatSearch(false)
+    setChatSearchQuery('')
+    setChatSearchIndex(0)
+    setEditingNickname(false)
+  }, [activeChat?.id])
+
+  // Calculate matching messages for in-chat search
+  const matchingMessageIds = useMemo(() => {
+    const q = chatSearchQuery.trim().toLowerCase()
+    if (!q) return []
+    return messages
+      .filter((m) => m.content && m.content.toLowerCase().includes(q))
+      .map((m) => m.id)
+  }, [chatSearchQuery, messages])
+
+  useEffect(() => {
+    setChatSearchIndex(0)
+  }, [chatSearchQuery])
+
+  useEffect(() => {
+    if (matchingMessageIds.length > 0) {
+      const targetId = matchingMessageIds[chatSearchIndex]
+      const el = document.getElementById(`msg-${targetId}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  }, [chatSearchIndex, matchingMessageIds])
+
+  const handleNextSearchMatch = () => {
+    if (matchingMessageIds.length === 0) return
+    setChatSearchIndex((prev) => (prev + 1) % matchingMessageIds.length)
+  }
+
+  const handlePrevSearchMatch = () => {
+    if (matchingMessageIds.length === 0) return
+    setChatSearchIndex(
+      (prev) => (prev - 1 + matchingMessageIds.length) % matchingMessageIds.length
+    )
+  }
+
+  // Extract media, files and links from messages + seeded items matching Image 2
+  const { chatMediaItems, chatFileItems, chatLinkItems } = useMemo(() => {
+    const defaultMedia = [
+      { id: 'm1', type: 'image', url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&h=400&fit=crop' },
+      { id: 'm2', type: 'image', url: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=400&h=400&fit=crop' },
+      { id: 'm3', type: 'image', url: 'https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=400&fit=crop' },
+      { id: 'm4', type: 'image', url: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=400&h=400&fit=crop' },
+      { id: 'm5', type: 'image', url: 'https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=400&h=400&fit=crop' },
+      { id: 'm6', type: 'image', url: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=400&h=400&fit=crop' },
+      { id: 'm7', type: 'image', url: 'https://images.unsplash.com/photo-1504639725590-34d0984388bd?w=400&h=400&fit=crop' },
+      { id: 'm8', type: 'image', url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400&h=400&fit=crop' },
+    ]
+
+    const defaultLinks = [
+      {
+        url: 'https://github.com/duykhang020806/CloudChat',
+        title: 'GitHub - duykhang020806/CloudChat: Web application chat on cloud',
+        domain: 'github.com',
+        iconType: 'github',
+        date: 'Hôm nay',
+      },
+      {
+        url: 'https://meet.google.com/abc-defg-hij',
+        title: 'Meet',
+        domain: 'meet.google.com',
+        iconType: 'meet',
+        date: 'Hôm nay',
+      },
+      {
+        url: 'http://localhost:8787/api/auth/login',
+        title: 'http://localhost:8787/api/auth/login',
+        domain: 'localhost',
+        iconType: 'generic',
+        date: 'Hôm qua',
+      },
+    ]
+
+    const foundMedia = []
+    const foundFiles = []
+    const foundLinks = []
+
+    messages.forEach((m) => {
+      if (!m.content) return
+      const text = m.content
+
+      // Check media
+      const imgMatch = text.match(/(https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg))|(data:image\/[a-z]+;base64,[^\s]+)/gi)
+      if (imgMatch) {
+        imgMatch.forEach((url) => {
+          foundMedia.unshift({ id: m.id, type: 'image', url })
+        })
+      }
+
+      // Check video
+      const vidMatch = text.match(/https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)/gi)
+      if (vidMatch) {
+        vidMatch.forEach((url) => {
+          foundMedia.unshift({ id: m.id, type: 'video', url })
+        })
+      }
+
+      // Check files
+      const fileMatch = text.match(/https?:\/\/[^\s]+?\.(?:pdf|docx?|xlsx?|zip|rar|txt|csv)/gi)
+      if (fileMatch || m.type === 'file') {
+        foundFiles.unshift({
+          id: m.id,
+          name: text.split('/').pop() || 'Tài liệu chia sẻ',
+          size: '1.2 MB',
+          date: formatTime(m.created_at) || 'Hôm nay',
+        })
+      }
+
+      // Check general links
+      const linkMatch = text.match(/https?:\/\/[^\s]+/gi)
+      if (linkMatch) {
+        linkMatch.forEach((url) => {
+          let domain = 'web'
+          let iconType = 'generic'
+          try {
+            const u = new URL(url)
+            domain = u.hostname
+            if (domain.includes('github.com')) iconType = 'github'
+            else if (domain.includes('meet.google.com')) iconType = 'meet'
+          } catch {}
+
+          foundLinks.unshift({
+            url,
+            title: url,
+            domain,
+            iconType,
+            date: formatTime(m.created_at) || 'Hôm nay',
+          })
+        })
+      }
+    })
+
+    return {
+      chatMediaItems: foundMedia.length > 0 ? foundMedia : defaultMedia,
+      chatFileItems: foundFiles,
+      chatLinkItems: foundLinks.length > 0 ? foundLinks : defaultLinks,
+    }
+  }, [messages])
+
+  // Handle attachment selection & sending
+  const handleAttachmentClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!activeChat) return
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const content = reader.result
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/protected/messages/${activeChat.id}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              content,
+            }),
+          }
+        )
+
+        const data = await response.json()
+        if (data.success && data.message) {
+          setMessages((current) => [...current, data.message])
+        }
+      } catch (err) {
+        console.error('Send attachment error:', err)
+      }
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  // Render message content with highlights and clickable links
+  const renderMessageContent = (content, highlightQuery) => {
+    if (!content) return null
+
+    // Check if whole content is image
+    const isImage =
+      content.startsWith('data:image/') ||
+      /\.(jpeg|jpg|gif|png|webp|svg)($|\?)/i.test(content)
+    if (isImage) {
+      return (
+        <img
+          src={content}
+          alt="attachment"
+          style={{
+            maxWidth: '100%',
+            maxHeight: 280,
+            borderRadius: 12,
+            display: 'block',
+            cursor: 'pointer',
+          }}
+          onClick={() => setPreviewMediaUrl(content)}
+        />
+      )
+    }
+
+    // Check if whole content is video
+    const isVideo =
+      content.startsWith('data:video/') ||
+      /\.(mp4|webm|mov|ogg)($|\?)/i.test(content)
+    if (isVideo) {
+      return (
+        <video
+          controls
+          src={content}
+          style={{ maxWidth: '100%', borderRadius: 12, display: 'block' }}
+        />
+      )
+    }
+
+    // If search highlight query is active
+    const q = highlightQuery.trim()
+    if (q) {
+      const parts = content.split(
+        new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+      )
+      return (
+        <span>
+          {parts.map((part, index) =>
+            part.toLowerCase() === q.toLowerCase() ? (
+              <mark key={index} className="search-highlight">
+                {part}
+              </mark>
+            ) : (
+              part
+            )
+          )}
+        </span>
+      )
+    }
+
+    // Make links clickable
+    const urlRegex = /(https?:\/\/[^\s]+)/gi
+    const parts = content.split(urlRegex)
+    return (
+      <span>
+        {parts.map((part, index) =>
+          urlRegex.test(part) ? (
+            <a
+              key={index}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#93c5fd', textDecoration: 'underline' }}
+            >
+              {part}
+            </a>
+          ) : (
+            part
+          )
+        )}
+      </span>
+    )
+  }
 
   // Close hamburger menu on click outside
   useEffect(() => {
@@ -644,7 +977,7 @@ function App() {
 
   const filteredFriends = friends.filter((friend) => {
     const query = search.toLowerCase()
-    const nameMatch = (friend.display_name || '').toLowerCase().includes(query)
+    const nameMatch = getFriendName(friend).toLowerCase().includes(query)
     const usernameMatch = friend.username.toLowerCase().includes(query)
     return nameMatch || usernameMatch
   })
