@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import './App.css'
 
-const API_BASE = 'http://localhost:8787'
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8787'
+    : '')
 
 const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -42,6 +46,19 @@ function formatDate(value) {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+  })
+}
+
+function formatFullDateTime(value) {
+  const date = parseUtcDate(value)
+  if (!date) return ''
+  return date.toLocaleString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
   })
 }
 
@@ -121,6 +138,41 @@ function formatLastMessagePreview(friend, currentUser) {
   return `${prefix}${content}`
 }
 
+function getFriendInitials(name) {
+  if (!name || !name.trim()) return '?'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+  return name.trim().charAt(0).toUpperCase()
+}
+
+function getFirstCharGroup(name) {
+  if (!name || !name.trim()) return '#'
+  const first = name.trim().charAt(0).toUpperCase()
+  if (first === 'Đ') return 'Đ'
+  const base = first.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  if (/^[A-Z]$/.test(base)) return base
+  return '#'
+}
+
+function getAvatarGradient(seed) {
+  const gradients = [
+    'linear-gradient(135deg, #f97316, #fb923c)', // Warm orange (matching BT in user image)
+    'linear-gradient(135deg, #6366f1, #3b82f6)', // Indigo blue
+    'linear-gradient(135deg, #8b5cf6, #ec4899)', // Purple pink
+    'linear-gradient(135deg, #10b981, #06b6d4)', // Emerald cyan
+    'linear-gradient(135deg, #ef4444, #f59e0b)', // Amber red
+    'linear-gradient(135deg, #0ea5e9, #6366f1)', // Sky indigo
+  ]
+  let hash = 0
+  const str = String(seed || '')
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  return gradients[Math.abs(hash) % gradients.length]
+}
+
 function renderHighlightedSnippet(content, query) {
   if (!content) return null
   let text = content
@@ -164,6 +216,15 @@ function renderHighlightedSnippet(content, query) {
       )}
       {suffix}
     </span>
+  )
+}
+
+function isImageMessage(content) {
+  if (!content) return false
+  const trimmed = content.trim()
+  return (
+    trimmed.startsWith('data:image/') ||
+    /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(trimmed)
   )
 }
 
@@ -249,7 +310,7 @@ function parseAttachment(content) {
           url: p.data || '',
         }
       }
-    } catch {}
+    } catch { }
   }
 
   // 2. Data URL document (non-image, non-video)
@@ -301,6 +362,8 @@ function App() {
   const [registerDisplayName, setRegisterDisplayName] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
+  const [authSuccess, setAuthSuccess] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
 
@@ -314,6 +377,31 @@ function App() {
   const [message, setMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const messagesEndRef = useRef(null)
+
+  // Auto-hide scrollbars after 3 seconds of inactivity (show only when scrolling/mouse wheel)
+  useEffect(() => {
+    let scrollTimeout = null
+    const handleScrollActivity = () => {
+      document.body.classList.add('is-scrolling')
+      if (scrollTimeout) {
+        clearTimeout(scrollTimeout)
+      }
+      scrollTimeout = setTimeout(() => {
+        document.body.classList.remove('is-scrolling')
+      }, 3000)
+    }
+
+    window.addEventListener('scroll', handleScrollActivity, { capture: true, passive: true })
+    window.addEventListener('wheel', handleScrollActivity, { passive: true })
+
+    return () => {
+      window.removeEventListener('scroll', handleScrollActivity, { capture: true })
+      window.removeEventListener('wheel', handleScrollActivity)
+      if (scrollTimeout) {
+        clearTimeout(scrollTimeout)
+      }
+    }
+  }, [])
 
   // Profile Modal State
   const [showProfileModal, setShowProfileModal] = useState(false)
@@ -367,6 +455,16 @@ function App() {
   const [previewMediaUrl, setPreviewMediaUrl] = useState(null)
   const fileInputRef = useRef(null)
 
+  // Reply & Share State
+  const [replyingMessage, setReplyingMessage] = useState(null)
+  const [sharingMessage, setSharingMessage] = useState(null)
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('')
+  const [forwardSuccessMessage, setForwardSuccessMessage] = useState('')
+  const [forwardSending, setForwardSending] = useState({})
+  const [forwardSent, setForwardSent] = useState({})
+  const [copyToast, setCopyToast] = useState('')
+  const msgInputRef = useRef(null)
+
   // Sync nicknames per user account
   useEffect(() => {
     if (!currentUser?.id) return
@@ -407,12 +505,40 @@ function App() {
     setEditingNickname(false)
   }
 
+  // Group and sort friends alphabetically for "Bạn bè" tab (Images A, B headers)
+  const alphabeticalFriends = useMemo(() => {
+    const sorted = [...friends].sort((a, b) => {
+      const nameA = getFriendName(a).trim()
+      const nameB = getFriendName(b).trim()
+      return nameA.localeCompare(nameB, 'vi', { sensitivity: 'base' })
+    })
+
+    const groups = {}
+    sorted.forEach((friend) => {
+      const key = getFirstCharGroup(getFriendName(friend))
+      if (!groups[key]) groups[key] = []
+      groups[key].push(friend)
+    })
+
+    const keys = Object.keys(groups).sort((a, b) => {
+      if (a === '#') return 1
+      if (b === '#') return -1
+      return a.localeCompare(b, 'vi')
+    })
+
+    return keys.map((key) => ({
+      letter: key,
+      items: groups[key],
+    }))
+  }, [friends, nicknames])
+
   // Reset in-chat search & info panel when activeChat changes
   useEffect(() => {
     setShowChatSearch(false)
     setChatSearchQuery('')
     setChatSearchIndex(0)
     setEditingNickname(false)
+    setReplyingMessage(null)
   }, [activeChat?.id])
 
   // Global message search across all chats
@@ -450,6 +576,24 @@ function App() {
 
     return () => clearTimeout(timer)
   }, [search])
+
+  const handleSelectSearchResult = (res) => {
+    const friendObj = friends.find((f) => f.id === res.friend_id) || {
+      id: res.friend_id,
+      username: res.username,
+      display_name: res.display_name,
+      avatar_url: res.avatar_url,
+    }
+    setActiveChat(friendObj)
+    setTimeout(() => {
+      const el = document.getElementById(`msg-${res.id}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('search-active-bubble')
+        setTimeout(() => el.classList.remove('search-active-bubble'), 2500)
+      }
+    }, 350)
+  }
 
   // Calculate matching messages for in-chat search
   const matchingMessageIds = useMemo(() => {
@@ -524,6 +668,7 @@ function App() {
           name: att.fileName,
           size: formatFileSize(att.fileSize),
           url: att.url,
+          fileType: att.fileType,
           date: formatTime(m.created_at) || 'Hôm nay',
         })
       } else {
@@ -566,7 +711,7 @@ function App() {
               } else {
                 title = url
               }
-            } catch {}
+            } catch { }
 
             foundLinks.unshift({
               id: m.id,
@@ -589,6 +734,136 @@ function App() {
     }
   }, [messages])
 
+  // Snippet & Reply Helpers
+  const getMessageSnippet = (rawContent) => {
+    if (!rawContent) return 'Tin nhắn'
+    const trimmed = rawContent.trim()
+    const attachment = parseAttachment(trimmed)
+    if (attachment) {
+      return `📎 ${attachment.fileName}`
+    }
+    if (
+      trimmed.startsWith('data:image/') ||
+      /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(trimmed)
+    ) {
+      return '📷 Hình ảnh'
+    }
+    if (
+      trimmed.startsWith('data:video/') ||
+      /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?$/i.test(trimmed)
+    ) {
+      return '🎥 Video'
+    }
+    if (trimmed.length > 75) {
+      return trimmed.slice(0, 75) + '...'
+    }
+    return trimmed
+  }
+
+  const getReplyAuthorName = (item) => {
+    if (item.reply_sender_id != null) {
+      if (String(item.reply_sender_id) === String(currentUser?.id)) {
+        return 'Bạn'
+      }
+      return (
+        nicknames[item.reply_sender_id] ||
+        item.reply_sender_name ||
+        item.reply_sender_username ||
+        getFriendName(activeChat)
+      )
+    }
+    const found = messages.find((m) => m.id === item.reply_to_id)
+    if (found) {
+      if (String(found.sender_id) === String(currentUser?.id)) {
+        return 'Bạn'
+      }
+      return (
+        nicknames[found.sender_id] ||
+        getFriendName(activeChat)
+      )
+    }
+    return getFriendName(activeChat)
+  }
+
+  const getReplyContent = (item) => {
+    if (item.reply_content) return item.reply_content
+    const found = messages.find((m) => m.id === item.reply_to_id)
+    return found?.content || ''
+  }
+
+  const scrollToMessage = (msgId) => {
+    if (!msgId) return
+    const el = document.getElementById(`msg-${msgId}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('pulse-highlight')
+      setTimeout(() => {
+        el.classList.remove('pulse-highlight')
+      }, 1500)
+    }
+  }
+
+  const handleStartReply = (msg) => {
+    setReplyingMessage(msg)
+    msgInputRef.current?.focus()
+  }
+
+  const handleStartShare = (msg) => {
+    setSharingMessage(msg)
+    setForwardSearchQuery('')
+    setForwardSuccessMessage('')
+    setForwardSending({})
+    setForwardSent({})
+  }
+
+  const handleCopyMessage = (rawContent) => {
+    if (!rawContent) return
+    const attachment = parseAttachment(rawContent)
+    const textToCopy = attachment ? attachment.fileName : rawContent
+    navigator.clipboard
+      .writeText(textToCopy)
+      .then(() => {
+        setCopyToast('Đã sao chép tin nhắn!')
+        setTimeout(() => setCopyToast(''), 2000)
+      })
+      .catch(() => {})
+  }
+
+  const handleForwardMessage = async (targetFriendId, msg) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token || !msg) return
+
+    setForwardSending((prev) => ({ ...prev, [targetFriendId]: true }))
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/protected/messages/${targetFriendId}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            content: msg.content,
+          }),
+        }
+      )
+      const data = await response.json()
+      if (data.success) {
+        setForwardSent((prev) => ({ ...prev, [targetFriendId]: true }))
+        setForwardSuccessMessage('Đã chuyển tiếp tin nhắn thành công!')
+        if (activeChat && activeChat.id === targetFriendId && data.message) {
+          setMessages((prev) => [...prev, data.message])
+        }
+        loadFriends()
+      }
+    } catch (err) {
+      console.error('Forward failed:', err)
+    } finally {
+      setForwardSending((prev) => ({ ...prev, [targetFriendId]: false }))
+    }
+  }
+
   // Handle attachment selection & sending
   const handleAttachmentClick = () => {
     fileInputRef.current?.click()
@@ -608,6 +883,7 @@ function App() {
       return
     }
 
+    const replyId = replyingMessage?.id || null
     const reader = new FileReader()
     reader.onload = async () => {
       let content = reader.result
@@ -633,6 +909,7 @@ function App() {
             },
             body: JSON.stringify({
               content,
+              reply_to_id: replyId,
             }),
           }
         )
@@ -640,6 +917,8 @@ function App() {
         const data = await response.json()
         if (data.success && data.message) {
           setMessages((current) => [...current, data.message])
+          loadFriends()
+          setReplyingMessage(null)
         }
       } catch (err) {
         console.error('Send attachment error:', err)
@@ -670,6 +949,7 @@ function App() {
       const token = localStorage.getItem('cloudchat_token')
       if (!token) return
 
+      const replyId = replyingMessage?.id || null
       const reader = new FileReader()
       reader.onload = async () => {
         const content = reader.result
@@ -682,12 +962,17 @@ function App() {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${token}`,
               },
-              body: JSON.stringify({ content }),
+              body: JSON.stringify({
+                content,
+                reply_to_id: replyId,
+              }),
             }
           )
           const data = await response.json()
           if (data.success && data.message) {
             setMessages((current) => [...current, data.message])
+            loadFriends()
+            setReplyingMessage(null)
           }
         } catch (err) {
           console.error('Paste send image error:', err)
@@ -748,8 +1033,8 @@ function App() {
           alt="attachment"
           style={{
             maxWidth: '100%',
-            maxHeight: 280,
-            borderRadius: 12,
+            maxHeight: 340,
+            borderRadius: 14,
             display: 'block',
             cursor: 'pointer',
           }}
@@ -911,14 +1196,13 @@ function App() {
 
       const incoming = data.messages || []
       setMessages((prev) => {
-        if (
-          prev.length === incoming.length &&
-          prev.length > 0 &&
-          prev[prev.length - 1]?.id === incoming[incoming.length - 1]?.id &&
-          prev[prev.length - 1]?.is_read === incoming[incoming.length - 1]?.is_read
-        ) {
+        const hasChange =
+          prev.length !== incoming.length ||
+          prev.some((m, idx) => m.is_read !== incoming[idx]?.is_read)
+        if (!hasChange) {
           return prev
         }
+        loadFriends()
         return incoming
       })
     } catch (error) {
@@ -1012,6 +1296,8 @@ function App() {
 
     if (!token) return
 
+    const replyId = replyingMessage?.id || null
+
     try {
       const response = await fetch(
         `${API_BASE}/api/protected/messages/${activeChat.id}`,
@@ -1023,6 +1309,7 @@ function App() {
           },
           body: JSON.stringify({
             content: text,
+            reply_to_id: replyId,
           }),
         }
       )
@@ -1041,9 +1328,11 @@ function App() {
           }
           return [...current, data.message]
         })
+        loadFriends()
       }
 
       setMessage('')
+      setReplyingMessage(null)
     } catch (error) {
       console.error('Send message error:', error)
     }
@@ -1059,6 +1348,7 @@ function App() {
 
     setLoading(true)
     setError('')
+    setAuthSuccess('')
 
     try {
       const response = await fetch(`${API_BASE}/api/auth/login`, {
@@ -1114,6 +1404,7 @@ function App() {
 
     setLoading(true)
     setError('')
+    setAuthSuccess('')
 
     try {
       const response = await fetch(`${API_BASE}/api/auth/register`, {
@@ -1140,7 +1431,8 @@ function App() {
       setConfirmPassword('')
       setRegisterDisplayName('')
       setPage('login')
-      setError('Đăng ký thành công. Hãy đăng nhập.')
+      setError('')
+      setAuthSuccess('Đăng ký tài khoản thành công! Vui lòng đăng nhập.')
     } catch {
       setError('Không thể kết nối đến CloudChat Backend')
     } finally {
@@ -1269,6 +1561,8 @@ function App() {
     setUsername('')
     setPassword('')
     setError('')
+    setAuthSuccess('')
+    setShowPassword(false)
   }
 
   const loadFriendRequests = async () => {
@@ -1385,14 +1679,15 @@ function App() {
   if (page === 'loading') {
     return (
       <div className="auth-page">
-        <div className="auth-card">
-          <div className="brand">
-            <div className="brand-icon">C</div>
-            <div>
-              <h1>CloudChat</h1>
-              <p>Đang kết nối...</p>
-            </div>
+        <div className="auth-card loading-card">
+          <div className="auth-brand-badge pulse-logo">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+            </svg>
           </div>
+          <h1 className="auth-title">CloudChat</h1>
+          <p className="auth-subtitle">Đang khởi tạo kết nối bảo mật...</p>
+          <div className="tg-spinner" style={{ marginTop: 24 }}></div>
         </div>
       </div>
     )
@@ -1402,54 +1697,143 @@ function App() {
     return (
       <div className="auth-page">
         <div className="auth-card">
-          <div className="brand">
-            <div className="brand-icon">C</div>
-            <div>
-              <h1>CloudChat</h1>
-              <p>Chat trên nền tảng Cloud</p>
+          <div className="auth-header">
+            <div className="auth-brand-badge">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+              </svg>
             </div>
+            <h1 className="auth-title">CloudChat</h1>
+            <p className="auth-subtitle">Nền tảng nhắn tin bảo mật & kết nối đám mây</p>
           </div>
 
-          <div className="auth-heading">
-            <h2>Đăng nhập</h2>
-            <p>Đăng nhập để tiếp tục sử dụng CloudChat</p>
+          {/* Pill Tabs Switcher */}
+          <div className="auth-tabs">
+            <button
+              type="button"
+              className="auth-tab active"
+            >
+              Đăng nhập
+            </button>
+            <button
+              type="button"
+              className="auth-tab"
+              onClick={() => {
+                setError('')
+                setAuthSuccess('')
+                setPassword('')
+                setConfirmPassword('')
+                setPage('register')
+              }}
+            >
+              Đăng ký
+            </button>
           </div>
 
           <form onSubmit={handleLogin} className="auth-form">
-            <label>
-              Username
-              <input
-                type="text"
-                placeholder="Nhập username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Tài khoản (Username)</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                </span>
+                <input
+                  type="text"
+                  placeholder="Nhập username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
+                  required
+                />
+              </div>
+            </div>
 
-            <label>
-              Mật khẩu
-              <input
-                type="password"
-                placeholder="Nhập mật khẩu"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Mật khẩu</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
+                </span>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Nhập mật khẩu"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+                <button
+                  type="button"
+                  className="auth-input-toggle-btn"
+                  title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                    </svg>
+                  ) : (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
 
-            {error && <div className="auth-error">{error}</div>}
+            {authSuccess && (
+              <div className="auth-alert-box success">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <span>{authSuccess}</span>
+              </div>
+            )}
 
-            <button className="primary-button" type="submit" disabled={loading}>
-              {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
+            {error && (
+              <div className="auth-alert-box error">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <span>{error}</span>
+              </div>
+            )}
+
+            <button className="auth-submit-btn" type="submit" disabled={loading}>
+              {loading ? (
+                <span className="auth-btn-loading">
+                  <span className="tg-spinner sm"></span>
+                  <span>Đang đăng nhập...</span>
+                </span>
+              ) : (
+                'Đăng nhập'
+              )}
             </button>
           </form>
 
           <div className="auth-footer">
             <span>Chưa có tài khoản?</span>
-            <button type="button" onClick={() => {
-              setError('')
-              setPage('register')
-            }}>
-              Đăng ký
+            <button
+              type="button"
+              onClick={() => {
+                setError('')
+                setAuthSuccess('')
+                setPassword('')
+                setConfirmPassword('')
+                setPage('register')
+              }}
+            >
+              Đăng ký ngay
             </button>
           </div>
         </div>
@@ -1461,76 +1845,172 @@ function App() {
     return (
       <div className="auth-page">
         <div className="auth-card">
-          <div className="brand">
-            <div className="brand-icon">C</div>
-            <div>
-              <h1>CloudChat</h1>
-              <p>Chat trên nền tảng Cloud</p>
+          <div className="auth-header">
+            <div className="auth-brand-badge">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+              </svg>
             </div>
+            <h1 className="auth-title">Tạo tài khoản mới</h1>
+            <p className="auth-subtitle">Trở thành thành viên của cộng đồng CloudChat</p>
           </div>
 
-          <div className="auth-heading">
-            <h2>Tạo tài khoản</h2>
-            <p>Tham gia CloudChat ngay hôm nay</p>
+          {/* Pill Tabs Switcher */}
+          <div className="auth-tabs">
+            <button
+              type="button"
+              className="auth-tab"
+              onClick={() => {
+                setError('')
+                setAuthSuccess('')
+                setPassword('')
+                setConfirmPassword('')
+                setPage('login')
+              }}
+            >
+              Đăng nhập
+            </button>
+            <button
+              type="button"
+              className="auth-tab active"
+            >
+              Đăng ký
+            </button>
           </div>
 
           <form onSubmit={handleRegister} className="auth-form">
-            <label>
-              Tên hiển thị (Tùy chọn)
-              <input
-                type="text"
-                placeholder="Ví dụ: Duy Khang"
-                value={registerDisplayName}
-                onChange={(event) => setRegisterDisplayName(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Tên hiển thị (Tùy chọn)</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                </span>
+                <input
+                  type="text"
+                  placeholder="Ví dụ: Duy Khang"
+                  value={registerDisplayName}
+                  onChange={(event) => setRegisterDisplayName(event.target.value)}
+                />
+              </div>
+            </div>
 
-            <label>
-              Username
-              <input
-                type="text"
-                placeholder="Nhập username (3-30 ký tự)"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Username</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"></path>
+                  </svg>
+                </span>
+                <input
+                  type="text"
+                  placeholder="Nhập username (3-30 ký tự)"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
+                  required
+                />
+              </div>
+            </div>
 
-            <label>
-              Mật khẩu
-              <input
-                type="password"
-                placeholder="Ít nhất 6 ký tự"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Mật khẩu</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
+                </span>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Ít nhất 6 ký tự"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+                <button
+                  type="button"
+                  className="auth-input-toggle-btn"
+                  title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                    </svg>
+                  ) : (
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
 
-            <label>
-              Xác nhận mật khẩu
-              <input
-                type="password"
-                placeholder="Nhập lại mật khẩu"
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-              />
-            </label>
+            <div className="auth-input-group">
+              <label className="auth-label">Xác nhận mật khẩu</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  </svg>
+                </span>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Nhập lại mật khẩu"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </div>
+            </div>
 
-            {error && <div className="auth-error">{error}</div>}
+            {error && (
+              <div className="auth-alert-box error">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <span>{error}</span>
+              </div>
+            )}
 
-            <button className="primary-button" type="submit" disabled={loading}>
-              {loading ? 'Đang tạo tài khoản...' : 'Tạo tài khoản'}
+            <button className="auth-submit-btn" type="submit" disabled={loading}>
+              {loading ? (
+                <span className="auth-btn-loading">
+                  <span className="tg-spinner sm"></span>
+                  <span>Đang tạo tài khoản...</span>
+                </span>
+              ) : (
+                'Tạo tài khoản'
+              )}
             </button>
           </form>
 
           <div className="auth-footer">
             <span>Đã có tài khoản?</span>
-            <button type="button" onClick={() => {
-              setError('')
-              setConfirmPassword('')
-              setRegisterDisplayName('')
-              setPage('login')
-            }}>
-              Đăng nhập
+            <button
+              type="button"
+              onClick={() => {
+                setError('')
+                setAuthSuccess('')
+                setPassword('')
+                setConfirmPassword('')
+                setRegisterDisplayName('')
+                setPage('login')
+              }}
+            >
+              Đăng nhập ngay
             </button>
           </div>
         </div>
@@ -1662,7 +2142,7 @@ function App() {
                       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                     </svg>
                   </span>
-                  <span>Settings</span>
+                  <span>Cài đặt</span>
                 </button>
 
                 <div className="tg-menu-divider" />
@@ -1712,70 +2192,194 @@ function App() {
           </div>
         </div>
 
-        {/* Telegram Folders / Tabs Bar (Image 1) */}
-        <div className="tg-folders-bar">
-          <button
-            className={`tg-folder-tab ${folderTab === 'all' ? 'active' : ''}`}
-            onClick={() => setFolderTab('all')}
-          >
-            <span>All</span>
-            <span className="tg-folder-badge">{friends.length}</span>
-          </button>
-          <button
-            className={`tg-folder-tab ${folderTab === 'friends' ? 'active' : ''}`}
-            onClick={() => setFolderTab('friends')}
-          >
-            <span>Bạn bè</span>
-          </button>
-        </div>
+        {/* Global Search Results OR Telegram Folders & Chat List */}
+        {search.trim() ? (
+          <>
+            <div className="tg-search-category-bar">
+              <div className="tg-search-pill-category active">
+                Tin nhắn <span>({globalSearchResults.length})</span>
+              </div>
+            </div>
 
-        {/* Telegram Chat List */}
-        <div className="tg-chat-list">
-          {filteredFriends.length > 0 ? (
-            filteredFriends.map((friend) => (
+            <div className="tg-chat-list">
+              {searchLoading ? (
+                <div className="tg-empty-list">
+                  <div className="tg-spinner" style={{ margin: '20px auto' }} />
+                  <p>Đang tìm kiếm tin nhắn...</p>
+                </div>
+              ) : globalSearchResults.length > 0 ? (
+                globalSearchResults.map((res) => {
+                  const friendObj = friends.find((f) => f.id === res.friend_id) || {
+                    id: res.friend_id,
+                    username: res.username,
+                    display_name: res.display_name,
+                    avatar_url: res.avatar_url,
+                  }
+                  const displayName = getFriendName(friendObj)
+                  const isSelected = activeChat?.id === res.friend_id
+
+                  return (
+                    <button
+                      className={`tg-chat-item tg-search-result-item ${isSelected ? 'active' : ''}`}
+                      key={`search-msg-${res.id}`}
+                      onClick={() => handleSelectSearchResult(res)}
+                    >
+                      <div className="tg-avatar">
+                        {res.avatar_url ? (
+                          <img
+                            src={res.avatar_url}
+                            alt={res.username}
+                            className="avatar-img"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none'
+                            }}
+                          />
+                        ) : (
+                          displayName.charAt(0).toUpperCase()
+                        )}
+                      </div>
+
+                      <div className="tg-chat-info">
+                        <div className="tg-chat-top">
+                          <span className="tg-chat-name" title={displayName}>
+                            {displayName}
+                          </span>
+                          <span className="tg-chat-time">
+                            {formatChatListTime(res.created_at)}
+                          </span>
+                        </div>
+                        <div className="tg-chat-bottom">
+                          <div className="tg-chat-preview tg-search-snippet">
+                            {renderHighlightedSnippet(res.content, search)}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })
+              ) : (
+                <div className="tg-empty-list">
+                  <p>Không tìm thấy tin nhắn nào chứa "{search}"</p>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Folders / Tabs Bar (Pill style matching user screenshot) */}
+            <div className="tg-folders-bar">
               <button
-                className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
-                key={friend.id}
-                onClick={() => setActiveChat(friend)}
+                className={`tg-folder-tab ${folderTab === 'all' ? 'active' : ''}`}
+                onClick={() => setFolderTab('all')}
               >
-                <div className="tg-avatar">
-                  {friend.avatar_url ? (
-                    <img
-                      src={friend.avatar_url}
-                      alt={friend.username}
-                      className="avatar-img"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none'
-                      }}
-                    />
-                  ) : (
-                    getFriendName(friend).charAt(0).toUpperCase()
-                  )}
-                  <div className="tg-online-dot" />
-                </div>
-
-                <div className="tg-chat-info">
-                  <div className="tg-chat-top">
-                    <span className="tg-chat-name">
-                      {getFriendName(friend)}
-                    </span>
-                    <span className="tg-chat-time">
-                      {friend.created_at ? formatTime(friend.created_at) : ''}
-                    </span>
-                  </div>
-                  <div className="tg-chat-bottom">
-                    <span className="tg-chat-preview">
-                      {friend.bio || 'Nhấn để mở cuộc trò chuyện'}
-                    </span>
-                  </div>
-                </div>
+                <span>Tất cả</span>
               </button>
-            ))
-          ) : (
-            <div className="tg-empty-list">
-              {friends.length === 0 ? (
-                <div>
-                  <p>Chưa có cuộc trò chuyện nào.</p>
+              <button
+                className={`tg-folder-tab ${folderTab === 'friends' ? 'active' : ''}`}
+                onClick={() => setFolderTab('friends')}
+              >
+                <span>Bạn bè</span>
+              </button>
+            </div>
+
+            {/* Chat / Friends List */}
+            <div className="tg-chat-list">
+              {friends.length > 0 ? (
+                folderTab === 'all' ? (
+                  friends.map((friend) => (
+                    <button
+                      className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
+                      key={friend.id}
+                      onClick={() => setActiveChat(friend)}
+                    >
+                      <div
+                        className="tg-avatar"
+                        style={{
+                          background: !friend.avatar_url
+                            ? getAvatarGradient(friend.id || friend.username)
+                            : undefined,
+                        }}
+                      >
+                        {friend.avatar_url ? (
+                          <img
+                            src={friend.avatar_url}
+                            alt={friend.username}
+                            className="avatar-img"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none'
+                            }}
+                          />
+                        ) : (
+                          getFriendInitials(getFriendName(friend))
+                        )}
+                        <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
+                      </div>
+
+                      <div className="tg-chat-info">
+                        <div className="tg-chat-top">
+                          <span className="tg-chat-name">
+                            {getFriendName(friend)}
+                          </span>
+                          <span className="tg-chat-time">
+                            {formatChatListTime(friend.last_message_time)}
+                          </span>
+                        </div>
+                        <div className="tg-chat-bottom">
+                          <span className="tg-chat-preview">
+                            {formatLastMessagePreview(friend, currentUser)}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  alphabeticalFriends.map((group) => (
+                    <div key={group.letter} className="tg-friend-group">
+                      <div className="tg-friend-group-header">{group.letter}</div>
+                      {group.items.map((friend) => (
+                        <button
+                          className={`tg-chat-item tg-friend-item ${activeChat?.id === friend.id ? 'active' : ''}`}
+                          key={friend.id}
+                          onClick={() => setActiveChat(friend)}
+                        >
+                          <div
+                            className="tg-avatar"
+                            style={{
+                              background: !friend.avatar_url
+                                ? getAvatarGradient(friend.id || friend.username)
+                                : undefined,
+                            }}
+                          >
+                            {friend.avatar_url ? (
+                              <img
+                                src={friend.avatar_url}
+                                alt=""
+                                className="avatar-img"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none'
+                                }}
+                              />
+                            ) : (
+                              getFriendInitials(getFriendName(friend))
+                            )}
+                            <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
+                          </div>
+
+                          <div className="tg-chat-info">
+                            <div className="tg-chat-top">
+                              <span className="tg-chat-name">
+                                {getFriendName(friend)}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ))
+                )
+              ) : (
+                <div className="tg-empty-list">
+                  <p>Chưa có bạn bè nào.</p>
                   <button
                     className="secondary-button"
                     style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
@@ -1784,12 +2388,10 @@ function App() {
                     + Thêm bạn bè để bắt đầu
                   </button>
                 </div>
-              ) : (
-                <p>Không tìm thấy kết quả nào phù hợp.</p>
               )}
             </div>
-          )}
-        </div>
+          </>
+        )}
       </aside>
 
       {/* Telegram Right Main Area: When no chat is clicked, shows wallpaper with centered pill */}
@@ -1830,11 +2432,13 @@ function App() {
                   ) : (
                     getFriendName(activeChat).charAt(0).toUpperCase()
                   )}
-                  <div className="tg-online-dot" />
+                  <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
                 </div>
                 <div className="tg-header-details">
                   <strong>{getFriendName(activeChat)}</strong>
-                  <span>{activeChat.bio ? `${activeChat.bio}` : 'online'}</span>
+                  <span className={`tg-header-status ${activeChat.is_online ? 'online' : 'offline'}`}>
+                    {formatUserStatus(activeChat)}
+                  </span>
                 </div>
               </div>
 
@@ -1923,8 +2527,6 @@ function App() {
 
             {/* Telegram Messages Scroll */}
             <div className="tg-messages-scroll">
-              <div className="tg-bubble-date">Hôm nay</div>
-
               {chatLoading ? (
                 <div className="tg-messages-loading">
                   <div className="tg-spinner" />
@@ -1943,33 +2545,208 @@ function App() {
                   <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
                 </div>
               ) : (
-                messages.map((item) => {
-                  const isMine = Boolean(
-                    currentUser?.id != null &&
-                    String(item.sender_id) === String(currentUser.id)
+                (() => {
+                  const latestMineMsg = [...messages].reverse().find(
+                    (m) => currentUser?.id != null && String(m.sender_id) === String(currentUser.id)
                   )
-                  const isCurrentMatch =
-                    matchingMessageIds.length > 0 &&
-                    matchingMessageIds[chatSearchIndex] === item.id
+                  const latestMineId = latestMineMsg ? latestMineMsg.id : null
 
-                  return (
-                    <div
-                      className={`tg-msg-row ${isMine ? 'mine' : 'theirs'}`}
-                      id={`msg-${item.id}`}
-                      key={item.id}
-                    >
-                      <div className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''}`}>
-                        <div className="tg-msg-text">
-                          {renderMessageContent(item.content, chatSearchQuery)}
-                        </div>
-                        <div className="tg-msg-meta">
-                          <small>{formatTime(item.created_at)}</small>
-                          {isMine && <span className="tg-msg-check">✓✓</span>}
+                  return messages.map((item, idx) => {
+                    const isMine = Boolean(
+                      currentUser?.id != null &&
+                      String(item.sender_id) === String(currentUser.id)
+                    )
+                    const isLatestMine = isMine && item.id === latestMineId
+                    const isCurrentMatch =
+                      matchingMessageIds.length > 0 &&
+                      matchingMessageIds[chatSearchIndex] === item.id
+
+                    const currentDateStr = formatDate(item.created_at)
+                    const prevDateStr = idx > 0 ? formatDate(messages[idx - 1].created_at) : null
+                    const showDateBubble = idx === 0 || (currentDateStr && currentDateStr !== prevDateStr)
+
+                    const prevItem = idx > 0 ? messages[idx - 1] : null
+                    const isFirstInSequence =
+                      idx === 0 ||
+                      showDateBubble ||
+                      String(prevItem?.sender_id) !== String(item.sender_id)
+
+                    return (
+                      <div key={item.id}>
+                        {showDateBubble && currentDateStr && (
+                          <div className="tg-bubble-date">{currentDateStr}</div>
+                        )}
+                        <div
+                          className={`tg-msg-row ${isMine ? 'mine' : 'theirs'} ${isFirstInSequence ? 'first-in-sequence' : 'consecutive'}`}
+                          id={`msg-${item.id}`}
+                        >
+                          {!isMine && (
+                            <div className="tg-msg-avatar-col theirs">
+                              {isFirstInSequence ? (
+                                <div className="tg-msg-avatar theirs" title={getFriendName(activeChat)}>
+                                  {activeChat.avatar_url ? (
+                                    <img
+                                      src={activeChat.avatar_url}
+                                      alt={activeChat.username}
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none'
+                                      }}
+                                    />
+                                  ) : (
+                                    getFriendName(activeChat).charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="tg-msg-avatar-placeholder" />
+                              )}
+                              <div
+                                className="tg-msg-hover-time"
+                                title={formatFullDateTime(item.created_at)}
+                              >
+                                {formatTime(item.created_at)}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* If mine: action buttons sit to the left of the bubble */}
+                          {isMine && (
+                            <div className="tg-msg-actions">
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Trả lời (Reply)"
+                                onClick={() => handleStartReply(item)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                  <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                </svg>
+                              </button>
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Chia sẻ (Share / Forward)"
+                                onClick={() => handleStartShare(item)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="15 14 20 9 15 4"></polyline>
+                                  <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                </svg>
+                              </button>
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Sao chép tin nhắn"
+                                onClick={() => handleCopyMessage(item.content)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                  <circle cx="5" cy="12" r="2.2"></circle>
+                                  <circle cx="12" cy="12" r="2.2"></circle>
+                                  <circle cx="19" cy="12" r="2.2"></circle>
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+
+                          <div
+                            className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''} ${isImageMessage(item.content) && !item.reply_to_id ? 'image-only-bubble' : ''}`}
+                            title={formatFullDateTime(item.created_at)}
+                          >
+                            {/* Replied Message Quote (Images 1 & 2) */}
+                            {item.reply_to_id && (
+                              <div
+                                className="tg-reply-quote"
+                                onClick={() => scrollToMessage(item.reply_to_id)}
+                                title="Bấm để chuyển tới tin nhắn gốc"
+                              >
+                                <div className="tg-reply-bar" />
+                                <div className="tg-reply-quote-content">
+                                  <span className="tg-reply-author">
+                                    {getReplyAuthorName(item)}
+                                  </span>
+                                  <span className="tg-reply-snippet">
+                                    {getMessageSnippet(getReplyContent(item))}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="tg-msg-text">
+                              {renderMessageContent(item.content, chatSearchQuery)}
+                            </div>
+                            {isLatestMine && (
+                              <div className="tg-msg-meta status-only">
+                                <span className={`tg-msg-receipt ${item.is_read ? 'read' : 'sent'}`}>
+                                  {item.is_read ? 'Đã xem' : 'Đã gửi'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* If theirs: action buttons sit to the right of the bubble */}
+                          {!isMine && (
+                            <div className="tg-msg-actions">
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Trả lời (Reply)"
+                                onClick={() => handleStartReply(item)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                  <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                </svg>
+                              </button>
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Chia sẻ (Share / Forward)"
+                                onClick={() => handleStartShare(item)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="15 14 20 9 15 4"></polyline>
+                                  <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                </svg>
+                              </button>
+                              <button
+                                className="tg-msg-act-btn"
+                                title="Sao chép tin nhắn"
+                                onClick={() => handleCopyMessage(item.content)}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                  <circle cx="5" cy="12" r="2.2"></circle>
+                                  <circle cx="12" cy="12" r="2.2"></circle>
+                                  <circle cx="19" cy="12" r="2.2"></circle>
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+
+                          {isMine && (
+                            <div className="tg-msg-avatar-col mine">
+                              {isFirstInSequence ? (
+                                <div className="tg-msg-avatar mine" title="Bạn">
+                                  {currentUser?.avatar_url ? (
+                                    <img
+                                      src={currentUser.avatar_url}
+                                      alt={currentUser.username}
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none'
+                                      }}
+                                    />
+                                  ) : (
+                                    (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="tg-msg-avatar-placeholder" />
+                              )}
+                              <div
+                                className="tg-msg-hover-time"
+                                title={formatFullDateTime(item.created_at)}
+                              >
+                                {formatTime(item.created_at)}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </div>
-                  )
-                })
+                    )
+                  })
+                })()
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -1982,6 +2759,31 @@ function App() {
               accept="image/*,video/*,.pdf,.doc,.docx,.txt"
               style={{ display: 'none' }}
             />
+
+            {/* Telegram Reply Banner above Input */}
+            {replyingMessage && (
+              <div className="tg-reply-bar-container">
+                <div className="tg-reply-bar-accent" />
+                <div className="tg-reply-bar-body">
+                  <div className="tg-reply-bar-title">
+                    Trả lời{' '}
+                    {replyingMessage.sender_id === currentUser?.id
+                      ? 'chính bạn'
+                      : getFriendName(activeChat)}
+                  </div>
+                  <div className="tg-reply-bar-text">
+                    {getMessageSnippet(replyingMessage.content)}
+                  </div>
+                </div>
+                <button
+                  className="tg-reply-bar-close"
+                  onClick={() => setReplyingMessage(null)}
+                  title="Hủy trả lời"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             {/* Telegram Message Input Pill */}
             <div className="tg-input-area">
@@ -1997,6 +2799,7 @@ function App() {
 
               <input
                 type="text"
+                ref={msgInputRef}
                 className="tg-msg-input"
                 placeholder="Viết tin nhắn..."
                 value={message}
@@ -2026,9 +2829,9 @@ function App() {
           </div>
         ) : (
           <div className="tg-no-chat-selected">
-            <div className="tg-no-chat-badge">
+            {/* <div className="tg-no-chat-badge">
               Chọn một đoạn chat để bắt đầu nhắn tin
-            </div>
+            </div> */}
           </div>
         )}
       </main>
@@ -2074,9 +2877,9 @@ function App() {
                   onClick={() => {
                     setNicknameInput(
                       nicknames[activeChat.id] ||
-                        activeChat.display_name ||
-                        activeChat.username ||
-                        ''
+                      activeChat.display_name ||
+                      activeChat.username ||
+                      ''
                     )
                     setEditingNickname(true)
                   }}
@@ -2097,7 +2900,9 @@ function App() {
                 <p className="tg-info-original-name">@{activeChat.username}</p>
               )}
 
-              {activeChat.bio && <p className="tg-info-bio">{activeChat.bio}</p>}
+              <p className="tg-info-bio">
+                {activeChat.bio || 'Chưa có tiểu sử'}
+              </p>
             </div>
 
             {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
@@ -2175,20 +2980,30 @@ function App() {
                   {chatFileItems.length > 0 ? (
                     <div className="tg-files-list">
                       {chatFileItems.map((file, idx) => (
-                        <a
-                          href={file.url || '#'}
-                          download={file.name}
+                        <div
                           className="tg-file-row"
                           key={idx}
-                          title={`Bấm để tải về: ${file.name}`}
-                          style={{ textDecoration: 'none', color: 'inherit' }}
                         >
-                          <div className="tg-file-icon">📄</div>
+                          <div className={`tg-file-icon ${getFileBadgeType(file.name, file.fileType)}`}>
+                            {getFileIconSvg(file.name, file.fileType)}
+                          </div>
                           <div className="tg-file-info">
-                            <strong>{file.name}</strong>
+                            <strong title={file.name}>{file.name}</strong>
                             <span>{file.size} • {file.date}</span>
                           </div>
-                        </a>
+                          <a
+                            href={file.url || '#'}
+                            download={file.name}
+                            className="tg-file-download-action-btn"
+                            title={`Tải xuống ${file.name}`}
+                          >
+                            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                              <polyline points="7 10 12 15 17 10"></polyline>
+                              <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                          </a>
+                        </div>
                       ))}
                     </div>
                   ) : (
@@ -2227,12 +3042,12 @@ function App() {
                           <div className={`tg-link-icon-box ${link.iconType || 'generic'}`}>
                             {link.iconType === 'github' ? (
                               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
                               </svg>
                             ) : link.iconType === 'meet' ? (
                               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                                <rect x="2" y="5" width="13" height="14" rx="2" fill="#ffbb00"/>
-                                <polygon points="17 9 22 6 22 18 17 15" fill="#f44336"/>
+                                <rect x="2" y="5" width="13" height="14" rx="2" fill="#ffbb00" />
+                                <polygon points="17 9 22 6 22 18 17 15" fill="#f44336" />
                               </svg>
                             ) : (
                               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2267,13 +3082,28 @@ function App() {
       {previewMediaUrl && (
         <div className="tg-lightbox-overlay" onClick={() => setPreviewMediaUrl(null)}>
           <div className="tg-lightbox-content" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="tg-lightbox-close"
-              onClick={() => setPreviewMediaUrl(null)}
-              title="Đóng xem ảnh"
-            >
-              ✕
-            </button>
+            <div className="tg-lightbox-actions">
+              <a
+                href={previewMediaUrl}
+                download="photo.png"
+                className="tg-lightbox-download"
+                title="Tải ảnh xuống"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+              </a>
+              <button
+                className="tg-lightbox-close"
+                onClick={() => setPreviewMediaUrl(null)}
+                title="Đóng xem ảnh"
+              >
+                ✕
+              </button>
+            </div>
             <img src={previewMediaUrl} alt="Preview" className="tg-lightbox-img" />
           </div>
         </div>
@@ -2358,11 +3188,13 @@ function App() {
                         ) : (
                           (friend.display_name || friend.username).charAt(0).toUpperCase()
                         )}
-                        <div className="tg-online-dot" />
+                        <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
                       </div>
                       <div>
-                        <strong>{friend.display_name || friend.username}</strong>
-                        <span>@{friend.username}</span>
+                        <strong>{getFriendName(friend)}</strong>
+                        <span style={{ fontSize: 12, color: friend.is_online ? '#22c55e' : '#828e9f' }}>
+                          {formatUserStatus(friend)}
+                        </span>
                       </div>
                     </div>
                     <button
@@ -2769,6 +3601,142 @@ function App() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Chia sẻ / Chuyển tiếp tin nhắn Modal */}
+      {sharingMessage && (
+        <div
+          className="modal-overlay"
+          onClick={() => setSharingMessage(null)}
+        >
+          <div
+            className="modal-card tg-forward-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 14 20 9 15 4"></polyline>
+                    <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                  </svg>
+                </div>
+                <div>
+                  <h3>Chia sẻ tin nhắn</h3>
+                  <p>Chọn bạn bè để chuyển tiếp tin nhắn này</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setSharingMessage(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Quoted preview of the message being forwarded */}
+            <div className="tg-forward-preview">
+              <div className="tg-forward-preview-quote">
+                <div className="tg-reply-bar" />
+                <div className="tg-reply-quote-content">
+                  <span className="tg-reply-author">
+                    {sharingMessage.sender_id === currentUser?.id
+                      ? 'Bạn'
+                      : getFriendName(activeChat)}
+                  </span>
+                  <span className="tg-reply-snippet">
+                    {getMessageSnippet(sharingMessage.content)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Search contact to forward */}
+            <div className="tg-forward-search">
+              <input
+                type="text"
+                placeholder="Tìm bạn bè..."
+                value={forwardSearchQuery}
+                onChange={(e) => setForwardSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            {forwardSuccessMessage && (
+              <div className="modal-alert success">
+                {forwardSuccessMessage}
+              </div>
+            )}
+
+            {/* Friends list to send to */}
+            <div className="tg-forward-list">
+              {friends
+                .filter((friend) => {
+                  const name = getFriendName(friend).toLowerCase()
+                  const uname = (friend.username || '').toLowerCase()
+                  const q = forwardSearchQuery.trim().toLowerCase()
+                  return !q || name.includes(q) || uname.includes(q)
+                })
+                .map((friend) => {
+                  const isSent = Boolean(forwardSent[friend.id])
+                  const isSending = Boolean(forwardSending[friend.id])
+                  return (
+                    <div className="tg-forward-item" key={friend.id}>
+                      <div className="tg-forward-avatar">
+                        {friend.avatar_url ? (
+                          <img
+                            src={friend.avatar_url}
+                            alt=""
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none'
+                            }}
+                          />
+                        ) : (
+                          getFriendName(friend).charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div className="tg-forward-info">
+                        <strong>{getFriendName(friend)}</strong>
+                        <small>@{friend.username}</small>
+                      </div>
+                      <button
+                        className={`tg-forward-btn ${isSent ? 'sent' : ''}`}
+                        onClick={() => handleForwardMessage(friend.id, sharingMessage)}
+                        disabled={isSending || isSent}
+                      >
+                        {isSending ? 'Đang gửi...' : isSent ? '✓ Đã gửi' : 'Gửi'}
+                      </button>
+                    </div>
+                  )
+                })}
+              {friends.length === 0 && (
+                <div className="tg-empty-list">
+                  Chưa có bạn bè nào trong danh bạ
+                </div>
+              )}
+            </div>
+
+            <div className="tg-forward-footer">
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  handleCopyMessage(sharingMessage.content)
+                  setForwardSuccessMessage('Đã sao chép nội dung tin nhắn!')
+                  setTimeout(() => setForwardSuccessMessage(''), 2500)
+                }}
+              >
+                📋 Sao chép nội dung
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating toast notification */}
+      {copyToast && (
+        <div className="tg-floating-toast">
+          {copyToast}
         </div>
       )}
     </div>
