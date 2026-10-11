@@ -14,6 +14,12 @@ const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Milo',
   'https://api.dicebear.com/7.x/bottts/svg?seed=Chloe',
   'https://api.dicebear.com/7.x/bottts/svg?seed=Jack',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Bella',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Max',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Oliver',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Sophie',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Charlie',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Ruby',
 ]
 
 function parseUtcDate(value) {
@@ -355,6 +361,136 @@ function parseAttachment(content) {
   return null
 }
 
+// Xử lý tệp hình ảnh tải lên từ máy: tự động nén & tối ưu kích thước avatar (tối đa 512x512, JPEG 0.88 hoặc giữ nguyên SVG/GIF)
+function processAvatarFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('Chưa chọn tệp ảnh'))
+    if (!file.type || !file.type.startsWith('image/')) {
+      return reject(new Error('Vui lòng chọn tệp hình ảnh hợp lệ (JPG, PNG, GIF, WebP, SVG)'))
+    }
+
+    // Giữ nguyên vector SVG
+    if (file.type === 'image/svg+xml') {
+      const reader = new FileReader()
+      reader.onload = () => resolve({
+        dataUrl: reader.result,
+        name: file.name,
+        sizeText: formatFileSize(file.size)
+      })
+      reader.onerror = () => reject(new Error('Không thể đọc file SVG'))
+      reader.readAsDataURL(file)
+      return
+    }
+
+    // Giữ nguyên ảnh động GIF (dung lượng <= 2.5MB)
+    if (file.type === 'image/gif' && file.size < 2.5 * 1024 * 1024) {
+      const reader = new FileReader()
+      reader.onload = () => resolve({
+        dataUrl: reader.result,
+        name: file.name,
+        sizeText: formatFileSize(file.size)
+      })
+      reader.onerror = () => reject(new Error('Không thể đọc file GIF'))
+      reader.readAsDataURL(file)
+      return
+    }
+
+    // Nén và resize ảnh thông thường bằng HTML5 Canvas để avatar nhẹ, nét và tải tức thì
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        try {
+          const maxDim = 512
+          let width = img.width
+          let height = img.height
+
+          if (width > height) {
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width)
+              width = maxDim
+            }
+          } else {
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height)
+              height = maxDim
+            }
+          }
+
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const ctx = canvas.getContext('2d')
+          ctx.imageSmoothingEnabled = true
+          ctx.imageSmoothingQuality = 'high'
+          ctx.drawImage(img, 0, 0, width, height)
+
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
+          const approxBytes = Math.round((dataUrl.length * 3) / 4)
+
+          resolve({
+            dataUrl,
+            name: file.name,
+            sizeText: formatFileSize(approxBytes)
+          })
+        } catch {
+          resolve({
+            dataUrl: e.target.result,
+            name: file.name,
+            sizeText: formatFileSize(file.size)
+          })
+        }
+      }
+      img.onerror = () => reject(new Error('Hình ảnh bị hỏng hoặc không mở được'))
+      img.src = e.target.result
+    }
+    reader.onerror = () => reject(new Error('Lỗi khi đọc file từ máy tính'))
+    reader.readAsDataURL(file)
+  })
+}
+
+// Chuyển đổi link ảnh ngoài thành Base64 (data URL) để lưu trữ vĩnh viễn
+function convertImageUrlToBase64(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      try {
+        const maxDim = 512
+        let width = img.width
+        let height = img.height
+
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round((height * maxDim) / width)
+            width = maxDim
+          }
+        } else {
+          if (height > maxDim) {
+            width = Math.round((width * maxDim) / height)
+            height = maxDim
+          }
+        }
+
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.drawImage(img, 0, 0, width, height)
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
+        resolve(dataUrl)
+      } catch (err) {
+        reject(err)
+      }
+    }
+    img.onerror = () => reject(new Error('Không thể chuyển đổi URL này qua CORS'))
+    img.src = url
+  })
+}
+
 function App() {
   const [page, setPage] = useState('loading')
   const [username, setUsername] = useState('')
@@ -415,6 +551,16 @@ function App() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
+
+  // External Avatar Source State
+  const [avatarMethodTab, setAvatarMethodTab] = useState('upload') // 'upload' | 'url' | 'preset'
+  const [avatarUrlInput, setAvatarUrlInput] = useState('')
+  const [avatarCheckingUrl, setAvatarCheckingUrl] = useState(false)
+  const [avatarUrlStatus, setAvatarUrlStatus] = useState(null) // null | 'valid' | 'invalid'
+  const [avatarConvertingBase64, setAvatarConvertingBase64] = useState(false)
+  const [avatarDragOver, setAvatarDragOver] = useState(false)
+  const [avatarFileMeta, setAvatarFileMeta] = useState(null)
+  const avatarFileInputRef = useRef(null)
 
   // Telegram Hamburger Menu State (Image 2)
   const [showMenu, setShowMenu] = useState(false)
@@ -1459,7 +1605,13 @@ function App() {
   const handleOpenProfileModal = () => {
     setProfileDisplayName(currentUser?.display_name || '')
     setProfileBio(currentUser?.bio || '')
-    setProfileAvatarUrl(currentUser?.avatar_url || '')
+    const curAvatar = currentUser?.avatar_url || ''
+    setProfileAvatarUrl(curAvatar)
+    setAvatarUrlInput(curAvatar.startsWith('http') ? curAvatar : '')
+    setAvatarUrlStatus(curAvatar.startsWith('http') ? 'valid' : null)
+    setAvatarFileMeta(curAvatar.startsWith('data:image/') ? { name: 'Ảnh tải lên từ thiết bị', size: '', status: 'ready' } : null)
+    setAvatarMethodTab(curAvatar.startsWith('http') ? 'url' : 'upload')
+    setAvatarDragOver(false)
     setProfileTab('info')
     setProfileError('')
     setProfileSuccess('')
@@ -1467,6 +1619,136 @@ function App() {
     setNewPassword('')
     setConfirmNewPassword('')
     setShowProfileModal(true)
+  }
+
+  const handleProcessAvatarFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setProfileError('Vui lòng chọn tệp hình ảnh hợp lệ (JPG, PNG, GIF, WebP, SVG)')
+      return
+    }
+    setProfileError('')
+    setProfileSuccess('')
+    setAvatarFileMeta({ name: file.name, status: 'loading' })
+    try {
+      const result = await processAvatarFile(file)
+      setProfileAvatarUrl(result.dataUrl)
+      setAvatarFileMeta({ name: result.name, size: result.sizeText, status: 'ready' })
+      setProfileSuccess(`Đã tải ảnh lên thành công: ${result.name} (${result.sizeText}). Nhấn "Lưu thay đổi" để áp dụng!`)
+    } catch (err) {
+      setProfileError(err.message || 'Lỗi khi xử lý hình ảnh')
+      setAvatarFileMeta(null)
+    }
+  }
+
+  const handleAvatarFileSelect = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await handleProcessAvatarFile(file)
+    e.target.value = ''
+  }
+
+  const handleAvatarDragOver = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAvatarDragOver(true)
+  }
+
+  const handleAvatarDragLeave = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAvatarDragOver(false)
+  }
+
+  const handleAvatarDrop = async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAvatarDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) {
+      setAvatarMethodTab('upload')
+      await handleProcessAvatarFile(file)
+    }
+  }
+
+  const handleProfilePaste = async (e) => {
+    if (profileTab !== 'info') return
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) {
+          e.preventDefault()
+          setAvatarMethodTab('upload')
+          await handleProcessAvatarFile(file)
+          break
+        }
+      }
+    }
+  }
+
+  const handleApplyAvatarUrl = () => {
+    const raw = (avatarUrlInput || '').trim()
+    if (!raw) {
+      setProfileError('Vui lòng nhập đường dẫn (URL) ảnh')
+      return
+    }
+    if (!/^https?:\/\//i.test(raw) && !raw.startsWith('data:image/')) {
+      setProfileError('Đường dẫn ảnh phải bắt đầu bằng https:// hoặc http://')
+      return
+    }
+
+    setProfileError('')
+    setProfileSuccess('')
+    setAvatarCheckingUrl(true)
+    setAvatarUrlStatus(null)
+
+    const img = new Image()
+    img.onload = () => {
+      setAvatarCheckingUrl(false)
+      setAvatarUrlStatus('valid')
+      setProfileAvatarUrl(raw)
+      setAvatarFileMeta(null)
+      setProfileSuccess('Link ảnh hoạt động tốt! Nhấn "Lưu thay đổi" để áp dụng.')
+    }
+    img.onerror = () => {
+      setAvatarCheckingUrl(false)
+      setAvatarUrlStatus('invalid')
+      setProfileError('Không thể tải ảnh từ URL này (trang web nguồn có thể chặn hoặc link không tồn tại). Bạn có thể tải ảnh về máy rồi dùng nút "Tải ảnh từ máy" nhé!')
+    }
+    img.src = raw
+  }
+
+  const handleSaveUrlAsBase64 = async () => {
+    if (!profileAvatarUrl || profileAvatarUrl.startsWith('data:image/')) return
+    setAvatarConvertingBase64(true)
+    setProfileError('')
+    try {
+      const base64 = await convertImageUrlToBase64(profileAvatarUrl)
+      setProfileAvatarUrl(base64)
+      setProfileSuccess('Đã chuyển ảnh thành dữ liệu an toàn vĩnh viễn (không lo link bị chết)! Nhấn "Lưu thay đổi" để áp dụng.')
+    } catch {
+      setProfileError('Trang web gốc chặn tải dữ liệu trực tiếp (CORS). Link ảnh vẫn sẽ được lưu và hiển thị bình thường.')
+    } finally {
+      setAvatarConvertingBase64(false)
+    }
+  }
+
+  const handleRemoveAvatar = () => {
+    setProfileAvatarUrl('')
+    setAvatarUrlInput('')
+    setAvatarFileMeta(null)
+    setAvatarUrlStatus(null)
+    setProfileSuccess('Đã gỡ ảnh đại diện (quay về chữ cái mặc định). Nhấn "Lưu thay đổi" để áp dụng.')
+  }
+
+  const handleSelectPreset = (url) => {
+    setProfileAvatarUrl(url)
+    setAvatarUrlInput(url)
+    setAvatarFileMeta(null)
+    setAvatarUrlStatus('valid')
+    setProfileSuccess('Đã chọn ảnh mẫu! Nhấn "Lưu thay đổi" để áp dụng.')
   }
 
   const handleUpdateProfile = async (event) => {
@@ -2135,9 +2417,9 @@ function App() {
                     setShowMenu(false)
                     handleOpenProfileModal()
                   }}
-                  title="Xem hồ sơ cá nhân"
+                  title="Xem hồ sơ & Đổi ảnh đại diện"
                 >
-                  <div className="tg-avatar sm">
+                  <div className="tg-avatar sm tg-menu-avatar-wrap">
                     {currentUser?.avatar_url ? (
                       <img
                         src={currentUser.avatar_url}
@@ -2150,6 +2432,7 @@ function App() {
                     ) : (
                       (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
                     )}
+                    <span className="tg-menu-avatar-badge" title="Đổi ảnh đại diện">📷</span>
                   </div>
                   <div className="tg-menu-user-info">
                     <strong>{currentUser?.display_name || currentUser?.username || 'DuyKhang'}</strong>
@@ -3790,7 +4073,7 @@ function App() {
 
       {showProfileModal && (
         <div className="modal-overlay" onClick={() => setShowProfileModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} onPaste={handleProfilePaste}>
             <div className="modal-header">
               <div className="modal-title-wrap">
                 <div className="modal-icon">👤</div>
@@ -3838,59 +4121,253 @@ function App() {
 
             {profileTab === 'info' ? (
               <form onSubmit={handleUpdateProfile} className="profile-form">
-                <div className="avatar-section">
-                  <div className="avatar large-preview">
-                    {profileAvatarUrl ? (
-                      <img
-                        src={profileAvatarUrl}
-                        alt="Avatar preview"
-                        className="avatar-img"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none'
-                        }}
-                      />
-                    ) : (
-                      (profileDisplayName || currentUser?.username || 'K').charAt(0).toUpperCase()
-                    )}
-                  </div>
-
-                  <div className="avatar-picker">
-                    <span className="picker-label">Chọn nhanh avatar đại diện:</span>
-                    <div className="preset-avatars">
-                      {PRESET_AVATARS.map((url, idx) => (
-                        <button
-                          type="button"
-                          key={idx}
-                          className={`preset-avatar-btn ${profileAvatarUrl === url ? 'selected' : ''}`}
-                          onClick={() => setProfileAvatarUrl(url)}
-                          title={`Avatar mẫu ${idx + 1}`}
+                {/* --- HERO AVATAR SECTION --- */}
+                <div className="avatar-hero-card">
+                  <div className="avatar-hero-main">
+                    <div
+                      className={`avatar-preview-box ${avatarDragOver ? 'drag-over' : ''}`}
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      onDragOver={handleAvatarDragOver}
+                      onDragLeave={handleAvatarDragLeave}
+                      onDrop={handleAvatarDrop}
+                      title="Bấm để chọn ảnh từ máy hoặc kéo thả ảnh vào đây"
+                    >
+                      {profileAvatarUrl ? (
+                        <img
+                          src={profileAvatarUrl}
+                          alt="Avatar preview"
+                          className="avatar-hero-img"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none'
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="avatar-hero-fallback"
+                          style={{
+                            background: getAvatarGradient(currentUser?.id || currentUser?.username || 'user'),
+                          }}
                         >
-                          <img src={url} alt={`Preset ${idx + 1}`} />
-                        </button>
-                      ))}
-                      {profileAvatarUrl && (
-                        <button
-                          type="button"
-                          className="preset-avatar-clear"
-                          onClick={() => setProfileAvatarUrl('')}
-                          title="Xóa avatar (dùng chữ cái)"
-                        >
-                          ✕
-                        </button>
+                          {(profileDisplayName || currentUser?.username || 'U').charAt(0).toUpperCase()}
+                        </div>
                       )}
+
+                      <div className="avatar-hero-overlay">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                          <circle cx="12" cy="13" r="4"></circle>
+                        </svg>
+                        <span>Đổi ảnh</span>
+                      </div>
+                    </div>
+
+                    <div className="avatar-hero-details">
+                      <div className="avatar-hero-title">Ảnh đại diện</div>
+                      <div className="avatar-hero-subtitle">
+                        {profileAvatarUrl
+                          ? (profileAvatarUrl.startsWith('data:image/')
+                              ? 'Ảnh tải lên từ thiết bị'
+                              : 'Ảnh từ liên kết bên ngoài')
+                          : 'Đang dùng chữ cái mặc định'}
+                      </div>
+
+                      <div className="avatar-hero-actions">
+                        <button
+                          type="button"
+                          className="avatar-action-btn primary"
+                          onClick={() => {
+                            setAvatarMethodTab('upload')
+                            avatarFileInputRef.current?.click()
+                          }}
+                          title="Tải ảnh từ máy tính hoặc thiết bị"
+                        >
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                          </svg>
+                          <span>Tải ảnh từ máy</span>
+                        </button>
+
+                        {profileAvatarUrl && (
+                          <button
+                            type="button"
+                            className="avatar-action-btn view"
+                            onClick={() => setPreviewMediaUrl(profileAvatarUrl)}
+                            title="Xem ảnh phóng to"
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="11" cy="11" r="8"></circle>
+                              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                              <line x1="11" y1="8" x2="11" y2="14"></line>
+                              <line x1="8" y1="11" x2="14" y2="11"></line>
+                            </svg>
+                            <span>Xem to</span>
+                          </button>
+                        )}
+
+                        {profileAvatarUrl && (
+                          <button
+                            type="button"
+                            className="avatar-action-btn danger"
+                            onClick={handleRemoveAvatar}
+                            title="Gỡ ảnh và dùng chữ cái"
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                            <span>Gỡ ảnh</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <label>
-                  Link ảnh avatar (URL)
+                  {/* Hidden file input for file picker */}
                   <input
-                    type="url"
-                    placeholder="https://... hoặc chọn ảnh mẫu ở trên"
-                    value={profileAvatarUrl}
-                    onChange={(e) => setProfileAvatarUrl(e.target.value)}
+                    type="file"
+                    ref={avatarFileInputRef}
+                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,image/svg+xml"
+                    onChange={handleAvatarFileSelect}
+                    style={{ display: 'none' }}
                   />
-                </label>
+
+                  {/* SUB-TABS FOR AVATAR SOURCE */}
+                  <div className="avatar-source-tabs">
+                    <button
+                      type="button"
+                      className={`avatar-source-tab ${avatarMethodTab === 'upload' ? 'active' : ''}`}
+                      onClick={() => setAvatarMethodTab('upload')}
+                    >
+                      📁 Tải ảnh từ máy
+                    </button>
+                    <button
+                      type="button"
+                      className={`avatar-source-tab ${avatarMethodTab === 'url' ? 'active' : ''}`}
+                      onClick={() => setAvatarMethodTab('url')}
+                    >
+                      🌐 Link ảnh bên ngoài
+                    </button>
+                    <button
+                      type="button"
+                      className={`avatar-source-tab ${avatarMethodTab === 'preset' ? 'active' : ''}`}
+                      onClick={() => setAvatarMethodTab('preset')}
+                    >
+                      🤖 Ảnh mẫu có sẵn
+                    </button>
+                  </div>
+
+                  {/* TAB 1: UPLOAD FROM DEVICE */}
+                  {avatarMethodTab === 'upload' && (
+                    <div
+                      className={`avatar-dropzone ${avatarDragOver ? 'active' : ''}`}
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      onDragOver={handleAvatarDragOver}
+                      onDragLeave={handleAvatarDragLeave}
+                      onDrop={handleAvatarDrop}
+                    >
+                      <div className="dropzone-icon">
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                          <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                          <polyline points="21 15 16 10 5 21"></polyline>
+                        </svg>
+                      </div>
+                      <div className="dropzone-text">
+                        <strong>Bấm để chọn tệp ảnh</strong> hoặc kéo thả ảnh vào đây
+                      </div>
+                      <div className="dropzone-hint">
+                        Hỗ trợ JPG, PNG, GIF, WebP, SVG • Tự động nén tối ưu hiển thị
+                      </div>
+                      <div className="dropzone-badge-paste">
+                        📋 Mẹo: Bạn có thể copy ảnh trên mạng rồi bấm <strong>Ctrl + V</strong> để dán trực tiếp
+                      </div>
+
+                      {avatarFileMeta && (
+                        <div className="avatar-file-status">
+                          <span>✅ {avatarFileMeta.name}</span>
+                          {avatarFileMeta.size && <span className="size-pill">{avatarFileMeta.size}</span>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* TAB 2: EXTERNAL URL */}
+                  {avatarMethodTab === 'url' && (
+                    <div className="avatar-url-pane">
+                      <div className="avatar-url-input-wrap">
+                        <span className="url-prefix-icon">🔗</span>
+                        <input
+                          type="url"
+                          placeholder="Dán link ảnh từ web (https://...)"
+                          value={avatarUrlInput}
+                          onChange={(e) => {
+                            setAvatarUrlInput(e.target.value)
+                            setAvatarUrlStatus(null)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              handleApplyAvatarUrl()
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="url-apply-btn"
+                          onClick={handleApplyAvatarUrl}
+                          disabled={avatarCheckingUrl || !avatarUrlInput.trim()}
+                        >
+                          {avatarCheckingUrl ? 'Đang thử...' : 'Áp dụng'}
+                        </button>
+                      </div>
+
+                      <div className="avatar-url-tips">
+                        {avatarUrlStatus === 'valid' && (
+                          <div className="url-status success">
+                            ✅ Link ảnh hợp lệ và đã tải thành công!
+                          </div>
+                        )}
+                        {avatarUrlStatus === 'invalid' && (
+                          <div className="url-status error">
+                            ⚠️ Không thể tải ảnh từ liên kết này. Trang web đó có thể chặn hiển thị bên ngoài (CORS). Bạn hãy tải ảnh về máy rồi dùng tab "Tải ảnh từ máy" nhé!
+                          </div>
+                        )}
+                        {profileAvatarUrl && profileAvatarUrl.startsWith('http') && (
+                          <button
+                            type="button"
+                            className="url-convert-btn"
+                            onClick={handleSaveUrlAsBase64}
+                            disabled={avatarConvertingBase64}
+                            title="Lưu ảnh vào hệ thống để không lo link gốc bị chết"
+                          >
+                            {avatarConvertingBase64 ? 'Đang chuyển đổi...' : '🛡️ Chuyển thành ảnh lưu trữ vĩnh viễn'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB 3: PRESET AVATARS */}
+                  {avatarMethodTab === 'preset' && (
+                    <div className="avatar-presets-pane">
+                      <div className="preset-grid">
+                        {PRESET_AVATARS.map((url, idx) => (
+                          <button
+                            type="button"
+                            key={idx}
+                            className={`preset-grid-item ${profileAvatarUrl === url ? 'selected' : ''}`}
+                            onClick={() => handleSelectPreset(url)}
+                            title={`Mẫu robot ${idx + 1}`}
+                          >
+                            <img src={url} alt={`Preset ${idx + 1}`} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <label>
                   Tên hiển thị
