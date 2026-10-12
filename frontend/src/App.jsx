@@ -5225,8 +5225,10 @@ function App() {
             title="Nhấp đúp chuột 2 lần vào nền để đổi giao diện"
           >
             <div className="tg-no-chat-badge tg-no-chat-dblclick-hint">
-              <span>💬 Chọn một đoạn chat để bắt đầu nhắn tin</span>
-              <small>🎨 Mẹo: Nhấp đúp chuột 2 lần vào nền để đổi giao diện 3D</small>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#f1f5f9' }}>
+                👋 Xin chào! Chào mừng bạn đã đến với ứng dụng CloudChat
+              </span>
+              <small>💬 Chọn một cuộc trò chuyện ở danh sách bên trái hoặc nhấp đúp 2 lần vào nền để đổi màu giao diện</small>
             </div>
           </div>
         )}
