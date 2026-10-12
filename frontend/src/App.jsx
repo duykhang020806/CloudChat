@@ -1426,13 +1426,19 @@ function App() {
   }, [search])
 
   const handleSelectSearchResult = (res) => {
-    const friendObj = friends.find((f) => f.id === res.friend_id) || {
-      id: res.friend_id,
-      username: res.username,
-      display_name: res.display_name,
-      avatar_url: res.avatar_url,
+    const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
+    const matchedGroup = groups.find((g) => g.id === targetId)
+    const matchedFriend = friends.find((f) => f.id === targetId)
+
+    const chatTarget = matchedGroup || matchedFriend || {
+      id: targetId,
+      username: res.username || 'User',
+      display_name: res.display_name || res.username || 'Người dùng',
+      avatar_url: res.avatar_url || null,
+      is_group: Boolean(res.is_group),
     }
-    setActiveChat(friendObj)
+
+    setActiveChat(chatTarget)
     setTimeout(() => {
       const el = document.getElementById(`msg-${res.id}`)
       if (el) {
@@ -4212,33 +4218,42 @@ function App() {
                 </div>
               ) : globalSearchResults.length > 0 ? (
                 globalSearchResults.map((res) => {
-                  const friendObj = friends.find((f) => f.id === res.friend_id) || {
-                    id: res.friend_id,
-                    username: res.username,
-                    display_name: res.display_name,
-                    avatar_url: res.avatar_url,
+                  const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
+                  const matchedGroup = groups.find((g) => g.id === targetId)
+                  const matchedFriend = friends.find((f) => f.id === targetId)
+
+                  const chatTarget = matchedGroup || matchedFriend || {
+                    id: targetId,
+                    username: res.username || 'User',
+                    display_name: res.display_name || res.username || 'Người dùng',
+                    avatar_url: res.avatar_url || null,
+                    is_group: Boolean(res.is_group),
                   }
-                  const displayName = getFriendName(friendObj)
-                  const isSelected = activeChat?.id === res.friend_id
+
+                  const displayName = chatTarget.is_group
+                    ? (chatTarget.name || 'Nhóm')
+                    : (getFriendName(chatTarget) || chatTarget.username || 'Người dùng')
+                  const isSelected = activeChat?.id === chatTarget.id
+                  const initialLetter = (displayName || 'U').charAt(0).toUpperCase()
 
                   return (
                     <button
                       className={`tg-chat-item tg-search-result-item ${isSelected ? 'active' : ''}`}
                       key={`search-msg-${res.id}`}
-                      onClick={() => handleSelectSearchResult(res)}
+                      onClick={() => handleSelectSearchResult({ ...res, friend_id: chatTarget.id })}
                     >
                       <div className="tg-avatar">
-                        {res.avatar_url ? (
+                        {chatTarget.avatar_url ? (
                           <img
-                            src={res.avatar_url}
-                            alt={res.username}
+                            src={chatTarget.avatar_url}
+                            alt={displayName}
                             className="avatar-img"
                             onError={(e) => {
                               e.currentTarget.style.display = 'none'
                             }}
                           />
                         ) : (
-                          displayName.charAt(0).toUpperCase()
+                          initialLetter
                         )}
                       </div>
 

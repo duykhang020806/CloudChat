@@ -606,7 +606,34 @@ const server = http.createServer(async (req, res) => {
           LIMIT 50
         `).all(currentUser.id, currentUser.id, `%${q}%`);
 
-        return sendJson(res, 200, { success: true, results: rows });
+        // Gắn thông tin đối phương (bạn bè hoặc nhóm) vào kết quả tìm kiếm
+        const enriched = rows.map((m) => {
+          const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id;
+          // Kiểm tra xem otherId là nhóm hay người dùng
+          const group = db.prepare('SELECT id, name, avatar_url, is_community FROM groups WHERE id = ?').get(otherId);
+          if (group) {
+            return {
+              ...m,
+              friend_id: group.id,
+              username: group.name,
+              display_name: group.name,
+              avatar_url: group.avatar_url,
+              is_group: true,
+            };
+          }
+
+          const user = db.prepare('SELECT id, username, display_name, avatar_url FROM users WHERE id = ?').get(otherId);
+          return {
+            ...m,
+            friend_id: otherId,
+            username: user ? user.username : 'User',
+            display_name: user ? (user.display_name || user.username) : 'Người dùng',
+            avatar_url: user ? user.avatar_url : null,
+            is_group: false,
+          };
+        });
+
+        return sendJson(res, 200, { success: true, results: enriched });
       }
 
       // 11.7 Delete Message: DELETE /api/protected/messages/:messageId
