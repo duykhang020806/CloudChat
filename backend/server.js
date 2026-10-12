@@ -591,12 +591,53 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { success: true, message: 'Kết bạn qua mã QR thành công! Hai bạn đã là bạn bè.', status: 'accepted' });
       }
 
-      // 11.6 Search Messages: /api/protected/messages/search?q=...
+      // 11.6 Search Messages & Users & Suggestions: /api/protected/messages/search?q=...
       if (pathname === '/api/protected/messages/search' && req.method === 'GET') {
-        const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+        const q = (url.searchParams.get('q') || '').trim();
+        const qLower = q.toLowerCase();
         if (!q) {
-          return sendJson(res, 200, { success: true, results: [] });
+          return sendJson(res, 200, { success: true, results: [], users: [], groups: [], suggestions: [] });
         }
+
+        // 1. Tìm người dùng (bạn bè hoặc người dùng khác) khớp username hoặc display_name
+        const matchedUsers = db.prepare(`
+          SELECT id, username, display_name, bio, avatar_url
+          FROM users
+          WHERE id != ? AND (LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?)
+          LIMIT 10
+        `).all(currentUser.id, `%${qLower}%`, `%${qLower}%`);
+
+        // Đánh dấu người này đã là bạn bè hay chưa
+        const userResults = matchedUsers.map((u) => {
+          const isFriend = db.prepare(`
+            SELECT id FROM friendships
+            WHERE ((user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?))
+              AND status = 'accepted'
+          `).get(currentUser.id, u.id, u.id, currentUser.id);
+
+          return {
+            ...u,
+            is_friend: Boolean(isFriend),
+            is_user: true,
+          };
+        });
+
+        // 2. Tìm nhóm chat mà user tham gia khớp tên nhóm
+        const matchedGroups = db.prepare(`
+          SELECT g.id, g.name, g.avatar_url, g.is_community,
+                 (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
+          FROM groups g
+          JOIN group_members gm ON g.id = gm.group_id
+          WHERE gm.user_id = ? AND LOWER(g.name) LIKE ?
+          LIMIT 10
+        `).all(currentUser.id, `%${qLower}%`);
+
+        const groupResults = matchedGroups.map((g) => ({
+          ...g,
+          is_group: true,
+        }));
+
+        // 3. Tìm tin nhắn khớp từ khóa
         const rows = db.prepare(`
           SELECT id, sender_id, receiver_id, content, created_at
           FROM messages
@@ -604,12 +645,11 @@ const server = http.createServer(async (req, res) => {
             AND LOWER(content) LIKE ?
           ORDER BY created_at DESC
           LIMIT 50
-        `).all(currentUser.id, currentUser.id, `%${q}%`);
+        `).all(currentUser.id, currentUser.id, `%${qLower}%`);
 
-        // Gắn thông tin đối phương (bạn bè hoặc nhóm) vào kết quả tìm kiếm
-        const enriched = rows.map((m) => {
+        // Gắn thông tin đối phương vào kết quả tin nhắn
+        const enrichedMessages = rows.map((m) => {
           const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id;
-          // Kiểm tra xem otherId là nhóm hay người dùng
           const group = db.prepare('SELECT id, name, avatar_url, is_community FROM groups WHERE id = ?').get(otherId);
           if (group) {
             return {
@@ -633,7 +673,38 @@ const server = http.createServer(async (req, res) => {
           };
         });
 
-        return sendJson(res, 200, { success: true, results: enriched });
+        // 4. Trích xuất gợi ý từ khóa liên quan từ các đoạn chat chứa từ khóa
+        const suggestionsSet = new Set();
+        for (const m of rows) {
+          if (!m.content || m.content.startsWith('data:') || m.content.startsWith('{')) continue;
+          // Tách các từ / cụm từ xung quanh từ khóa tìm kiếm
+          const contentText = m.content.replace(/\s+/g, ' ');
+          const lowerText = contentText.toLowerCase();
+          let pos = lowerText.indexOf(qLower);
+          let count = 0;
+          while (pos !== -1 && count < 3) {
+            // Lấy cụm 2-4 từ chứa từ khóa tìm kiếm
+            const startIdx = Math.max(0, pos - 20);
+            const endIdx = Math.min(contentText.length, pos + qLower.length + 25);
+            let phrase = contentText.slice(startIdx, endIdx).trim();
+            // Cắt bớt nếu dính đầu/cuối từ lửng
+            phrase = phrase.replace(/^[^\w\s\u00C0-\u1EF9]+|[^\w\s\u00C0-\u1EF9]+$/g, '').trim();
+            if (phrase && phrase.toLowerCase() !== qLower && phrase.length >= qLower.length) {
+              suggestionsSet.add(phrase);
+            }
+            pos = lowerText.indexOf(qLower, pos + qLower.length + 1);
+            count++;
+          }
+          if (suggestionsSet.size >= 8) break;
+        }
+
+        return sendJson(res, 200, {
+          success: true,
+          results: enrichedMessages,
+          users: userResults,
+          groups: groupResults,
+          suggestions: Array.from(suggestionsSet).slice(0, 6),
+        });
       }
 
       // 11.7 Delete Message: DELETE /api/protected/messages/:messageId

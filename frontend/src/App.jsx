@@ -945,6 +945,10 @@ function App() {
 
   const [search, setSearch] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState([])
+  const [searchUsersResults, setSearchUsersResults] = useState([])
+  const [searchGroupsResults, setSearchGroupsResults] = useState([])
+  const [searchSuggestions, setSearchSuggestions] = useState([])
+  const [searchCategoryTab, setSearchCategoryTab] = useState('all') // 'all' | 'users' | 'messages'
   const [searchLoading, setSearchLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
@@ -1394,6 +1398,9 @@ function App() {
     const q = search.trim()
     if (!q) {
       setGlobalSearchResults([])
+      setSearchUsersResults([])
+      setSearchGroupsResults([])
+      setSearchSuggestions([])
       setSearchLoading(false)
       return
     }
@@ -1412,8 +1419,11 @@ function App() {
           }
         )
         const data = await response.json()
-        if (data.success && data.results) {
-          setGlobalSearchResults(data.results)
+        if (data.success) {
+          setGlobalSearchResults(data.results || [])
+          setSearchUsersResults(data.users || [])
+          setSearchGroupsResults(data.groups || [])
+          setSearchSuggestions(data.suggestions || [])
         }
       } catch (err) {
         console.error('Search messages error:', err)
@@ -4204,81 +4214,273 @@ function App() {
         {/* Global Search Results OR Telegram Folders & Chat List */}
         {search.trim() ? (
           <>
+            {/* Thanh Tab phân loại tìm kiếm: Tất cả, Mọi người, Tin nhắn */}
             <div className="tg-search-category-bar">
-              <div className="tg-search-pill-category active">
+              <button
+                type="button"
+                className={`tg-search-pill-category ${searchCategoryTab === 'all' ? 'active' : ''}`}
+                onClick={() => setSearchCategoryTab('all')}
+              >
+                Tất cả <span>({searchUsersResults.length + searchGroupsResults.length + globalSearchResults.length})</span>
+              </button>
+              <button
+                type="button"
+                className={`tg-search-pill-category ${searchCategoryTab === 'users' ? 'active' : ''}`}
+                onClick={() => setSearchCategoryTab('users')}
+              >
+                Mọi người & Nhóm <span>({searchUsersResults.length + searchGroupsResults.length})</span>
+              </button>
+              <button
+                type="button"
+                className={`tg-search-pill-category ${searchCategoryTab === 'messages' ? 'active' : ''}`}
+                onClick={() => setSearchCategoryTab('messages')}
+              >
                 Tin nhắn <span>({globalSearchResults.length})</span>
-              </div>
+              </button>
             </div>
+
+            {/* Gợi ý từ khóa liên quan đến đoạn chat */}
+            {searchSuggestions.length > 0 && (
+              <div className="tg-search-suggestions-box">
+                <div className="tg-search-suggestions-header">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                  </svg>
+                  <span>Gợi ý tìm kiếm liên quan:</span>
+                </div>
+                <div className="tg-search-suggestions-chips">
+                  {searchSuggestions.map((sug, sIdx) => (
+                    <button
+                      key={sIdx}
+                      type="button"
+                      className="tg-search-chip"
+                      onClick={() => setSearch(sug)}
+                      title={`Tìm kiếm: "${sug}"`}
+                    >
+                      <span className="tg-search-chip-icon">🔍</span>
+                      <span className="tg-search-chip-text">{sug}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="tg-chat-list">
               {searchLoading ? (
                 <div className="tg-empty-list">
                   <div className="tg-spinner" style={{ margin: '20px auto' }} />
-                  <p>Đang tìm kiếm tin nhắn...</p>
+                  <p>Đang tìm kiếm người dùng và tin nhắn...</p>
                 </div>
-              ) : globalSearchResults.length > 0 ? (
-                globalSearchResults.map((res) => {
-                  const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
-                  const matchedGroup = groups.find((g) => g.id === targetId)
-                  const matchedFriend = friends.find((f) => f.id === targetId)
-
-                  const chatTarget = matchedGroup || matchedFriend || {
-                    id: targetId,
-                    username: res.username || 'User',
-                    display_name: res.display_name || res.username || 'Người dùng',
-                    avatar_url: res.avatar_url || null,
-                    is_group: Boolean(res.is_group),
-                  }
-
-                  const displayName = chatTarget.is_group
-                    ? (chatTarget.name || 'Nhóm')
-                    : (getFriendName(chatTarget) || chatTarget.username || 'Người dùng')
-                  const isSelected = activeChat?.id === chatTarget.id
-                  const initialLetter = (displayName || 'U').charAt(0).toUpperCase()
-
-                  return (
-                    <button
-                      className={`tg-chat-item tg-search-result-item ${isSelected ? 'active' : ''}`}
-                      key={`search-msg-${res.id}`}
-                      onClick={() => handleSelectSearchResult({ ...res, friend_id: chatTarget.id })}
-                    >
-                      <div className="tg-avatar">
-                        {chatTarget.avatar_url ? (
-                          <img
-                            src={chatTarget.avatar_url}
-                            alt={displayName}
-                            className="avatar-img"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none'
-                            }}
-                          />
-                        ) : (
-                          initialLetter
-                        )}
-                      </div>
-
-                      <div className="tg-chat-info">
-                        <div className="tg-chat-top">
-                          <span className="tg-chat-name" title={displayName}>
-                            {displayName}
-                          </span>
-                          <span className="tg-chat-time">
-                            {formatChatListTime(res.created_at)}
-                          </span>
-                        </div>
-                        <div className="tg-chat-bottom">
-                          <div className="tg-chat-preview tg-search-snippet">
-                            {renderHighlightedSnippet(res.content, search)}
-                          </div>
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })
               ) : (
-                <div className="tg-empty-list">
-                  <p>Không tìm thấy tin nhắn nào chứa "{search}"</p>
-                </div>
+                <>
+                  {/* PHẦN 1: KẾT QUẢ TÌM KIẾM NGƯỜI DÙNG & NHÓM */}
+                  {(searchCategoryTab === 'all' || searchCategoryTab === 'users') &&
+                    (searchUsersResults.length > 0 || searchGroupsResults.length > 0) && (
+                      <div className="tg-search-section">
+                        <div className="tg-search-section-title">
+                          👤 Mọi người & Nhóm ({searchUsersResults.length + searchGroupsResults.length})
+                        </div>
+
+                        {/* Render Nhóm khớp tên */}
+                        {searchGroupsResults.map((grp) => (
+                          <button
+                            className={`tg-chat-item ${activeChat?.id === grp.id ? 'active' : ''}`}
+                            key={`search-grp-${grp.id}`}
+                            onClick={() => setActiveChat(grp)}
+                          >
+                            <div
+                              className="tg-avatar"
+                              style={{
+                                background: !grp.avatar_url
+                                  ? getAvatarGradient(grp.id || grp.name)
+                                  : undefined,
+                              }}
+                            >
+                              {grp.avatar_url ? (
+                                <img
+                                  src={grp.avatar_url}
+                                  alt={grp.name}
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
+                              ) : (
+                                getFriendInitials(grp.name)
+                              )}
+                            </div>
+                            <div className="tg-chat-info">
+                              <div className="tg-chat-top">
+                                <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {renderHighlightedSnippet(grp.name, search)}
+                                  {grp.is_community ? (
+                                    <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                      CỘNG ĐỒNG
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                      {grp.member_count} tv
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                              <div className="tg-chat-bottom">
+                                <span className="tg-chat-preview" style={{ color: '#8774e1' }}>
+                                  👥 Nhóm trò chuyện
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+
+                        {/* Render Người dùng khớp tên hoặc username */}
+                        {searchUsersResults.map((u) => {
+                          const isFriend = u.is_friend || friends.some((f) => f.id === u.id)
+                          const friendObj = friends.find((f) => f.id === u.id) || u
+                          const displayName = getFriendName(friendObj) || u.display_name || u.username
+
+                          return (
+                            <button
+                              className={`tg-chat-item ${activeChat?.id === u.id ? 'active' : ''}`}
+                              key={`search-user-${u.id}`}
+                              onClick={() => {
+                                setActiveChat(friendObj)
+                              }}
+                            >
+                              <div
+                                className="tg-avatar"
+                                style={{
+                                  background: !u.avatar_url
+                                    ? getAvatarGradient(u.id || u.username)
+                                    : undefined,
+                                }}
+                              >
+                                {u.avatar_url ? (
+                                  <img
+                                    src={u.avatar_url}
+                                    alt={displayName}
+                                    className="avatar-img"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none'
+                                    }}
+                                  />
+                                ) : (
+                                  (displayName || 'U').charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="tg-chat-info">
+                                <div className="tg-chat-top">
+                                  <span className="tg-chat-name">
+                                    {renderHighlightedSnippet(displayName, search)}
+                                  </span>
+                                  {isFriend && (
+                                    <span style={{ fontSize: 11, color: '#22c55e', background: 'rgba(34, 197, 94, 0.15)', padding: '1px 6px', borderRadius: 6, fontWeight: 600 }}>
+                                      Bạn bè
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="tg-chat-bottom">
+                                  <span className="tg-chat-preview">
+                                    @{u.username} {u.bio ? `• ${u.bio}` : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                  {/* PHẦN 2: KẾT QUẢ TÌM KIẾM TIN NHẮN */}
+                  {(searchCategoryTab === 'all' || searchCategoryTab === 'messages') && (
+                    <div className="tg-search-section">
+                      {(searchCategoryTab === 'all' && (searchUsersResults.length > 0 || searchGroupsResults.length > 0)) && (
+                        <div className="tg-search-section-title">
+                          💬 Tin nhắn ({globalSearchResults.length})
+                        </div>
+                      )}
+
+                      {globalSearchResults.length > 0 ? (
+                        globalSearchResults.map((res) => {
+                          const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
+                          const matchedGroup = groups.find((g) => g.id === targetId)
+                          const matchedFriend = friends.find((f) => f.id === targetId)
+
+                          const chatTarget = matchedGroup || matchedFriend || {
+                            id: targetId,
+                            username: res.username || 'User',
+                            display_name: res.display_name || res.username || 'Người dùng',
+                            avatar_url: res.avatar_url || null,
+                            is_group: Boolean(res.is_group),
+                          }
+
+                          const displayName = chatTarget.is_group
+                            ? (chatTarget.name || 'Nhóm')
+                            : (getFriendName(chatTarget) || chatTarget.username || 'Người dùng')
+                          const isSelected = activeChat?.id === chatTarget.id
+                          const initialLetter = (displayName || 'U').charAt(0).toUpperCase()
+
+                          return (
+                            <button
+                              className={`tg-chat-item tg-search-result-item ${isSelected ? 'active' : ''}`}
+                              key={`search-msg-${res.id}`}
+                              onClick={() => handleSelectSearchResult({ ...res, friend_id: chatTarget.id })}
+                            >
+                              <div className="tg-avatar">
+                                {chatTarget.avatar_url ? (
+                                  <img
+                                    src={chatTarget.avatar_url}
+                                    alt={displayName}
+                                    className="avatar-img"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none'
+                                    }}
+                                  />
+                                ) : (
+                                  initialLetter
+                                )}
+                              </div>
+
+                              <div className="tg-chat-info">
+                                <div className="tg-chat-top">
+                                  <span className="tg-chat-name" title={displayName}>
+                                    {displayName}
+                                  </span>
+                                  <span className="tg-chat-time">
+                                    {formatChatListTime(res.created_at)}
+                                  </span>
+                                </div>
+                                <div className="tg-chat-bottom">
+                                  <div className="tg-chat-preview tg-search-snippet">
+                                    {renderHighlightedSnippet(res.content, search)}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        })
+                      ) : (
+                        searchCategoryTab === 'messages' && (
+                          <div className="tg-empty-list">
+                            <p>Không tìm thấy tin nhắn nào chứa "{search}"</p>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+
+                  {/* KHI KHÔNG TÌM THẤY GÌ TRONG CẢ HAI MỤC */}
+                  {searchUsersResults.length === 0 &&
+                    searchGroupsResults.length === 0 &&
+                    globalSearchResults.length === 0 && (
+                      <div className="tg-empty-list">
+                        <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
+                        <p>Không tìm thấy người dùng hoặc tin nhắn nào khớp với "{search}"</p>
+                      </div>
+                    )}
+                </>
               )}
             </div>
           </>

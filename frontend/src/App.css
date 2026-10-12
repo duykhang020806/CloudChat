@@ -1966,31 +1966,112 @@ button {
 .tg-search-category-bar {
   display: flex;
   align-items: center;
-  padding: 8px 14px 4px;
-  gap: 8px;
+  padding: 8px 12px 6px;
+  gap: 6px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-x: auto;
 }
 
 .tg-search-pill-category {
-  padding: 4px 12px;
-  border-radius: 12px;
+  padding: 5px 12px;
+  border-radius: 14px;
   background: #242832;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   color: #8f9ba9;
   font-size: 12px;
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.tg-search-pill-category:hover {
+  background: #2b303c;
+  color: #f1f5f9;
 }
 
 .tg-search-pill-category.active {
   background: #8774e1;
+  border-color: #8774e1;
   color: #ffffff;
 }
 
 .tg-search-pill-category span {
   font-size: 11px;
   opacity: 0.9;
+}
+
+/* Gợi ý từ khóa liên quan đến đoạn chat */
+.tg-search-suggestions-box {
+  padding: 10px 14px;
+  background: rgba(135, 116, 225, 0.06);
+  border-bottom: 1px solid rgba(135, 116, 225, 0.15);
+}
+
+.tg-search-suggestions-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #a78bfa;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tg-search-suggestions-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tg-search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: #20242e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  color: #cbd5e1;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  max-width: 100%;
+}
+
+.tg-search-chip:hover {
+  background: #2f3544;
+  border-color: #8774e1;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.tg-search-chip-icon {
+  font-size: 11px;
+}
+
+.tg-search-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-search-section {
+  margin-bottom: 8px;
+}
+
+.tg-search-section-title {
+  padding: 10px 14px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8b96a7;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 
 .tg-search-result-item {
