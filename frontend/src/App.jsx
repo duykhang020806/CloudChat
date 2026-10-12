@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
+import QRCode from 'qrcode'
+import jsQR from 'jsqr'
 import './App.css'
 
 const API_BASE =
@@ -21,6 +23,221 @@ const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Charlie',
   'https://api.dicebear.com/7.x/bottts/svg?seed=Ruby',
 ]
+
+const QR_TTL_PRESETS = [
+  { label: '1 phút', seconds: 60 },
+  { label: '5 phút (Chuẩn)', seconds: 300 },
+  { label: '15 phút', seconds: 900 },
+  { label: '30 phút', seconds: 1800 },
+  { label: '1 giờ', seconds: 3600 },
+  { label: '24 giờ', seconds: 86400 },
+]
+
+// Hệ thống Bảng màu & Gradient nền trò chuyện sắc nét, thanh lịch (Chuẩn Telegram / Dark Mode)
+const CHAT_COLOR_PRESETS = [
+  {
+    id: 'tg_dark',
+    name: 'Telegram Dark Cổ Điển',
+    num: '01',
+    type: 'color',
+    value: '#0e1621',
+    category: 'solid',
+    desc: 'Tone xanh đen đặc trưng của Telegram, tối giản và êm dịu',
+  },
+  {
+    id: 'oled_black',
+    name: 'Midnight OLED Black',
+    num: '02',
+    type: 'color',
+    value: '#080a0f',
+    category: 'solid',
+    desc: 'Đen tuyền sâu thẳm, độ tương phản tuyệt đối và nét căng',
+  },
+  {
+    id: 'deep_navy',
+    name: 'Navy Blue Đại Dương',
+    num: '03',
+    type: 'color',
+    value: '#0a192f',
+    category: 'solid',
+    desc: 'Xanh hải quân đậm, thanh lịch và chuyên nghiệp',
+  },
+  {
+    id: 'slate_charcoal',
+    name: 'Than Chì Tinh Tế',
+    num: '04',
+    type: 'color',
+    value: '#181b22',
+    category: 'solid',
+    desc: 'Tone xám than chì trung tính, hiện đại và dịu mắt',
+  },
+  {
+    id: 'dark_emerald',
+    name: 'Ngọc Lục Bảo Trầm',
+    num: '05',
+    type: 'color',
+    value: '#062d22',
+    category: 'solid',
+    desc: 'Xanh lục bảo đậm quý phái, thư giãn thị giác',
+  },
+  {
+    id: 'deep_violet',
+    name: 'Tím Đêm Huyền Bí',
+    num: '06',
+    type: 'color',
+    value: '#1a0d2e',
+    category: 'solid',
+    desc: 'Tone tím đậm sang trọng, phong cách Discord',
+  },
+  {
+    id: 'dark_crimson',
+    name: 'Rượu Vang Đỏ Thẫm',
+    num: '07',
+    type: 'color',
+    value: '#280c12',
+    category: 'solid',
+    desc: 'Đỏ thẫm Bordeaux ấm cúng và cá tính',
+  },
+  {
+    id: 'coffee_mocha',
+    name: 'Cà Phê Mocha Nâu',
+    num: '08',
+    type: 'color',
+    value: '#1f1511',
+    category: 'solid',
+    desc: 'Tone nâu cà phê rang mộc cổ điển',
+  },
+  {
+    id: 'grad_cosmic',
+    name: 'Dải Ngân Hà Gradient',
+    num: '09',
+    type: 'gradient',
+    value: 'linear-gradient(145deg, #1d0933 0%, #0c0f18 100%)',
+    category: 'gradient',
+    desc: 'Chuyển sắc tím than sang đen mượt mà',
+  },
+  {
+    id: 'grad_marine',
+    name: 'Biển Đêm Gradient',
+    num: '10',
+    type: 'gradient',
+    value: 'linear-gradient(145deg, #092042 0%, #060b13 100%)',
+    category: 'gradient',
+    desc: 'Chuyển sắc xanh coban sâu thẳm sang đen',
+  },
+  {
+    id: 'grad_emerald',
+    name: 'Rừng Đêm Gradient',
+    num: '11',
+    type: 'gradient',
+    value: 'linear-gradient(145deg, #073325 0%, #05130e 100%)',
+    category: 'gradient',
+    desc: 'Chuyển sắc xanh ngọc lục bảo sang bóng đêm',
+  },
+  {
+    id: 'grad_sunset',
+    name: 'Hoàng Hôn Gradient',
+    num: '12',
+    type: 'gradient',
+    value: 'linear-gradient(145deg, #33150d 0%, #100816 100%)',
+    category: 'gradient',
+    desc: 'Chuyển sắc hổ phách hoàng hôn sang tím đêm',
+  },
+  {
+    id: 'grad_cyberpunk',
+    name: 'Cyberpunk Neon Gradient',
+    num: '13',
+    type: 'gradient',
+    value: 'linear-gradient(135deg, #1b0730 0%, #08152b 100%)',
+    category: 'gradient',
+    desc: 'Sắc tím neon kết hợp xanh điện tử hiện đại',
+  },
+  {
+    id: 'grad_tokyo',
+    name: 'Tokyo Night Gradient',
+    num: '14',
+    type: 'gradient',
+    value: 'linear-gradient(145deg, #1a1b26 0%, #13141c 100%)',
+    category: 'gradient',
+    desc: 'Chuẩn màu Tokyo Night được lập trình viên yêu thích',
+  },
+]
+
+// Bảng màu đơn sắc chọn nhanh (Solid Color Swatches)
+const QUICK_COLOR_SWATCHES = [
+  { name: 'OLED Black', hex: '#000000' },
+  { name: 'Telegram Dark', hex: '#0e1621' },
+  { name: 'Deep Navy', hex: '#0a192f' },
+  { name: 'Slate Gray', hex: '#1e293b' },
+  { name: 'Charcoal', hex: '#181b22' },
+  { name: 'Emerald', hex: '#064e3b' },
+  { name: 'Royal Purple', hex: '#2e1065' },
+  { name: 'Crimson', hex: '#450a0a' },
+  { name: 'Warm Mocha', hex: '#271a16' },
+  { name: 'Teal Forest', hex: '#042f2e' },
+  { name: 'Indigo Night', hex: '#1e1b4b' },
+  { name: 'Dark Zinc', hex: '#18181b' },
+  { name: 'Midnight Blue', hex: '#111e38' },
+  { name: 'Deep Burgundy', hex: '#31101e' },
+  { name: 'Soft Dark', hex: '#22252a' },
+  { name: 'Pure Dark', hex: '#0f121a' },
+]
+
+// Hỗ trợ tương thích ngược
+const WALLPAPER_PRESETS = CHAT_COLOR_PRESETS
+const WALLPAPER_GRADIENTS = CHAT_COLOR_PRESETS.filter((p) => p.type === 'gradient')
+
+// Kiểm tra và chuẩn hóa mã màu CSS không giới hạn (HEX, RGB, HSL, Named Color, Gradient)
+function parseAndValidateColor(input) {
+  if (!input || typeof input !== 'string') return null
+  let s = input.trim()
+  if (!s) return null
+
+  // 1. Dải màu Gradient
+  if (/^(linear|radial|conic)-gradient\(/i.test(s)) {
+    return {
+      type: 'gradient',
+      value: s,
+      formatted: s,
+    }
+  }
+
+  // 2. Tự động thêm dấu # nếu người dùng nhập 3, 6 hoặc 8 ký tự hex thiếu #
+  if (/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$|^[0-9a-fA-F]{8}$/.test(s)) {
+    s = '#' + s
+  }
+
+  // 3. Kiểm tra tính hợp lệ bằng CSS native
+  try {
+    const opt = new Option()
+    opt.style.color = ''
+    opt.style.color = s
+    if (opt.style.color !== '') {
+      return {
+        type: 'color',
+        value: s,
+        formatted: s,
+      }
+    }
+  } catch {}
+
+  return null
+}
+
+function formatCountdown(sec) {
+  if (!sec || sec <= 0) return '00:00'
+  const hours = Math.floor(sec / 3600)
+  const minutes = Math.floor((sec % 3600) / 60)
+  const seconds = sec % 60
+
+  const mm = String(minutes).padStart(2, '0')
+  const ss = String(seconds).padStart(2, '0')
+  if (hours > 0) {
+    const hh = String(hours).padStart(2, '0')
+    return `${hh}:${mm}:${ss}`
+  }
+  return `${mm}:${ss}`
+}
 
 function parseUtcDate(value) {
   if (!value) return null
@@ -491,6 +708,225 @@ function convertImageUrlToBase64(url) {
   })
 }
 
+// Xử lý và nén ảnh hình nền chat tải lên từ máy (tối đa 1920x1080 JPEG 0.85 để vừa sắc nét vừa nhẹ bộ nhớ)
+function processWallpaperFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('Chưa chọn tệp ảnh'))
+    if (!file.type || !file.type.startsWith('image/')) {
+      return reject(new Error('Vui lòng chọn tệp hình ảnh hợp lệ (JPG, PNG, GIF, WebP, SVG)'))
+    }
+
+    if (file.type === 'image/svg+xml') {
+      const reader = new FileReader()
+      reader.onload = () => resolve({
+        dataUrl: reader.result,
+        name: file.name,
+        sizeText: formatFileSize(file.size)
+      })
+      reader.onerror = () => reject(new Error('Không thể đọc file SVG'))
+      reader.readAsDataURL(file)
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        try {
+          const maxDim = 1920
+          let width = img.width
+          let height = img.height
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width)
+              width = maxDim
+            } else {
+              width = Math.round((width * maxDim) / height)
+              height = maxDim
+            }
+          }
+
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const ctx = canvas.getContext('2d')
+          ctx.imageSmoothingEnabled = true
+          ctx.imageSmoothingQuality = 'high'
+          ctx.drawImage(img, 0, 0, width, height)
+
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+          const approxBytes = Math.round((dataUrl.length * 3) / 4)
+
+          resolve({
+            dataUrl,
+            name: file.name,
+            sizeText: formatFileSize(approxBytes)
+          })
+        } catch {
+          resolve({
+            dataUrl: e.target.result,
+            name: file.name,
+            sizeText: formatFileSize(file.size)
+          })
+        }
+      }
+      img.onerror = () => reject(new Error('Hình ảnh bị hỏng hoặc không mở được'))
+      img.src = e.target.result
+    }
+    reader.onerror = () => reject(new Error('Lỗi khi đọc file'))
+    reader.readAsDataURL(file)
+  })
+}
+
+// Tạo mã QR Code có lồng Avatar người dùng ở trung tâm với độ phân giải cao
+async function createQrCodeWithAvatar(text, avatarUrl, username) {
+  const canvas = document.createElement('canvas')
+  await QRCode.toCanvas(canvas, text, {
+    width: 320,
+    margin: 2,
+    errorCorrectionLevel: 'H',
+    color: {
+      dark: '#0f172a',
+      light: '#ffffff',
+    },
+  })
+
+  const ctx = canvas.getContext('2d')
+  const size = canvas.width
+  const centerSize = Math.round(size * 0.24)
+  const cx = Math.round((size - centerSize) / 2)
+  const cy = Math.round((size - centerSize) / 2)
+
+  // Nền trắng bo góc bảo vệ avatar ở giữa
+  ctx.save()
+  ctx.fillStyle = '#ffffff'
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.25)'
+  ctx.shadowBlur = 8
+  ctx.beginPath()
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(cx - 4, cy - 4, centerSize + 8, centerSize + 8, 10)
+  } else {
+    ctx.rect(cx - 4, cy - 4, centerSize + 8, centerSize + 8)
+  }
+  ctx.fill()
+  ctx.restore()
+
+  if (avatarUrl) {
+    try {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      await new Promise((resolve, reject) => {
+        img.onload = resolve
+        img.onerror = reject
+        img.src = avatarUrl
+      })
+
+      ctx.save()
+      ctx.beginPath()
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(cx, cy, centerSize, centerSize, 8)
+      } else {
+        ctx.rect(cx, cy, centerSize, centerSize)
+      }
+      ctx.clip()
+      ctx.drawImage(img, cx, cy, centerSize, centerSize)
+      ctx.restore()
+      return canvas.toDataURL('image/png')
+    } catch {
+      // Fallback nếu ảnh không load được
+    }
+  }
+
+  // Chữ cái đại diện nếu không có avatar
+  ctx.save()
+  ctx.fillStyle = '#4f46e5'
+  ctx.beginPath()
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(cx, cy, centerSize, centerSize, 8)
+  } else {
+    ctx.rect(cx, cy, centerSize, centerSize)
+  }
+  ctx.fill()
+  ctx.fillStyle = '#ffffff'
+  ctx.font = `bold ${Math.round(centerSize * 0.52)}px sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const letter = (username || 'U').charAt(0).toUpperCase()
+  ctx.fillText(letter, cx + centerSize / 2, cy + centerSize / 2)
+  ctx.restore()
+
+  return canvas.toDataURL('image/png')
+}
+
+// Xuất thẻ Card QR Poster hoàn chỉnh để tải về máy chia sẻ
+async function downloadQrCardImage(qrDataUrl, user, remainingText) {
+  const cardCanvas = document.createElement('canvas')
+  cardCanvas.width = 460
+  cardCanvas.height = 660
+  const ctx = cardCanvas.getContext('2d')
+
+  // Nền Gradient Dark Mode Telegram
+  const grad = ctx.createLinearGradient(0, 0, 0, 660)
+  grad.addColorStop(0, '#0f172a')
+  grad.addColorStop(1, '#1e1b4b')
+  ctx.fillStyle = grad
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(0, 0, 460, 660, 24)
+  } else {
+    ctx.rect(0, 0, 460, 660)
+  }
+  ctx.fill()
+
+  // Header Title
+  ctx.fillStyle = '#818cf8'
+  ctx.font = 'bold 14px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.fillText('☁️ CLOUDCHAT • MÃ QR KẾT BẠN', 230, 48)
+
+  // Tên người dùng & Username
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 22px sans-serif'
+  const name = user?.display_name || user?.username || 'CloudChat User'
+  ctx.fillText(name.length > 24 ? name.slice(0, 24) + '...' : name, 230, 90)
+
+  ctx.fillStyle = '#94a3b8'
+  ctx.font = '14px sans-serif'
+  ctx.fillText(`@${user?.username || 'user'}`, 230, 115)
+
+  // Khung trắng chứa QR Code
+  ctx.fillStyle = '#ffffff'
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(70, 145, 320, 320, 18)
+  } else {
+    ctx.rect(70, 145, 320, 320)
+  }
+  ctx.fill()
+
+  // Vẽ hình QR Code
+  const qrImg = new Image()
+  await new Promise((res) => {
+    qrImg.onload = res
+    qrImg.src = qrDataUrl
+  })
+  ctx.drawImage(qrImg, 80, 155, 300, 300)
+
+  // Thời gian & lưu ý tự hủy
+  ctx.fillStyle = '#f8fafc'
+  ctx.font = 'bold 15px sans-serif'
+  ctx.fillText(`⏳ ${remainingText}`, 230, 505)
+
+  ctx.fillStyle = '#94a3b8'
+  ctx.font = '12px sans-serif'
+  ctx.fillText('Quét bằng ứng dụng CloudChat hoặc Camera điện thoại', 230, 535)
+  ctx.fillText('Mã bảo mật • Tự động hủy sau thời gian quy định', 230, 558)
+
+  const link = document.createElement('a')
+  link.download = `cloudchat-qr-${user?.username || 'friend'}.png`
+  link.href = cardCanvas.toDataURL('image/png')
+  link.click()
+}
+
 function App() {
   const [page, setPage] = useState('loading')
   const [username, setUsername] = useState('')
@@ -593,6 +1029,62 @@ function App() {
   const [searchFriendSuccess, setSearchFriendSuccess] = useState('')
   const [searchFriendLoading, setSearchFriendLoading] = useState(false)
 
+  // Add Friend Tab State ('search' | 'qr_scan')
+  const [addFriendTab, setAddFriendTab] = useState('search') // 'search' | 'qr_scan'
+  const [qrScanInput, setQrScanInput] = useState('')
+  const [qrScanning, setQrScanning] = useState(false)
+  const [qrScanError, setQrScanError] = useState('')
+  const [qrScanSuccess, setQrScanSuccess] = useState('')
+  const [qrScanResult, setQrScanResult] = useState(null)
+  const [qrCameraActive, setQrCameraActive] = useState(false)
+  const [qrActionLoading, setQrActionLoading] = useState(false)
+  const qrVideoRef = useRef(null)
+  const qrStreamRef = useRef(null)
+  const qrScanAnimFrameRef = useRef(null)
+  const qrFileInputRef = useRef(null)
+
+  // My QR Code Modal State (Mã QR kết bạn tự động spawn & set thời gian hủy)
+  const [showMyQrModal, setShowMyQrModal] = useState(false)
+  const [myQrData, setMyQrData] = useState(null)
+  const [myQrLoading, setMyQrLoading] = useState(false)
+  const [myQrTtl, setMyQrTtl] = useState(300) // 5 minutes default
+  const [myQrRemainingSeconds, setMyQrRemainingSeconds] = useState(0)
+  const [myQrImageUrl, setMyQrImageUrl] = useState('')
+  const [myQrError, setMyQrError] = useState('')
+  const [myQrSuccess, setMyQrSuccess] = useState('')
+  const [myQrRevoking, setMyQrRevoking] = useState(false)
+  const myQrCountdownRef = useRef(null)
+
+  // Chat Wallpaper / Background Color State (Bảng màu sắc nét & Tự chọn mã màu)
+  const [globalWallpaper, setGlobalWallpaper] = useState({
+    type: 'default',
+    value: '#0e1621',
+  })
+  const [chatWallpapers, setChatWallpapers] = useState({})
+  const [showWallpaperModal, setShowWallpaperModal] = useState(false)
+  const [wallpaperModalTab, setWallpaperModalTab] = useState('colors') // 'colors' | 'custom_picker' | 'upload'
+  const [wallpaperScope, setWallpaperScope] = useState('chat') // 'chat' | 'global'
+  const [tempWallpaper, setTempWallpaper] = useState({
+    type: 'color',
+    value: '#0e1621',
+    name: 'Telegram Dark Cổ Điển',
+  })
+  const [customColorHex, setCustomColorHex] = useState('#0e1621')
+  const [customColorInput, setCustomColorInput] = useState('#0e1621')
+  const [colorInputStatus, setColorInputStatus] = useState('valid') // 'valid' | 'invalid' | 'empty'
+  const [wallpaperUrlInput, setWallpaperUrlInput] = useState('')
+  const [wallpaperUrlStatus, setWallpaperUrlStatus] = useState(null)
+  const [wallpaperDragOver, setWallpaperDragOver] = useState(false)
+  const [wallpaperFileMeta, setWallpaperFileMeta] = useState(null)
+  const wallpaperFileInputRef = useRef(null)
+  const [doubleClickAction, setDoubleClickAction] = useState(() => {
+    try {
+      return localStorage.getItem('cloudchat_dblclick_action') || 'next'
+    } catch {
+      return 'next'
+    }
+  })
+
   // Custom Nicknames State (Chỉ 1 mình mình thấy tên)
   const [nicknames, setNicknames] = useState({})
   const [editingNickname, setEditingNickname] = useState(false)
@@ -609,6 +1101,7 @@ function App() {
     media: true,
     files: true,
     links: true,
+    wallpapers: true,
   })
   const [previewMediaUrl, setPreviewMediaUrl] = useState(null)
   const fileInputRef = useRef(null)
@@ -621,6 +1114,15 @@ function App() {
   const [forwardSending, setForwardSending] = useState({})
   const [forwardSent, setForwardSent] = useState({})
   const [copyToast, setCopyToast] = useState('')
+  const toastTimerRef = useRef(null)
+
+  const showFloatingToast = (msg, duration = 2200) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setCopyToast(msg)
+    toastTimerRef.current = setTimeout(() => {
+      setCopyToast('')
+    }, duration)
+  }
   const msgInputRef = useRef(null)
 
   // Sync nicknames per user account
@@ -638,6 +1140,39 @@ function App() {
       setNicknames({})
     }
   }, [currentUser?.id])
+
+  // Sync wallpapers per user account
+  useEffect(() => {
+    if (!currentUser?.id) return
+    try {
+      const globalKey = `cloudchat_global_wallpaper_${currentUser.id}`
+      const savedGlobal = localStorage.getItem(globalKey)
+      if (savedGlobal) {
+        setGlobalWallpaper(JSON.parse(savedGlobal))
+      } else {
+        setGlobalWallpaper({ type: 'default', value: '', dim: 0.2, blur: 0 })
+      }
+
+      const chatsKey = `cloudchat_chat_wallpapers_${currentUser.id}`
+      const savedChats = localStorage.getItem(chatsKey)
+      if (savedChats) {
+        setChatWallpapers(JSON.parse(savedChats))
+      } else {
+        setChatWallpapers({})
+      }
+    } catch {
+      setGlobalWallpaper({ type: 'default', value: '', dim: 0.2, blur: 0 })
+      setChatWallpapers({})
+    }
+  }, [currentUser?.id])
+
+  // Resolve active wallpaper for activeChat or global fallback
+  const currentChatWallpaper = useMemo(() => {
+    if (activeChat && chatWallpapers[activeChat.id]) {
+      return chatWallpapers[activeChat.id]
+    }
+    return globalWallpaper || { type: 'default', value: '', dim: 0.2, blur: 0 }
+  }, [activeChat, chatWallpapers, globalWallpaper])
 
   const getFriendName = (friend) => {
     if (!friend) return ''
@@ -2037,6 +2572,632 @@ function App() {
     }
   }
 
+  const handleCloseAddFriendModal = () => {
+    handleStopQrCamera()
+    setShowAddFriendModal(false)
+    setSearchFriendResult(null)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    setQrScanError('')
+    setQrScanSuccess('')
+    setQrScanResult(null)
+  }
+
+  const handleCloseMyQrModal = () => {
+    setShowMyQrModal(false)
+    if (myQrCountdownRef.current) {
+      clearInterval(myQrCountdownRef.current)
+      myQrCountdownRef.current = null
+    }
+  }
+
+  // --- QR CODE METHODS ---
+  const handleOpenMyQrModal = async () => {
+    setShowMyQrModal(true)
+    setMyQrError('')
+    setMyQrSuccess('')
+
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    setMyQrLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/protected/qr/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (data.success && data.qr) {
+        setMyQrData(data.qr)
+        setMyQrRemainingSeconds(data.qr.remaining_seconds)
+        startMyQrCountdown(data.qr.expires_at)
+        const qrUrl = await createQrCodeWithAvatar(
+          `cloudchat:friend:${data.qr.code}`,
+          currentUser?.avatar_url,
+          currentUser?.username
+        )
+        setMyQrImageUrl(qrUrl)
+      } else {
+        // Tự động spawn mã QR mới ngay lập tức
+        await handleGenerateMyQr(myQrTtl)
+      }
+    } catch {
+      setMyQrError('Không thể tải mã QR')
+    } finally {
+      setMyQrLoading(false)
+    }
+  }
+
+  const startMyQrCountdown = (expiresAt) => {
+    if (myQrCountdownRef.current) {
+      clearInterval(myQrCountdownRef.current)
+    }
+    const updateCountdown = () => {
+      const diff = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000))
+      setMyQrRemainingSeconds(diff)
+      if (diff <= 0) {
+        if (myQrCountdownRef.current) {
+          clearInterval(myQrCountdownRef.current)
+          myQrCountdownRef.current = null
+        }
+      }
+    }
+    updateCountdown()
+    myQrCountdownRef.current = setInterval(updateCountdown, 1000)
+  }
+
+  const handleGenerateMyQr = async (ttl) => {
+    const ttlToUse = ttl || myQrTtl || 300
+    setMyQrLoading(true)
+    setMyQrError('')
+    setMyQrSuccess('')
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    try {
+      const res = await fetch(`${API_BASE}/api/protected/qr/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ ttl_seconds: ttlToUse }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        setMyQrError(data.message || 'Không thể tạo mã QR')
+        return
+      }
+
+      setMyQrData(data.qr)
+      setMyQrTtl(data.qr.ttl_seconds)
+      setMyQrRemainingSeconds(data.qr.ttl_seconds)
+      startMyQrCountdown(data.qr.expires_at)
+
+      const qrUrl = await createQrCodeWithAvatar(
+        `cloudchat:friend:${data.qr.code}`,
+        currentUser?.avatar_url,
+        currentUser?.username
+      )
+      setMyQrImageUrl(qrUrl)
+      setMyQrSuccess(`Đã tạo mã QR mới! Tự hủy sau ${formatCountdown(data.qr.ttl_seconds)}.`)
+    } catch {
+      setMyQrError('Không thể kết nối đến máy chủ CloudChat')
+    } finally {
+      setMyQrLoading(false)
+    }
+  }
+
+  const handleRevokeMyQr = async () => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+    setMyQrRevoking(true)
+    try {
+      await fetch(`${API_BASE}/api/protected/qr/revoke`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (myQrCountdownRef.current) {
+        clearInterval(myQrCountdownRef.current)
+        myQrCountdownRef.current = null
+      }
+      setMyQrRemainingSeconds(0)
+      setMyQrSuccess('Mã QR đã được hủy thành công!')
+    } catch {
+      setMyQrError('Không thể hủy mã QR')
+    } finally {
+      setMyQrRevoking(false)
+    }
+  }
+
+  const handleDownloadQrCard = async () => {
+    if (!myQrImageUrl) return
+    const remainingText =
+      myQrRemainingSeconds > 0
+        ? `Còn hạn: ${formatCountdown(myQrRemainingSeconds)}`
+        : 'Mã đã hết hạn'
+    await downloadQrCardImage(myQrImageUrl, currentUser, remainingText)
+  }
+
+  const handleCopyQrCode = () => {
+    if (!myQrData?.code) return
+    const inviteLink = `${window.location.origin}/#friend_qr=${myQrData.code}`
+    navigator.clipboard.writeText(inviteLink)
+    setMyQrSuccess('Đã sao chép liên kết kết bạn vào bộ nhớ tạm!')
+  }
+
+  // --- QR SCANNER METHODS ---
+  const handleStartQrCamera = async () => {
+    setQrScanError('')
+    setQrScanSuccess('')
+    setQrScanResult(null)
+    setQrCameraActive(true)
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
+      })
+      qrStreamRef.current = stream
+      if (qrVideoRef.current) {
+        qrVideoRef.current.srcObject = stream
+        qrVideoRef.current.play()
+        qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
+      }
+    } catch {
+      setQrCameraActive(false)
+      setQrScanError('Không thể mở Camera / Webcam (chưa cấp quyền hoặc thiết bị không có camera). Bạn có thể tải ảnh mã QR lên để quét!')
+    }
+  }
+
+  const handleStopQrCamera = () => {
+    if (qrScanAnimFrameRef.current) {
+      cancelAnimationFrame(qrScanAnimFrameRef.current)
+      qrScanAnimFrameRef.current = null
+    }
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach((track) => track.stop())
+      qrStreamRef.current = null
+    }
+    setQrCameraActive(false)
+  }
+
+  const tickQrScanVideo = () => {
+    if (!qrVideoRef.current || qrVideoRef.current.readyState !== qrVideoRef.current.HAVE_ENOUGH_DATA) {
+      qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
+      return
+    }
+
+    const video = qrVideoRef.current
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'dontInvert',
+    })
+
+    if (code && code.data) {
+      handleStopQrCamera()
+      handleResolveQrCode(code.data)
+      return
+    }
+
+    qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
+  }
+
+  const handleScanQrFromFile = (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setQrScanError('Vui lòng chọn tệp hình ảnh (JPG, PNG, WebP...)')
+      return
+    }
+    setQrScanError('')
+    setQrScanSuccess('')
+    setQrScanResult(null)
+    setQrScanning(true)
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = img.width
+          canvas.height = img.height
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0)
+          const imageData = ctx.getImageData(0, 0, img.width, img.height)
+          let code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: 'dontInvert',
+          })
+          if (!code) {
+            code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'attemptBoth',
+            })
+          }
+
+          setQrScanning(false)
+          if (code && code.data) {
+            handleResolveQrCode(code.data)
+          } else {
+            setQrScanError('Không tìm thấy mã QR trong ảnh này. Vui lòng kiểm tra lại ảnh hoặc thử ảnh khác!')
+          }
+        } catch {
+          setQrScanning(false)
+          setQrScanError('Lỗi khi phân tích hình ảnh mã QR')
+        }
+      }
+      img.onerror = () => {
+        setQrScanning(false)
+        setQrScanError('Không thể mở tệp hình ảnh này')
+      }
+      img.src = e.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleResolveQrCode = async (rawString) => {
+    if (!rawString) return
+    let cleanCode = String(rawString).trim()
+    if (cleanCode.includes('cloudchat:friend:')) {
+      cleanCode = cleanCode.replace('cloudchat:friend:', '')
+    } else if (cleanCode.includes('code=')) {
+      const match = cleanCode.match(/code=([a-zA-Z0-9_-]+)/)
+      if (match) cleanCode = match[1]
+    } else if (cleanCode.includes('/add/')) {
+      cleanCode = cleanCode.split('/add/').pop().split('?')[0]
+    } else if (cleanCode.includes('#friend_qr=')) {
+      cleanCode = cleanCode.split('#friend_qr=').pop().split('&')[0]
+    }
+
+    setQrScanning(true)
+    setQrScanError('')
+    setQrScanSuccess('')
+    setQrScanResult(null)
+
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    try {
+      const res = await fetch(`${API_BASE}/api/protected/qr/resolve/${encodeURIComponent(cleanCode)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        setQrScanError(data.message || 'Mã QR không hợp lệ hoặc đã hết hạn')
+        return
+      }
+
+      setQrScanResult({
+        ...data,
+        resolvedCode: cleanCode,
+      })
+      setQrScanSuccess(`Đã tìm thấy tài khoản: ${data.user?.display_name || data.user?.username}`)
+    } catch {
+      setQrScanError('Không thể kết nối đến máy chủ CloudChat để kiểm tra mã')
+    } finally {
+      setQrScanning(false)
+    }
+  }
+
+  const handleAddFriendViaQr = async (code) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token || !code) return
+
+    setQrActionLoading(true)
+    setQrScanError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/protected/qr/add-friend/${encodeURIComponent(code)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        setQrScanError(data.message || 'Kết bạn thất bại')
+        return
+      }
+
+      setQrScanSuccess(data.message || 'Kết bạn thành công!')
+      await loadFriends()
+      if (qrScanResult?.user) {
+        setActiveChat({
+          id: qrScanResult.user.id,
+          username: qrScanResult.user.username,
+          display_name: qrScanResult.user.display_name,
+          avatar_url: qrScanResult.user.avatar_url,
+          bio: qrScanResult.user.bio,
+        })
+        setShowAddFriendModal(false)
+      }
+    } catch {
+      setQrScanError('Không thể kết nối đến máy chủ CloudChat')
+    } finally {
+      setQrActionLoading(false)
+    }
+  }
+
+  // --- CHAT WALLPAPER METHODS ---
+  const handleOpenWallpaperModal = (scope = null) => {
+    const targetScope = scope || (activeChat ? 'chat' : 'global')
+    setWallpaperScope(targetScope)
+
+    // Seed tempWallpaper from current chat or global
+    let currentConfig = null
+    if (targetScope === 'chat' && activeChat && chatWallpapers[activeChat.id]) {
+      currentConfig = chatWallpapers[activeChat.id]
+    } else {
+      currentConfig = globalWallpaper
+    }
+
+    if (currentConfig && currentConfig.type !== 'default' && currentConfig.value) {
+      setTempWallpaper({ ...currentConfig })
+      setCustomColorInput(currentConfig.value)
+      setColorInputStatus('valid')
+      if (currentConfig.type === 'color' && currentConfig.value.startsWith('#') && currentConfig.value.length === 7) {
+        setCustomColorHex(currentConfig.value)
+      }
+      if (currentConfig.type === 'custom') {
+        setWallpaperModalTab('upload')
+      } else {
+        setWallpaperModalTab('colors')
+      }
+    } else {
+      setTempWallpaper({
+        type: 'color',
+        value: '#0e1621',
+        name: 'Telegram Dark Cổ Điển',
+      })
+      setCustomColorHex('#0e1621')
+      setCustomColorInput('#0e1621')
+      setColorInputStatus('valid')
+      setWallpaperModalTab('colors')
+    }
+
+    setWallpaperFileMeta(null)
+    setWallpaperUrlStatus(null)
+    setShowWallpaperModal(true)
+  }
+
+  // Tự động nhận diện và đổi màu tức thì khi người dùng gõ mã màu (không giới hạn màu)
+  const handleColorInputChange = (rawVal) => {
+    setCustomColorInput(rawVal)
+    const parsed = parseAndValidateColor(rawVal)
+    if (parsed) {
+      setTempWallpaper({
+        type: parsed.type,
+        value: parsed.value,
+        name: `Mã màu: ${parsed.formatted}`,
+      })
+      if (parsed.type === 'color' && parsed.value.startsWith('#') && parsed.value.length === 7) {
+        setCustomColorHex(parsed.value)
+      }
+      setColorInputStatus('valid')
+    } else {
+      setColorInputStatus(rawVal.trim() ? 'invalid' : 'empty')
+    }
+  }
+
+  const handleSaveWallpaper = () => {
+    if (!currentUser?.id) return
+
+    if (wallpaperScope === 'global') {
+      setGlobalWallpaper(tempWallpaper)
+      try {
+        localStorage.setItem(
+          `cloudchat_global_wallpaper_${currentUser.id}`,
+          JSON.stringify(tempWallpaper)
+        )
+      } catch (e) {
+        console.error('Failed to save global wallpaper', e)
+      }
+    } else if (activeChat) {
+      const updated = {
+        ...chatWallpapers,
+        [activeChat.id]: tempWallpaper,
+      }
+      setChatWallpapers(updated)
+      try {
+        localStorage.setItem(
+          `cloudchat_chat_wallpapers_${currentUser.id}`,
+          JSON.stringify(updated)
+        )
+      } catch (e) {
+        console.error('Failed to save chat wallpaper', e)
+      }
+    }
+
+    setShowWallpaperModal(false)
+    showFloatingToast('🎨 Đã áp dụng hình nền thành công!')
+  }
+
+  const handleResetWallpaper = () => {
+    if (!currentUser?.id) return
+
+    if (wallpaperScope === 'global') {
+      const resetConfig = { type: 'default', value: '', dim: 0.2, blur: 0 }
+      setGlobalWallpaper(resetConfig)
+      try {
+        localStorage.removeItem(`cloudchat_global_wallpaper_${currentUser.id}`)
+      } catch {}
+      setTempWallpaper(resetConfig)
+    } else if (activeChat) {
+      const updated = { ...chatWallpapers }
+      delete updated[activeChat.id]
+      setChatWallpapers(updated)
+      try {
+        localStorage.setItem(
+          `cloudchat_chat_wallpapers_${currentUser.id}`,
+          JSON.stringify(updated)
+        )
+      } catch {}
+      setTempWallpaper(globalWallpaper || { type: 'default', value: '', dim: 0.2, blur: 0 })
+    }
+
+    setShowWallpaperModal(false)
+    showFloatingToast('↺ Đã đặt lại hình nền mặc định!')
+  }
+
+  const handleWallpaperFileSelect = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const res = await processWallpaperFile(file)
+      setTempWallpaper((prev) => ({
+        ...prev,
+        type: 'custom',
+        value: res.dataUrl,
+      }))
+      setWallpaperFileMeta({ name: res.name, size: res.sizeText })
+    } catch (err) {
+      alert(err.message || 'Lỗi khi tải ảnh')
+    }
+    e.target.value = ''
+  }
+
+  const handleWallpaperDrop = async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setWallpaperDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    try {
+      const res = await processWallpaperFile(file)
+      setTempWallpaper((prev) => ({
+        ...prev,
+        type: 'custom',
+        value: res.dataUrl,
+      }))
+      setWallpaperFileMeta({ name: res.name, size: res.sizeText })
+    } catch (err) {
+      alert(err.message || 'Lỗi khi tải ảnh')
+    }
+  }
+
+  const handleWallpaperPaste = async (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) {
+          e.preventDefault()
+          try {
+            const res = await processWallpaperFile(file)
+            setTempWallpaper((prev) => ({
+              ...prev,
+              type: 'custom',
+              value: res.dataUrl,
+            }))
+            setWallpaperFileMeta({ name: 'Ảnh đã dán (Clipboard)', size: res.sizeText })
+          } catch (err) {
+            alert(err.message || 'Lỗi khi dán ảnh')
+          }
+          break
+        }
+      }
+    }
+  }
+
+  const handleApplyWallpaperUrl = () => {
+    const url = wallpaperUrlInput.trim()
+    if (!url) return
+    const img = new Image()
+    img.onload = () => {
+      setWallpaperUrlStatus('valid')
+      setTempWallpaper((prev) => ({
+        ...prev,
+        type: 'url',
+        value: url,
+      }))
+    }
+    img.onerror = () => {
+      setWallpaperUrlStatus('invalid')
+    }
+    img.src = url
+  }
+
+  // Chuyển đổi cử chỉ nhấp đúp nền chat (Đổi theme tức thì hoặc mở bảng cài đặt)
+  const handleSetDoubleClickAction = (mode) => {
+    setDoubleClickAction(mode)
+    try {
+      localStorage.setItem('cloudchat_dblclick_action', mode)
+    } catch {}
+    showFloatingToast(
+      mode === 'next'
+        ? `⚡ Nhấp đúp: Tự động đổi màu nền kế tiếp (${CHAT_COLOR_PRESETS.length} màu)`
+        : '⚙️ Nhấp đúp: Mở bảng chọn màu nền'
+    )
+  }
+
+  // Tự động xoay vòng sang màu/gradient tiếp theo trong danh sách bảng màu
+  const handleCycleNextWallpaper = () => {
+    if (CHAT_COLOR_PRESETS.length === 0) return
+
+    const currentVal = currentChatWallpaper?.value || ''
+    const currentIndex = CHAT_COLOR_PRESETS.findIndex((p) => p.value === currentVal)
+    const nextIndex = (currentIndex + 1) % CHAT_COLOR_PRESETS.length
+    const nextTheme = CHAT_COLOR_PRESETS[nextIndex]
+
+    const nextConfig = {
+      type: nextTheme.type,
+      value: nextTheme.value,
+      name: nextTheme.name,
+    }
+
+    if (activeChat) {
+      const updated = {
+        ...chatWallpapers,
+        [activeChat.id]: nextConfig,
+      }
+      setChatWallpapers(updated)
+      if (currentUser?.id) {
+        try {
+          localStorage.setItem(
+            `cloudchat_chat_wallpapers_${currentUser.id}`,
+            JSON.stringify(updated)
+          )
+        } catch {}
+      }
+    } else {
+      setGlobalWallpaper(nextConfig)
+      if (currentUser?.id) {
+        try {
+          localStorage.setItem(
+            `cloudchat_global_wallpaper_${currentUser.id}`,
+            JSON.stringify(nextConfig)
+          )
+        } catch {}
+      }
+    }
+
+    showFloatingToast(`🎨 Đã đổi màu nền: ${nextTheme.name} (${nextTheme.num}/${CHAT_COLOR_PRESETS.length})`)
+  }
+
+  // Bắt sự kiện nhấp đúp (Double-Click) vào khoảng trống hình nền chat
+  const handleChatBackgroundDoubleClick = (e) => {
+    // Bỏ qua nếu người dùng click trúng bong bóng tin nhắn, nút thao tác, avatar, input, link, media
+    const interactiveTarget = e.target.closest(
+      '.tg-msg-bubble, .tg-msg-row, .tg-msg-actions, .tg-msg-act-btn, ' +
+      '.tg-avatar, .tg-inchat-search-bar, .tg-chat-input-area, .tg-header, ' +
+      '.tg-info-panel, button, input, textarea, a, img, video, [role="button"]'
+    )
+    if (interactiveTarget) return
+
+    // Xóa bôi đen văn bản tự nhiên khi click 2 lần trên nền trống
+    if (window.getSelection) {
+      window.getSelection().removeAllRanges()
+    }
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    if (doubleClickAction === 'modal') {
+      handleOpenWallpaperModal('chat')
+    } else {
+      handleCycleNextWallpaper()
+    }
+  }
+
   const filteredFriends = friends.filter((friend) => {
     const query = search.toLowerCase()
     const nameMatch = getFriendName(friend).toLowerCase().includes(query)
@@ -2459,6 +3620,47 @@ function App() {
                     </svg>
                   </span>
                   <span>Thêm bạn bè</span>
+                </button>
+
+                {/* 📷 Mã QR của tôi */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleOpenMyQrModal()
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="14" width="7" height="7"></rect>
+                      <rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                  </span>
+                  <span>Mã QR của tôi</span>
+                  <span className="tg-menu-badge" style={{ background: 'rgba(99, 102, 241, 0.25)', color: '#818cf8', fontSize: 10 }}>Mới</span>
+                </button>
+
+                {/* 🎨 Hình nền trò chuyện */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    handleOpenWallpaperModal(activeChat ? 'chat' : 'global')
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.21-.64-1.67-.4-.45-.64-1.04-.64-1.66 0-1.38 1.12-2.5 2.5-2.5H18c3.31 0 6-2.69 6-6 0-4.96-5.37-7.67-12-7.67z"></path>
+                      <circle cx="6.5" cy="11.5" r="1.5"></circle>
+                      <circle cx="9.5" cy="7.5" r="1.5"></circle>
+                      <circle cx="14.5" cy="7.5" r="1.5"></circle>
+                      <circle cx="17.5" cy="11.5" r="1.5"></circle>
+                    </svg>
+                  </span>
+                  <span>Hình nền trò chuyện</span>
+                  <span className="tg-menu-badge" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: 10 }}>10 Theme</span>
                 </button>
 
                 {/* 👤 My Profile */}
@@ -2912,6 +4114,19 @@ function App() {
 
       {/* Telegram Right Main Area: When no chat is clicked, shows wallpaper with centered pill */}
       <main className="tg-main-area">
+        {/* Dynamic Chat Color / Background Layer (Màu nền thuần túy sắc nét 100%, không mờ) */}
+        {currentChatWallpaper && currentChatWallpaper.value && (
+          <div
+            className="tg-wallpaper-layer"
+            style={{
+              background:
+                currentChatWallpaper.type === 'custom' || currentChatWallpaper.type === 'url'
+                  ? `url("${currentChatWallpaper.value}") center/cover no-repeat`
+                  : currentChatWallpaper.value,
+            }}
+          />
+        )}
+
         {activeChat ? (
           <div className="tg-chat-window">
             {/* Chat Header */}
@@ -2959,6 +4174,21 @@ function App() {
               </div>
 
               <div className="tg-header-actions">
+                {/* Nút Đổi hình nền cuộc trò chuyện */}
+                <button
+                  className="tg-icon-btn"
+                  title="Đổi hình nền cuộc trò chuyện (10 Theme 3D hoặc tải ảnh từ máy)"
+                  onClick={() => handleOpenWallpaperModal('chat')}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.21-.64-1.67-.4-.45-.64-1.04-.64-1.66 0-1.38 1.12-2.5 2.5-2.5H18c3.31 0 6-2.69 6-6 0-4.96-5.37-7.67-12-7.67z"></path>
+                    <circle cx="6.5" cy="11.5" r="1.5"></circle>
+                    <circle cx="9.5" cy="7.5" r="1.5"></circle>
+                    <circle cx="14.5" cy="7.5" r="1.5"></circle>
+                    <circle cx="17.5" cy="11.5" r="1.5"></circle>
+                  </svg>
+                </button>
+
                 {/* Nút tìm kiếm trong đoạn chat */}
                 <button
                   className={`tg-icon-btn ${showChatSearch ? 'active' : ''}`}
@@ -3042,7 +4272,11 @@ function App() {
             )}
 
             {/* Telegram Messages Scroll */}
-            <div className="tg-messages-scroll">
+            <div
+              className="tg-messages-scroll"
+              onDoubleClick={handleChatBackgroundDoubleClick}
+              title="Nhấp đúp chuột 2 lần vào nền để đổi giao diện"
+            >
               {chatLoading ? (
                 <div className="tg-messages-loading">
                   <div className="tg-spinner" />
@@ -3344,10 +4578,15 @@ function App() {
             </div>
           </div>
         ) : (
-          <div className="tg-no-chat-selected">
-            {/* <div className="tg-no-chat-badge">
-              Chọn một đoạn chat để bắt đầu nhắn tin
-            </div> */}
+          <div
+            className="tg-no-chat-selected"
+            onDoubleClick={handleChatBackgroundDoubleClick}
+            title="Nhấp đúp chuột 2 lần vào nền để đổi giao diện"
+          >
+            <div className="tg-no-chat-badge tg-no-chat-dblclick-hint">
+              <span>💬 Chọn một đoạn chat để bắt đầu nhắn tin</span>
+              <small>🎨 Mẹo: Nhấp đúp chuột 2 lần vào nền để đổi giao diện 3D</small>
+            </div>
           </div>
         )}
       </main>
@@ -3436,6 +4675,25 @@ function App() {
               <p className="tg-info-bio">
                 {activeChat.bio || 'Chưa có tiểu sử'}
               </p>
+
+              {/* Nút Đổi hình nền riêng cho hội thoại này */}
+              <button
+                type="button"
+                className="tg-info-wallpaper-act-btn"
+                onClick={() => handleOpenWallpaperModal('chat')}
+                title="Tùy biến hình nền riêng cho cuộc trò chuyện này"
+              >
+                <span className="icon">🎨</span>
+                <div className="texts">
+                  <strong>Hình nền cuộc trò chuyện</strong>
+                  <small>
+                    {chatWallpapers[activeChat.id]
+                      ? 'Đang dùng hình nền riêng'
+                      : 'Đang dùng hình nền mặc định'}
+                  </small>
+                </div>
+                <span className="arrow">›</span>
+              </button>
             </div>
 
             {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
@@ -3971,101 +5229,898 @@ function App() {
         </div>
       )}
 
-      {/* Add Friend Modal (Thêm tài khoản / bạn bè) */}
+      {/* Add Friend Modal (Tìm kiếm hoặc Quét mã QR) */}
       {showAddFriendModal && (
-        <div className="modal-overlay" onClick={() => setShowAddFriendModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={handleCloseAddFriendModal}>
+          <div className="modal-card tg-qr-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title-wrap">
-                <div className="modal-icon">➕</div>
+                <div className="modal-icon">{addFriendTab === 'qr_scan' ? '📷' : '➕'}</div>
                 <div>
-                  <h3>Thêm bạn bè / Tài khoản</h3>
-                  <p>Tìm kiếm người dùng CloudChat theo username</p>
+                  <h3>Kết bạn mới</h3>
+                  <p>{addFriendTab === 'qr_scan' ? 'Quét mã QR để kết bạn tức thì' : 'Tìm kiếm theo tên người dùng'}</p>
                 </div>
               </div>
               <button
                 className="modal-close-button"
-                onClick={() => {
-                  setShowAddFriendModal(false)
-                  setSearchFriendResult(null)
-                  setSearchFriendError('')
-                  setSearchFriendSuccess('')
-                }}
+                onClick={handleCloseAddFriendModal}
                 title="Đóng"
               >
                 ✕
               </button>
             </div>
 
-            {searchFriendError && <div className="modal-alert error">{searchFriendError}</div>}
-            {searchFriendSuccess && <div className="modal-alert success">{searchFriendSuccess}</div>}
-
-            <form onSubmit={handleSearchFriend} className="profile-form">
-              <label>
-                Username người dùng
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <input
-                    type="text"
-                    placeholder="Nhập chính xác username..."
-                    value={searchFriendInput}
-                    onChange={(e) => setSearchFriendInput(e.target.value)}
-                  />
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    style={{ minWidth: 100, height: 48, marginTop: 0 }}
-                    disabled={searchFriendLoading || !searchFriendInput.trim()}
-                  >
-                    {searchFriendLoading ? 'Đang tìm...' : 'Tìm kiếm'}
-                  </button>
-                </div>
-              </label>
-            </form>
-
-            {searchFriendResult && (
-              <div style={{ marginTop: 20, padding: 16, borderRadius: 14, background: '#0d1017', border: '1px solid #1e2432', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div className="tg-avatar sm">
-                    {searchFriendResult.avatar_url ? (
-                      <img src={searchFriendResult.avatar_url} alt="" className="avatar-img" />
-                    ) : (
-                      (searchFriendResult.display_name || searchFriendResult.username).charAt(0).toUpperCase()
-                    )}
-                  </div>
-                  <div>
-                    <strong style={{ display: 'block', color: '#f1f5f9', fontSize: 14 }}>
-                      {searchFriendResult.display_name || searchFriendResult.username}
-                    </strong>
-                    <span style={{ display: 'block', color: '#6d7889', fontSize: 11 }}>
-                      @{searchFriendResult.username}
-                    </span>
-                  </div>
-                </div>
-
-                <button
-                  className="primary-button"
-                  style={{ height: 36, padding: '0 16px', fontSize: 12 }}
-                  disabled={searchFriendLoading}
-                  onClick={() => handleSendFriendRequest(searchFriendResult.id)}
-                >
-                  Kết bạn
-                </button>
-              </div>
-            )}
-
-            <div className="modal-footer" style={{ marginTop: 24 }}>
+            {/* Modal Tabs: Tìm theo Username | Quét mã QR */}
+            <div className="modal-tabs">
               <button
                 type="button"
-                className="secondary-button"
+                className={`modal-tab ${addFriendTab === 'search' ? 'active' : ''}`}
                 onClick={() => {
-                  setShowAddFriendModal(false)
-                  setSearchFriendResult(null)
+                  handleStopQrCamera()
+                  setAddFriendTab('search')
                   setSearchFriendError('')
                   setSearchFriendSuccess('')
                 }}
               >
+                🔍 Tìm theo Username
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${addFriendTab === 'qr_scan' ? 'active' : ''}`}
+                onClick={() => {
+                  setAddFriendTab('qr_scan')
+                  setQrScanError('')
+                  setQrScanSuccess('')
+                }}
+              >
+                📷 Quét mã QR
+              </button>
+            </div>
+
+            {/* TAB 1: TÌM THEO USERNAME */}
+            {addFriendTab === 'search' && (
+              <>
+                {searchFriendError && <div className="modal-alert error">{searchFriendError}</div>}
+                {searchFriendSuccess && <div className="modal-alert success">{searchFriendSuccess}</div>}
+
+                <form onSubmit={handleSearchFriend} className="profile-form">
+                  <label>
+                    Username người dùng
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <input
+                        type="text"
+                        placeholder="Nhập chính xác username..."
+                        value={searchFriendInput}
+                        onChange={(e) => setSearchFriendInput(e.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        className="primary-button"
+                        style={{ minWidth: 100, height: 48, marginTop: 0 }}
+                        disabled={searchFriendLoading || !searchFriendInput.trim()}
+                      >
+                        {searchFriendLoading ? 'Đang tìm...' : 'Tìm kiếm'}
+                      </button>
+                    </div>
+                  </label>
+                </form>
+
+                {searchFriendResult && (
+                  <div className="qr-result-card">
+                    <div className="qr-result-user">
+                      <div className="tg-avatar sm">
+                        {searchFriendResult.avatar_url ? (
+                          <img src={searchFriendResult.avatar_url} alt="" className="avatar-img" />
+                        ) : (
+                          (searchFriendResult.display_name || searchFriendResult.username).charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div>
+                        <strong>{searchFriendResult.display_name || searchFriendResult.username}</strong>
+                        <span>@{searchFriendResult.username}</span>
+                      </div>
+                    </div>
+
+                    <button
+                      className="primary-button"
+                      style={{ height: 36, padding: '0 16px', fontSize: 12 }}
+                      disabled={searchFriendLoading}
+                      onClick={() => handleSendFriendRequest(searchFriendResult.id)}
+                    >
+                      Kết bạn
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* TAB 2: QUÉT MÃ QR */}
+            {addFriendTab === 'qr_scan' && (
+              <div className="qr-scan-tab-body">
+                {qrScanError && <div className="modal-alert error">{qrScanError}</div>}
+                {qrScanSuccess && <div className="modal-alert success">{qrScanSuccess}</div>}
+
+                {/* Camera Viewfinder */}
+                {qrCameraActive ? (
+                  <div className="qr-camera-wrap">
+                    <video ref={qrVideoRef} className="qr-camera-video" playsInline autoPlay muted />
+                    <div className="qr-camera-overlay">
+                      <div className="qr-viewfinder">
+                        <div className="viewfinder-corner tl" />
+                        <div className="viewfinder-corner tr" />
+                        <div className="viewfinder-corner bl" />
+                        <div className="viewfinder-corner br" />
+                        <div className="viewfinder-laser" />
+                      </div>
+                      <p className="qr-camera-tip">Đưa mã QR của bạn bè vào khung hình để quét</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="qr-camera-stop-btn"
+                      onClick={handleStopQrCamera}
+                    >
+                      ⏹ Tắt Camera
+                    </button>
+                  </div>
+                ) : (
+                  <div className="qr-scan-actions">
+                    <button
+                      type="button"
+                      className="primary-button qr-scan-camera-btn"
+                      onClick={handleStartQrCamera}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                      </svg>
+                      <span>Bật Camera để quét trực tiếp</span>
+                    </button>
+
+                    <div
+                      className="qr-image-dropzone"
+                      onClick={() => qrFileInputRef.current?.click()}
+                    >
+                      <input
+                        type="file"
+                        ref={qrFileInputRef}
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) handleScanQrFromFile(file)
+                          e.target.value = ''
+                        }}
+                      />
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                      </svg>
+                      <span>Hoặc <strong>tải ảnh mã QR</strong> từ máy tính</span>
+                      <small>Kéo thả tệp ảnh vào đây hoặc bấm Ctrl+V</small>
+                    </div>
+                  </div>
+                )}
+
+                {/* Direct Text Input Fallback */}
+                <div className="qr-manual-input-box">
+                  <span className="qr-manual-label">Hoặc nhập mã / dán liên kết kết bạn:</span>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="text"
+                      placeholder="Dán mã QR code (ví dụ: a7b8c9d0...)"
+                      value={qrScanInput}
+                      onChange={(e) => setQrScanInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleResolveQrCode(qrScanInput)
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ minWidth: 90, height: 42, marginTop: 0, fontSize: 13 }}
+                      disabled={qrScanning || !qrScanInput.trim()}
+                      onClick={() => handleResolveQrCode(qrScanInput)}
+                    >
+                      {qrScanning ? 'Đang đọc...' : 'Kiểm tra'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* QR Scan Result Card */}
+                {qrScanResult && qrScanResult.user && (
+                  <div className="qr-resolved-card">
+                    <div className="qr-resolved-header">
+                      <div className="tg-avatar md">
+                        {qrScanResult.user.avatar_url ? (
+                          <img src={qrScanResult.user.avatar_url} alt="" className="avatar-img" />
+                        ) : (
+                          (qrScanResult.user.display_name || qrScanResult.user.username).charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div className="qr-resolved-info">
+                        <strong>{qrScanResult.user.display_name || qrScanResult.user.username}</strong>
+                        <span>@{qrScanResult.user.username}</span>
+                        {qrScanResult.user.bio && <p className="qr-resolved-bio">{qrScanResult.user.bio}</p>}
+                      </div>
+                    </div>
+
+                    <div className="qr-resolved-actions">
+                      {qrScanResult.friendship_status === 'accepted' ? (
+                        <div className="qr-status-badge success">
+                          <span>✅ Hai bạn đã là bạn bè của nhau rồi</span>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            style={{ height: 36, padding: '0 16px', fontSize: 12, marginTop: 6 }}
+                            onClick={() => {
+                              setActiveChat({
+                                id: qrScanResult.user.id,
+                                username: qrScanResult.user.username,
+                                display_name: qrScanResult.user.display_name,
+                                avatar_url: qrScanResult.user.avatar_url,
+                                bio: qrScanResult.user.bio,
+                              })
+                              handleCloseAddFriendModal()
+                            }}
+                          >
+                            Nhắn tin ngay
+                          </button>
+                        </div>
+                      ) : qrScanResult.friendship_status === 'pending_sent' ? (
+                        <div className="qr-status-badge warning">
+                          <span>⏳ Đã gửi lời mời kết bạn trước đó, vui lòng chờ đối phương đồng ý.</span>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="primary-button qr-add-btn"
+                          disabled={qrActionLoading}
+                          onClick={() => handleAddFriendViaQr(qrScanResult.resolvedCode)}
+                        >
+                          {qrActionLoading ? 'Đang kết nối...' : '⚡ Kết bạn ngay qua mã QR'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="modal-footer" style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ fontSize: 12 }}
+                onClick={() => {
+                  handleCloseAddFriendModal()
+                  handleOpenMyQrModal()
+                }}
+              >
+                📷 Xem mã QR của tôi
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleCloseAddFriendModal}
+              >
                 Đóng
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal "Mã QR của tôi" (Tự động spawn & set thời gian hủy) */}
+      {showMyQrModal && (
+        <div className="modal-overlay" onClick={handleCloseMyQrModal}>
+          <div className="modal-card tg-my-qr-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">📷</div>
+                <div>
+                  <h3>Mã QR kết bạn của tôi</h3>
+                  <p>Mã tự động hủy để bảo mật quyền riêng tư</p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={handleCloseMyQrModal}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {myQrError && <div className="modal-alert error">{myQrError}</div>}
+            {myQrSuccess && <div className="modal-alert success">{myQrSuccess}</div>}
+
+            <div className="my-qr-body">
+              {/* Card QR Poster Preview */}
+              <div className="my-qr-poster">
+                {/* User Header */}
+                <div className="my-qr-user-header">
+                  <div className="tg-avatar sm">
+                    {currentUser?.avatar_url ? (
+                      <img src={currentUser.avatar_url} alt="" className="avatar-img" />
+                    ) : (
+                      (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div>
+                    <strong className="my-qr-name">
+                      {currentUser?.display_name || currentUser?.username || 'CloudChat User'}
+                    </strong>
+                    <span className="my-qr-handle">@{currentUser?.username || 'user'}</span>
+                  </div>
+                </div>
+
+                {/* QR Code Container */}
+                <div className="my-qr-canvas-box">
+                  {myQrLoading ? (
+                    <div className="my-qr-loading-spinner">
+                      <div className="spinner-ring" />
+                      <span>Đang tạo mã QR bảo mật...</span>
+                    </div>
+                  ) : myQrImageUrl ? (
+                    <div className="my-qr-image-wrap">
+                      <img
+                        src={myQrImageUrl}
+                        alt="My QR Code"
+                        className={`my-qr-img ${myQrRemainingSeconds <= 0 ? 'expired' : ''}`}
+                      />
+
+                      {/* Overlay khi mã hết hạn */}
+                      {myQrRemainingSeconds <= 0 && (
+                        <div className="my-qr-expired-overlay">
+                          <div className="expired-icon">⌛</div>
+                          <strong>Mã QR đã hết hạn</strong>
+                          <p>Mã đã tự động bị hủy để bảo mật tài khoản.</p>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            style={{ height: 36, padding: '0 16px', fontSize: 12, marginTop: 8 }}
+                            onClick={() => handleGenerateMyQr(myQrTtl)}
+                          >
+                            🔄 Tạo mã mới ngay
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="my-qr-empty">Chưa có mã QR nào</div>
+                  )}
+                </div>
+
+                {/* Countdown Timer with Progress Bar */}
+                <div className="my-qr-timer-section">
+                  <div className="my-qr-timer-row">
+                    <span className="timer-label">
+                      {myQrRemainingSeconds > 0 ? '⏳ Tự động hủy sau:' : '⚠️ Trạng thái:'}
+                    </span>
+                    <span className={`timer-clock ${myQrRemainingSeconds <= 30 && myQrRemainingSeconds > 0 ? 'urgent' : ''} ${myQrRemainingSeconds <= 0 ? 'expired' : ''}`}>
+                      {myQrRemainingSeconds > 0
+                        ? formatCountdown(myQrRemainingSeconds)
+                        : 'Đã hết hạn'}
+                    </span>
+                  </div>
+
+                  <div className="my-qr-progress-bar">
+                    <div
+                      className={`my-qr-progress-fill ${myQrRemainingSeconds <= 30 ? 'urgent' : ''}`}
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (myQrRemainingSeconds / (myQrTtl || 300)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* TTL Presets Selector (Set thời gian hủy) */}
+              <div className="my-qr-ttl-panel">
+                <span className="ttl-panel-title">⏱️ Chọn thời gian tự hủy mã:</span>
+                <div className="ttl-presets-list">
+                  {QR_TTL_PRESETS.map((preset) => (
+                    <button
+                      type="button"
+                      key={preset.seconds}
+                      className={`ttl-preset-btn ${myQrTtl === preset.seconds ? 'selected' : ''}`}
+                      onClick={() => handleGenerateMyQr(preset.seconds)}
+                      title={`Tạo mã mới với thời hạn ${preset.label}`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="my-qr-actions-grid">
+                <button
+                  type="button"
+                  className="my-qr-action-btn primary"
+                  onClick={() => handleGenerateMyQr(myQrTtl)}
+                  disabled={myQrLoading}
+                  title="Spawn mã QR mới và hủy mã cũ"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                  <span>Làm mới mã</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="my-qr-action-btn secondary"
+                  onClick={handleDownloadQrCard}
+                  disabled={!myQrImageUrl}
+                  title="Tải ảnh thẻ QR về máy tính"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  <span>Tải ảnh thẻ QR</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="my-qr-action-btn secondary"
+                  onClick={handleCopyQrCode}
+                  disabled={!myQrData?.code}
+                  title="Sao chép liên kết kết bạn"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                  <span>Sao chép link</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="my-qr-action-btn danger"
+                  onClick={handleRevokeMyQr}
+                  disabled={myQrRevoking || myQrRemainingSeconds <= 0}
+                  title="Hủy ngay mã QR này"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="15" y1="9" x2="9" y2="15"></line>
+                    <line x1="9" y1="9" x2="15" y2="15"></line>
+                  </svg>
+                  <span>Hủy mã ngay</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-footer" style={{ marginTop: 20 }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleCloseMyQrModal}
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Đổi hình nền trò chuyện (10 Theme 3D & tải ảnh từ máy) */}
+      {showWallpaperModal && (
+        <div className="modal-overlay" onClick={() => setShowWallpaperModal(false)}>
+          <div
+            className="modal-card tg-wallpaper-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            onPaste={handleWallpaperPaste}
+          >
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon">🎨</div>
+                <div>
+                  <h3>Màu nền cuộc trò chuyện</h3>
+                  <p>
+                    {wallpaperScope === 'chat' && activeChat
+                      ? `Áp dụng màu nền riêng cho cuộc trò chuyện với ${getFriendName(activeChat)}`
+                      : 'Cài đặt màu nền mặc định cho tất cả cuộc trò chuyện'}
+                  </p>
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowWallpaperModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Scope Selector: Riêng cuộc trò chuyện này VS Tất cả cuộc trò chuyện */}
+            <div className="wallpaper-scope-bar">
+              <span className="scope-bar-label">Áp dụng cho:</span>
+              <div className="scope-pills">
+                {activeChat && (
+                  <button
+                    type="button"
+                    className={`scope-pill-btn ${wallpaperScope === 'chat' ? 'active' : ''}`}
+                    onClick={() => setWallpaperScope('chat')}
+                  >
+                    📌 Cuộc trò chuyện này ({getFriendName(activeChat)})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`scope-pill-btn ${wallpaperScope === 'global' ? 'active' : ''}`}
+                  onClick={() => setWallpaperScope('global')}
+                >
+                  🌐 Tất cả cuộc trò chuyện
+                </button>
+              </div>
+            </div>
+
+            {/* Live Crisp Color Preview Box (Xem trước màu sắc với bong bóng tin nhắn, nét 100%) */}
+            <div className="wallpaper-live-preview-box">
+              <div
+                className="wallpaper-preview-bg"
+                style={{
+                  background:
+                    tempWallpaper.type === 'custom' || tempWallpaper.type === 'url'
+                      ? `url("${tempWallpaper.value}") center/cover no-repeat`
+                      : tempWallpaper.value || '#0e1621',
+                }}
+              >
+                {/* Sample chat bubbles to show contrast */}
+                <div className="wallpaper-preview-chat-bubbles">
+                  <div className="preview-bubble theirs">
+                    <span>Chào bạn! Màu nền này nhìn thế nào bạn? ✨</span>
+                    <small>10:24</small>
+                  </div>
+                  <div className="preview-bubble mine">
+                    <span>Màu chuẩn cực kỳ rõ nét, không bị mờ và rất dịu mắt! 🔥</span>
+                    <small>10:25 ✓✓</small>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status bar displaying currently selected color info */}
+              <div className="wallpaper-preview-color-info">
+                <span className="color-preview-badge" style={{ background: tempWallpaper.value || '#0e1621' }}></span>
+                <span className="color-preview-name">{tempWallpaper.name || 'Màu đã chọn'}</span>
+                {tempWallpaper.type === 'color' && tempWallpaper.value && (
+                  <code className="color-preview-code">{tempWallpaper.value}</code>
+                )}
+              </div>
+            </div>
+
+            {/* Thanh Nhập Mã Màu Tự Động Đổi Nền Tức Thì (Không Giới Hạn Màu) */}
+            <div className="instant-color-input-panel">
+              <div className="instant-color-input-header">
+                <span className="instant-input-title">⚡ Nhập mã màu (Tự động đổi màu tức thì • Không giới hạn):</span>
+                <span className="instant-input-badge">Mọi định dạng CSS</span>
+              </div>
+              <div className="instant-color-input-wrap">
+                <div
+                  className="instant-color-swatch-picker"
+                  style={{ background: tempWallpaper.value || '#0e1621' }}
+                  title="Bấm để chọn màu bằng bảng màu trực quan"
+                  onClick={() => document.getElementById('native-color-picker-trigger')?.click()}
+                >
+                  <input
+                    id="native-color-picker-trigger"
+                    type="color"
+                    value={customColorHex.startsWith('#') && customColorHex.length === 7 ? customColorHex : '#0e1621'}
+                    onChange={(e) => {
+                      const hex = e.target.value
+                      setCustomColorHex(hex)
+                      handleColorInputChange(hex)
+                    }}
+                    style={{ opacity: 0, position: 'absolute', pointerEvents: 'none', width: 0, height: 0 }}
+                  />
+                  <span>🎨</span>
+                </div>
+                <input
+                  type="text"
+                  className={`instant-color-text-input ${colorInputStatus === 'invalid' ? 'error' : colorInputStatus === 'valid' ? 'valid' : ''}`}
+                  value={customColorInput}
+                  onChange={(e) => handleColorInputChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      if (colorInputStatus === 'valid') {
+                        handleSaveWallpaper()
+                      }
+                    }
+                  }}
+                  placeholder="Gõ mã màu (VD: #ff4500, 0f172a, rgb(20,30,50), navy, linear-gradient...)"
+                />
+                <button
+                  type="button"
+                  className="instant-color-apply-btn"
+                  onClick={handleSaveWallpaper}
+                  disabled={colorInputStatus !== 'valid'}
+                  title="Lưu và áp dụng ngay màu này"
+                >
+                  Áp dụng ngay
+                </button>
+              </div>
+              <div className="instant-color-status-row">
+                {colorInputStatus === 'valid' && (
+                  <span className="instant-status-msg valid">
+                    ✅ Màu hợp lệ! Đã tự động đổi màu nền xem trước (Ấn Enter để áp dụng ngay)
+                  </span>
+                )}
+                {colorInputStatus === 'invalid' && (
+                  <span className="instant-status-msg error">
+                    ⚠️ Chưa nhận diện được màu (Gợi ý: #1e293b, ff0055, rgb(15,23,42), navy, v.v...)
+                  </span>
+                )}
+                {colorInputStatus === 'empty' && (
+                  <span className="instant-status-msg hint">
+                    💡 Hỗ trợ không giới hạn: Mã HEX (#ff0055 hoặc ff0055), RGB, HSL, tên màu (black, red, navy...) & Gradient
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="modal-tabs wallpaper-tabs">
+              <button
+                type="button"
+                className={`modal-tab ${wallpaperModalTab === 'colors' ? 'active' : ''}`}
+                onClick={() => setWallpaperModalTab('colors')}
+              >
+                🌈 Bảng màu & Gradient (14 Chủ đề)
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${wallpaperModalTab === 'custom_picker' ? 'active' : ''}`}
+                onClick={() => setWallpaperModalTab('custom_picker')}
+              >
+                🎨 Tự chọn mã màu
+              </button>
+              <button
+                type="button"
+                className={`modal-tab ${wallpaperModalTab === 'upload' ? 'active' : ''}`}
+                onClick={() => setWallpaperModalTab('upload')}
+              >
+                📁 Tải ảnh riêng
+              </button>
+            </div>
+
+            {/* TAB 1: 14 CHỦ ĐỀ MÀU SẮC & GRADIENT */}
+            {wallpaperModalTab === 'colors' && (
+              <div className="chat-color-presets-grid">
+                {CHAT_COLOR_PRESETS.map((preset) => (
+                  <div
+                    key={preset.id}
+                    className={`chat-color-card ${tempWallpaper.value === preset.value ? 'selected' : ''}`}
+                    onClick={() => {
+                      setTempWallpaper({
+                        type: preset.type,
+                        value: preset.value,
+                        name: preset.name,
+                      })
+                      if (preset.type === 'color' && preset.value.startsWith('#')) {
+                        setCustomColorHex(preset.value)
+                      }
+                    }}
+                  >
+                    <div
+                      className="color-card-swatch"
+                      style={{ background: preset.value }}
+                    >
+                      <span className="color-card-num">{preset.num}</span>
+                      {tempWallpaper.value === preset.value && (
+                        <div className="color-selected-check">✓</div>
+                      )}
+                    </div>
+                    <div className="color-card-info">
+                      <strong>{preset.name}</strong>
+                      <small>{preset.desc}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* TAB 2: TỰ CHỌN MÃ MÀU (COLOR PICKER & SWATCHES) */}
+            {wallpaperModalTab === 'custom_picker' && (
+              <div className="custom-color-picker-pane">
+                <div className="color-picker-row">
+                  <div className="color-picker-input-wrap">
+                    <label className="color-picker-label">Bấm vào ô màu để chọn hoặc nhập mã HEX:</label>
+                    <div className="color-picker-control">
+                      <input
+                        type="color"
+                        value={customColorHex.startsWith('#') && customColorHex.length === 7 ? customColorHex : '#0e1621'}
+                        onChange={(e) => {
+                          const hex = e.target.value
+                          setCustomColorHex(hex)
+                          setTempWallpaper({
+                            type: 'color',
+                            value: hex,
+                            name: `Màu tự chọn (${hex})`,
+                          })
+                        }}
+                        className="color-input-native"
+                        title="Chọn màu sắc"
+                      />
+                      <input
+                        type="text"
+                        value={customColorHex}
+                        onChange={(e) => {
+                          const hex = e.target.value
+                          setCustomColorHex(hex)
+                          if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(hex)) {
+                            setTempWallpaper({
+                              type: 'color',
+                              value: hex,
+                              name: `Màu tự chọn (${hex})`,
+                            })
+                          }
+                        }}
+                        placeholder="#0e1621"
+                        className="color-hex-input"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="color-swatches-section">
+                    <label className="color-picker-label">Màu cơ bản đề xuất (bấm chọn nhanh):</label>
+                    <div className="color-swatches-grid">
+                      {QUICK_COLOR_SWATCHES.map((swatch) => (
+                        <button
+                          type="button"
+                          key={swatch.hex}
+                          className={`color-swatch-btn ${tempWallpaper.value === swatch.hex ? 'selected' : ''}`}
+                          style={{ background: swatch.hex }}
+                          title={`${swatch.name} (${swatch.hex})`}
+                          onClick={() => {
+                            setCustomColorHex(swatch.hex)
+                            setTempWallpaper({
+                              type: 'color',
+                              value: swatch.hex,
+                              name: swatch.name,
+                            })
+                          }}
+                        >
+                          {tempWallpaper.value === swatch.hex && <span>✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: TẢI ẢNH RIÊNG */}
+            {wallpaperModalTab === 'upload' && (
+              <div className="wallpaper-upload-pane">
+                <input
+                  type="file"
+                  ref={wallpaperFileInputRef}
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleWallpaperFileSelect}
+                />
+                <div
+                  className={`avatar-dropzone ${wallpaperDragOver ? 'active' : ''}`}
+                  onClick={() => wallpaperFileInputRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault()
+                    setWallpaperDragOver(true)
+                  }}
+                  onDragLeave={() => setWallpaperDragOver(false)}
+                  onDrop={handleWallpaperDrop}
+                >
+                  <div className="dropzone-icon">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                      <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                      <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                  </div>
+                  <div className="dropzone-text">
+                    <strong>Bấm để chọn ảnh từ máy</strong> hoặc kéo thả ảnh vào đây
+                  </div>
+                  <div className="dropzone-hint">
+                    Hỗ trợ JPG, PNG, WebP • Tự động hiển thị sắc nét, không làm mờ
+                  </div>
+                  <div className="dropzone-badge-paste">
+                    📋 Mẹo: Bạn có thể copy ảnh bất kỳ rồi bấm <strong>Ctrl + V</strong> để dán trực tiếp
+                  </div>
+
+                  {wallpaperFileMeta && (
+                    <div className="avatar-file-status">
+                      <span>✅ {wallpaperFileMeta.name}</span>
+                      {wallpaperFileMeta.size && <span className="size-pill">{wallpaperFileMeta.size}</span>}
+                    </div>
+                  )}
+                </div>
+
+                {tempWallpaper.type === 'custom' && (
+                  <div className="custom-wallpaper-preview-badge">
+                    <span>Đang chọn ảnh tùy chỉnh từ thiết bị của bạn</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Cài đặt cử chỉ nhấp đúp trên nền chat */}
+            <div className="wallpaper-dblclick-setting">
+              <div className="dblclick-setting-header">
+                <div className="dblclick-setting-title">
+                  <span>⚡ Cử chỉ nhấp đúp (Double-Click) trên nền chat</span>
+                  <span className="dblclick-badge">Mới</span>
+                </div>
+                <p className="dblclick-setting-desc">
+                  Nhấp chuột 2 lần vào khoảng trống hình nền chat để thao tác nhanh màu nền
+                </p>
+              </div>
+              <div className="dblclick-options">
+                <button
+                  type="button"
+                  className={`dblclick-option-btn ${doubleClickAction === 'next' ? 'active' : ''}`}
+                  onClick={() => handleSetDoubleClickAction('next')}
+                >
+                  <span className="option-icon">🎨</span>
+                  <div className="option-text">
+                    <strong>Đổi ngay màu nền kế tiếp (14 chủ đề màu)</strong>
+                    <small>Tự động chuyển vòng 14 màu & dải gradient sắc nét, không mờ</small>
+                  </div>
+                  {doubleClickAction === 'next' && <span className="option-check">✓</span>}
+                </button>
+                <button
+                  type="button"
+                  className={`dblclick-option-btn ${doubleClickAction === 'modal' ? 'active' : ''}`}
+                  onClick={() => handleSetDoubleClickAction('modal')}
+                >
+                  <span className="option-icon">⚙️</span>
+                  <div className="option-text">
+                    <strong>Mở bảng chọn màu nền</strong>
+                    <small>Bật cửa sổ để tự chọn mã màu HEX hoặc bảng màu yêu thích</small>
+                  </div>
+                  {doubleClickAction === 'modal' && <span className="option-check">✓</span>}
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="modal-footer" style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                onClick={handleResetWallpaper}
+                title="Khôi phục lại giao diện Telegram Dark gốc"
+              >
+                ↺ Đặt lại mặc định
+              </button>
+
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShowWallpaperModal(false)}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  style={{ minWidth: 130 }}
+                  onClick={handleSaveWallpaper}
+                >
+                  Áp dụng màu nền
+                </button>
+              </div>
             </div>
           </div>
         </div>

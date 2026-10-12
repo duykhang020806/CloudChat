@@ -1058,6 +1058,7 @@ button {
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
 }
 
 /* Empty State Wallpaper View (Image 1) */
@@ -1067,6 +1068,9 @@ button {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  position: relative;
+  z-index: 2;
+  background: transparent;
 }
 
 .tg-no-chat-badge {
@@ -1081,13 +1085,16 @@ button {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
-/* Active Chat Window */
+/* Active Chat Window - Luôn hiển thị trên nền wallpaper (z-index: 2) */
 .tg-chat-window {
   flex: 1;
   display: flex;
   flex-direction: column;
   height: 100vh;
   min-width: 0;
+  position: relative;
+  z-index: 2;
+  background: transparent;
 }
 
 /* Telegram Chat Header (Floating Rounded Box) */
@@ -1157,6 +1164,9 @@ button {
   padding: 20px 14%;
   display: flex;
   flex-direction: column;
+  position: relative;
+  z-index: 2;
+  background: transparent;
 }
 
 .tg-bubble-date {
@@ -1859,6 +1869,8 @@ button {
   gap: 10px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  position: relative;
+  z-index: 3;
 }
 
 .tg-attach-btn {
@@ -3815,3 +3827,1641 @@ mark.search-highlight {
   background: rgba(255, 255, 255, 0.22);
   transform: scale(1.06);
 }
+
+/* ===================================================
+   QR CODE FRIEND & SCANNER FEATURE STYLES
+   =================================================== */
+
+/* My QR Modal Card */
+.tg-my-qr-card {
+  max-width: 440px;
+  width: 95%;
+  background: #17181c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  padding: 24px;
+  animation: authCardIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.my-qr-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+/* QR Poster Card Preview */
+.my-qr-poster {
+  background: linear-gradient(145deg, #1e2027 0%, #16181e 100%);
+  border: 1px solid rgba(135, 116, 225, 0.2);
+  border-radius: 18px;
+  padding: 20px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.my-qr-poster::before {
+  content: '';
+  position: absolute;
+  top: -50px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 180px;
+  background: radial-gradient(circle, rgba(135, 116, 225, 0.15) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* User Header on QR Poster */
+.my-qr-user-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  width: 100%;
+  justify-content: center;
+  z-index: 1;
+}
+
+.my-qr-name {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.25;
+}
+
+.my-qr-handle {
+  display: block;
+  font-size: 13px;
+  color: #8774e1;
+  font-weight: 500;
+}
+
+/* QR Canvas Box */
+.my-qr-canvas-box {
+  background: #ffffff;
+  padding: 12px;
+  border-radius: 18px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 254px;
+  height: 254px;
+  margin-bottom: 16px;
+}
+
+.my-qr-image-wrap {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.my-qr-img {
+  width: 230px;
+  height: 230px;
+  display: block;
+  border-radius: 10px;
+  transition: filter 0.3s ease, opacity 0.3s ease;
+}
+
+.my-qr-img.expired {
+  filter: blur(5px) grayscale(85%);
+  opacity: 0.35;
+}
+
+/* Expired Overlay */
+.my-qr-expired-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 17, 23, 0.88);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  animation: fadeIn 0.25s ease;
+  z-index: 2;
+}
+
+.my-qr-expired-overlay .expired-icon {
+  font-size: 32px;
+  margin-bottom: 6px;
+}
+
+.my-qr-expired-overlay strong {
+  font-size: 14px;
+  color: #f87171;
+  margin-bottom: 4px;
+}
+
+.my-qr-expired-overlay p {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+/* Loading & Empty states */
+.my-qr-loading-spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.my-qr-loading-spinner .spinner-ring {
+  width: 38px;
+  height: 38px;
+  border: 3px solid rgba(135, 116, 225, 0.2);
+  border-top-color: #8774e1;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.my-qr-empty {
+  color: #64748b;
+  font-size: 13px;
+}
+
+/* Timer Section with Progress Bar */
+.my-qr-timer-section {
+  width: 100%;
+  z-index: 1;
+}
+
+.my-qr-timer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.timer-label {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.timer-clock {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  padding: 2px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  transition: all 0.25s ease;
+}
+
+.timer-clock.urgent {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.35);
+  animation: pulseUrgent 1s infinite alternate ease-in-out;
+}
+
+.timer-clock.expired {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+@keyframes pulseUrgent {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.05); }
+}
+
+.my-qr-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.my-qr-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8774e1, #38bdf8);
+  border-radius: 6px;
+  transition: width 1s linear;
+}
+
+.my-qr-progress-fill.urgent {
+  background: linear-gradient(90deg, #fb923c, #ef4444);
+}
+
+/* TTL Presets Panel (Set thời gian hủy) */
+.my-qr-ttl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ttl-panel-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.ttl-presets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ttl-preset-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 11px;
+  border-radius: 10px;
+  transition: all 0.18s ease;
+}
+
+.ttl-preset-btn:hover {
+  background: rgba(135, 116, 225, 0.15);
+  color: #f1f5f9;
+  border-color: rgba(135, 116, 225, 0.35);
+}
+
+.ttl-preset-btn.selected {
+  background: #8774e1;
+  color: #ffffff;
+  border-color: #8774e1;
+  box-shadow: 0 4px 14px rgba(135, 116, 225, 0.4);
+}
+
+/* Actions Grid */
+.my-qr-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.my-qr-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 40px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.my-qr-action-btn.primary {
+  background: #8774e1;
+  color: #ffffff;
+}
+
+.my-qr-action-btn.primary:hover:not(:disabled) {
+  background: #735ed4;
+  box-shadow: 0 4px 14px rgba(135, 116, 225, 0.35);
+}
+
+.my-qr-action-btn.secondary {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+}
+
+.my-qr-action-btn.secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.my-qr-action-btn.danger {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #f87171;
+}
+
+.my-qr-action-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.my-qr-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ===================================================
+   QR SCANNER IN ADD FRIEND MODAL
+   =================================================== */
+
+.qr-scan-tab-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.qr-camera-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 280px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(135, 116, 225, 0.3);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.qr-camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.qr-camera-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* Viewfinder Target */
+.qr-viewfinder {
+  width: 180px;
+  height: 180px;
+  position: relative;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+  border-radius: 12px;
+}
+
+.viewfinder-corner {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-color: #8774e1;
+  border-style: solid;
+}
+
+.viewfinder-corner.tl {
+  top: 0;
+  left: 0;
+  border-width: 3.5px 0 0 3.5px;
+  border-top-left-radius: 8px;
+}
+
+.viewfinder-corner.tr {
+  top: 0;
+  right: 0;
+  border-width: 3.5px 3.5px 0 0;
+  border-top-right-radius: 8px;
+}
+
+.viewfinder-corner.bl {
+  bottom: 0;
+  left: 0;
+  border-width: 0 0 3.5px 3.5px;
+  border-bottom-left-radius: 8px;
+}
+
+.viewfinder-corner.br {
+  bottom: 0;
+  right: 0;
+  border-width: 0 3.5px 3.5px 0;
+  border-bottom-right-radius: 8px;
+}
+
+/* Laser Scanning Line Animation */
+.viewfinder-laser {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2.5px;
+  background: linear-gradient(90deg, transparent, #8774e1 50%, transparent);
+  box-shadow: 0 0 12px #8774e1, 0 0 4px #a78bfa;
+  animation: laserScan 2s ease-in-out infinite alternate;
+}
+
+@keyframes laserScan {
+  0% {
+    top: 6px;
+    opacity: 0.8;
+  }
+  100% {
+    top: calc(100% - 8px);
+    opacity: 1;
+  }
+}
+
+.qr-camera-tip {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #f1f5f9;
+  background: rgba(0, 0, 0, 0.65);
+  padding: 4px 12px;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+}
+
+.qr-camera-stop-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f1f5f9;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  z-index: 5;
+  transition: all 0.2s ease;
+}
+
+.qr-camera-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.8);
+  border-color: rgba(239, 68, 68, 0.9);
+}
+
+/* QR Scan Actions (Camera button + File Dropzone) */
+.qr-scan-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qr-scan-camera-btn {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #8774e1, #6350c7);
+  box-shadow: 0 8px 24px rgba(135, 116, 225, 0.35);
+  transition: all 0.2s ease;
+}
+
+.qr-scan-camera-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 28px rgba(135, 116, 225, 0.45);
+}
+
+.qr-image-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.qr-image-dropzone:hover {
+  border-color: #8774e1;
+  background: rgba(135, 116, 225, 0.05);
+  color: #cbd5e1;
+}
+
+.qr-image-dropzone svg {
+  color: #8774e1;
+}
+
+.qr-image-dropzone span {
+  font-size: 13px;
+}
+
+.qr-image-dropzone small {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* Manual QR Code Input */
+.qr-manual-input-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qr-manual-label {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.qr-manual-input-box input {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  flex: 1;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.qr-manual-input-box input:focus {
+  border-color: #8774e1;
+}
+
+/* Resolved QR Profile Card */
+.qr-resolved-card {
+  background: linear-gradient(145deg, #1e2027 0%, #16181e 100%);
+  border: 1px solid rgba(135, 116, 225, 0.35);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  animation: fadeIn 0.25s ease;
+}
+
+.qr-resolved-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.qr-resolved-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.qr-resolved-info strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.qr-resolved-info span {
+  font-size: 12.5px;
+  color: #8774e1;
+  font-weight: 500;
+}
+
+.qr-resolved-bio {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.qr-resolved-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qr-add-btn {
+  height: 44px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #8774e1, #6350c7);
+  box-shadow: 0 6px 18px rgba(135, 116, 225, 0.35);
+}
+
+.qr-status-badge {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qr-status-badge.success {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+
+.qr-status-badge.warning {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+
+/* ===================================================
+   CHAT WALLPAPER FEATURE STYLES (10 THEMES 3D & UPLOAD)
+   =================================================== */
+
+/* Dynamic Wallpaper Layer in Chat Main Area */
+.tg-wallpaper-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: background-image 0.35s ease;
+  z-index: 0;
+}
+
+.tg-wallpaper-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  transition: background-color 0.25s ease, backdrop-filter 0.25s ease;
+  z-index: 1;
+}
+
+/* Wallpaper Modal Card */
+.tg-wallpaper-modal-card {
+  max-width: 660px;
+  width: 95%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: #17181c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.7);
+  padding: 24px 26px;
+  animation: authCardIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Scope Selector Bar */
+.wallpaper-scope-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 4px;
+  margin-bottom: 14px;
+}
+
+.scope-bar-label {
+  font-size: 12.5px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.scope-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.scope-pill-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 10px;
+  transition: all 0.18s ease;
+}
+
+.scope-pill-btn:hover {
+  background: rgba(135, 116, 225, 0.15);
+  color: #f1f5f9;
+  border-color: rgba(135, 116, 225, 0.35);
+}
+
+.scope-pill-btn.active {
+  background: #8774e1;
+  color: #ffffff;
+  border-color: #8774e1;
+  box-shadow: 0 4px 14px rgba(135, 116, 225, 0.4);
+}
+
+/* Live Interactive Preview Box */
+.wallpaper-live-preview-box {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  margin-bottom: 16px;
+  background: #0f121a;
+  display: flex;
+  flex-direction: column;
+}
+
+.wallpaper-preview-bg {
+  position: relative;
+  width: 100%;
+  height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-color: #0d1117;
+}
+
+.wallpaper-preview-overlay {
+  position: absolute;
+  inset: 0;
+  transition: background-color 0.2s ease, backdrop-filter 0.2s ease;
+}
+
+.wallpaper-preview-chat-bubbles {
+  position: relative;
+  z-index: 2;
+  width: 90%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preview-bubble {
+  padding: 8px 14px;
+  border-radius: 16px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-bubble.theirs {
+  align-self: flex-start;
+  background: #212328;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  border-bottom-left-radius: 4px;
+}
+
+.preview-bubble.theirs small {
+  align-self: flex-end;
+  font-size: 10px;
+  color: #8b96a7;
+  margin-top: 2px;
+}
+
+.preview-bubble.mine {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #8774e1, #6b56d6);
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+}
+
+.preview-bubble.mine small {
+  align-self: flex-end;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.8);
+  margin-top: 2px;
+}
+
+/* Controls Bar (Sliders) */
+.wallpaper-controls-bar {
+  background: #17181c;
+  padding: 12px 18px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.wallpaper-control-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.control-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.control-label-row strong {
+  color: #38bdf8;
+  font-family: monospace;
+}
+
+.wallpaper-control-item input[type='range'] {
+  width: 100%;
+  accent-color: #8774e1;
+  cursor: pointer;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+/* Preset 10 3D Themes Grid */
+.wallpaper-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+  max-height: 310px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.wallpaper-preset-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.wallpaper-preset-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(135, 116, 225, 0.45);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.wallpaper-preset-card.selected {
+  border-color: #8774e1;
+  box-shadow: 0 0 0 2px #8774e1, 0 8px 24px rgba(135, 116, 225, 0.35);
+  background: rgba(135, 116, 225, 0.08);
+}
+
+.preset-card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: #000000;
+}
+
+.preset-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.wallpaper-preset-card:hover .preset-card-thumb img {
+  transform: scale(1.06);
+}
+
+.preset-card-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  color: #f1f5f9;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.preset-selected-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #8774e1;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.preset-card-info {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preset-card-info strong {
+  font-size: 12px;
+  color: #f8fafc;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-card-info small {
+  font-size: 10.5px;
+  color: #8b96a7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Upload from Device Pane */
+.wallpaper-upload-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.custom-wallpaper-preview-badge {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  text-align: center;
+  font-weight: 600;
+}
+
+/* Gradients Grid */
+.wallpaper-gradients-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.wallpaper-gradient-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.wallpaper-gradient-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(135, 116, 225, 0.45);
+}
+
+.wallpaper-gradient-card.selected {
+  border-color: #8774e1;
+  box-shadow: 0 0 0 2px #8774e1, 0 8px 20px rgba(135, 116, 225, 0.3);
+  background: rgba(135, 116, 225, 0.08);
+}
+
+.gradient-thumb {
+  width: 100%;
+  height: 60px;
+  border-radius: 10px;
+  position: relative;
+}
+
+.wallpaper-gradient-card strong {
+  font-size: 11.5px;
+  color: #f1f5f9;
+  text-align: center;
+}
+
+/* Button in Conversation Info Panel */
+.tg-info-wallpaper-act-btn {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px 14px;
+  background: rgba(135, 116, 225, 0.1);
+  border: 1px solid rgba(135, 116, 225, 0.25);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.tg-info-wallpaper-act-btn:hover {
+  background: rgba(135, 116, 225, 0.2);
+  border-color: rgba(135, 116, 225, 0.45);
+  transform: translateY(-1px);
+}
+
+.tg-info-wallpaper-act-btn .icon {
+  font-size: 20px;
+}
+
+.tg-info-wallpaper-act-btn .texts {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tg-info-wallpaper-act-btn .texts strong {
+  font-size: 13px;
+  color: #f8fafc;
+}
+
+.tg-info-wallpaper-act-btn .texts small {
+  font-size: 11.5px;
+  color: #8774e1;
+}
+
+.tg-info-wallpaper-act-btn .arrow {
+  font-size: 18px;
+  color: #8b96a7;
+}
+
+/* =========================================================
+   CÀI ĐẶT CỬ CHỈ DOUBLE-CLICK TRÊN HÌNH NỀN CHAT
+   ========================================================= */
+.wallpaper-dblclick-setting {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+}
+
+.dblclick-setting-header {
+  margin-bottom: 12px;
+}
+
+.dblclick-setting-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.dblclick-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+}
+
+.dblclick-setting-desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
+.dblclick-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .dblclick-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dblclick-option-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  position: relative;
+  font-family: inherit;
+}
+
+.dblclick-option-btn:hover {
+  background: rgba(51, 65, 85, 0.65);
+  border-color: rgba(135, 116, 225, 0.4);
+}
+
+.dblclick-option-btn.active {
+  background: rgba(135, 116, 225, 0.16);
+  border-color: #8774e1;
+  box-shadow: 0 0 12px rgba(135, 116, 225, 0.2);
+}
+
+.dblclick-option-btn .option-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.dblclick-option-btn .option-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dblclick-option-btn .option-text strong {
+  font-size: 12.5px;
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.dblclick-option-btn.active .option-text strong {
+  color: #c4b5fd;
+}
+
+.dblclick-option-btn .option-text small {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.dblclick-option-btn .option-check {
+  font-size: 14px;
+  font-weight: 700;
+  color: #8774e1;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+/* Badge gợi ý nhấp đúp khi chưa chọn chat */
+.tg-no-chat-dblclick-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 24px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  user-select: none;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.tg-no-chat-dblclick-hint:hover {
+  transform: translateY(-2px);
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(135, 116, 225, 0.3);
+}
+
+.tg-no-chat-dblclick-hint span {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.tg-no-chat-dblclick-hint small {
+  font-size: 12px;
+  color: #c4b5fd;
+  opacity: 0.9;
+}
+
+/* =========================================================
+   GIAO DIỆN BẢNG MÀU NỀN TRÒ CHUYỆN SẮC NÉT (CHAT COLOR THEMES)
+   ========================================================= */
+.wallpaper-preview-color-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #17181c;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.color-preview-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.color-preview-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+  flex: 1;
+}
+
+.color-preview-code {
+  font-family: monospace;
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: #c4b5fd;
+}
+
+/* Grid 14 Chủ đề màu sắc */
+.chat-color-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.chat-color-card {
+  display: flex;
+  flex-direction: column;
+  background: #1c1e24;
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+}
+
+.chat-color-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(135, 116, 225, 0.4);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.chat-color-card.selected {
+  border-color: #8774e1;
+  box-shadow: 0 0 0 2px rgba(135, 116, 225, 0.35);
+  background: #20232c;
+}
+
+.color-card-swatch {
+  height: 72px;
+  width: 100%;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+.color-card-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 2px 6px;
+  border-radius: 6px;
+  backdrop-filter: blur(4px);
+}
+
+.color-selected-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #8774e1;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.color-card-info {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.color-card-info strong {
+  font-size: 13px;
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.chat-color-card.selected .color-card-info strong {
+  color: #c4b5fd;
+}
+
+.color-card-info small {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+/* Tab 2: Custom Color Picker Pane */
+.custom-color-picker-pane {
+  padding: 14px 4px;
+}
+
+.color-picker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.color-picker-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.color-picker-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.color-picker-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.color-input-native {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  width: 52px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.color-input-native::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-input-native::-webkit-color-swatch {
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+}
+
+.color-hex-input {
+  flex: 1;
+  max-width: 220px;
+  height: 44px;
+  padding: 0 14px;
+  background: #111318;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.color-hex-input:focus {
+  outline: none;
+  border-color: #8774e1;
+  box-shadow: 0 0 0 3px rgba(135, 116, 225, 0.2);
+}
+
+.color-swatches-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.color-swatches-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
+  gap: 10px;
+}
+
+.color-swatch-btn {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+}
+
+.color-swatch-btn:hover {
+  transform: scale(1.1);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.color-swatch-btn.selected {
+  border-color: #8774e1;
+  box-shadow: 0 0 0 3px rgba(135, 116, 225, 0.45);
+  transform: scale(1.08);
+}
+
+/* =========================================================
+   PANEL NHẬP MÃ MÀU TỰ ĐỘNG ĐỔI NỀN TỨC THÌ (KHÔNG GIỚI HẠN)
+   ========================================================= */
+.instant-color-input-panel {
+  margin: 14px 0 16px;
+  padding: 14px 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+}
+
+.instant-color-input-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.instant-input-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.instant-input-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #10b981, #06b6d4);
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.4px;
+}
+
+.instant-color-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.instant-color-swatch-picker {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  position: relative;
+}
+
+.instant-color-swatch-picker:hover {
+  transform: scale(1.06);
+  border-color: #8774e1;
+  box-shadow: 0 0 12px rgba(135, 116, 225, 0.4);
+}
+
+.instant-color-swatch-picker span {
+  font-size: 16px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+.instant-color-text-input {
+  flex: 1;
+  height: 42px;
+  padding: 0 14px;
+  background: #0f121a;
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  transition: all 0.2s ease;
+}
+
+.instant-color-text-input:focus {
+  outline: none;
+  border-color: #8774e1;
+  box-shadow: 0 0 0 3px rgba(135, 116, 225, 0.25);
+  background: #141724;
+}
+
+.instant-color-text-input.valid {
+  border-color: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+
+.instant-color-text-input.error {
+  border-color: #f43f5e;
+  box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.2);
+}
+
+.instant-color-apply-btn {
+  height: 42px;
+  padding: 0 16px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+}
+
+.instant-color-apply-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5);
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+}
+
+.instant-color-apply-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.instant-color-status-row {
+  margin-top: 8px;
+}
+
+.instant-status-msg {
+  font-size: 12px;
+  line-height: 1.4;
+  display: block;
+}
+
+.instant-status-msg.valid {
+  color: #34d399;
+  font-weight: 500;
+}
+
+.instant-status-msg.error {
+  color: #fb7185;
+}
+
+.instant-status-msg.hint {
+  color: #94a3b8;
+}
+
+
+
+
