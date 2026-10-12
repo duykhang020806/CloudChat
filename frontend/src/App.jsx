@@ -1138,6 +1138,12 @@ function App() {
   const [copyToast, setCopyToast] = useState('')
   const toastTimerRef = useRef(null)
 
+  // Pinned & Hidden Chats State
+  const [pinnedChats, setPinnedChats] = useState([])
+  const [hiddenChats, setHiddenChats] = useState([])
+  const [activeChatMenuId, setActiveChatMenuId] = useState(null)
+  const [showHiddenSection, setShowHiddenSection] = useState(false)
+
   const showFloatingToast = (msg, duration = 2200) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
     setCopyToast(msg)
@@ -1187,6 +1193,82 @@ function App() {
       setChatWallpapers({})
     }
   }, [currentUser?.id])
+
+  // Sync pinned and hidden chats per user account
+  useEffect(() => {
+    if (!currentUser?.id) return
+    try {
+      const pinKey = `cloudchat_pinned_${currentUser.id}`
+      const savedPin = localStorage.getItem(pinKey)
+      if (savedPin) {
+        setPinnedChats(JSON.parse(savedPin))
+      } else {
+        setPinnedChats([])
+      }
+
+      const hideKey = `cloudchat_hidden_${currentUser.id}`
+      const savedHide = localStorage.getItem(hideKey)
+      if (savedHide) {
+        setHiddenChats(JSON.parse(savedHide))
+      } else {
+        setHiddenChats([])
+      }
+    } catch {
+      setPinnedChats([])
+      setHiddenChats([])
+    }
+  }, [currentUser?.id])
+
+  // Close chat context menu on window click
+  useEffect(() => {
+    const handleWindowClick = () => {
+      setActiveChatMenuId(null)
+    }
+    window.addEventListener('click', handleWindowClick)
+    return () => window.removeEventListener('click', handleWindowClick)
+  }, [])
+
+  const handleTogglePinChat = (chatId, e) => {
+    if (e) e.stopPropagation()
+    setActiveChatMenuId(null)
+    if (!currentUser?.id) return
+    const isPinned = pinnedChats.includes(chatId)
+    const updated = isPinned
+      ? pinnedChats.filter((id) => id !== chatId)
+      : [chatId, ...pinnedChats]
+    setPinnedChats(updated)
+    try {
+      localStorage.setItem(`cloudchat_pinned_${currentUser.id}`, JSON.stringify(updated))
+    } catch {}
+    showFloatingToast(isPinned ? 'Đã bỏ ghim đoạn chat' : '📌 Đã ghim đoạn chat lên đầu')
+  }
+
+  const handleToggleHideChat = (chatId, e) => {
+    if (e) e.stopPropagation()
+    setActiveChatMenuId(null)
+    if (!currentUser?.id) return
+    const isHidden = hiddenChats.includes(chatId)
+    const updated = isHidden
+      ? hiddenChats.filter((id) => id !== chatId)
+      : [...hiddenChats, chatId]
+    setHiddenChats(updated)
+    try {
+      localStorage.setItem(`cloudchat_hidden_${currentUser.id}`, JSON.stringify(updated))
+    } catch {}
+    showFloatingToast(isHidden ? '👁️ Đã hiện lại đoạn chat' : '👁️‍🗨️ Đã ẩn đoạn chat')
+  }
+
+  // Bắt đầu tạo nhóm mới với người bạn này được chọn sẵn
+  const handleStartGroupWithFriend = (friend, e) => {
+    if (e) e.stopPropagation()
+    setActiveChatMenuId(null)
+    setShowMenu(false)
+    setSelectedGroupMemberIds(friend?.id ? [friend.id] : [])
+    setGroupNameInput(friend ? `Nhóm với ${getFriendName(friend)}` : '')
+    setGroupAvatarInput('')
+    setCreateGroupError('')
+    setShowCreateGroupModal(true)
+  }
 
   // Resolve active wallpaper for activeChat or global fallback
   const currentChatWallpaper = useMemo(() => {
@@ -1246,6 +1328,57 @@ function App() {
       items: groups[key],
     }))
   }, [friends, nicknames])
+
+  // Sắp xếp và phân loại danh sách chat: Pinned đưa lên đầu, Hidden lọc ra ngoài
+  const allChatsSorted = useMemo(() => {
+    // Gộp cả nhóm và bạn bè thành 1 danh sách
+    const all = [
+      ...groups.map((g) => ({ ...g, is_group: true })),
+      ...friends.map((f) => ({ ...f, is_group: false })),
+    ]
+
+    // Lọc theo chế độ xem (ẩn hay bình thường)
+    const filtered = all.filter((chat) => {
+      const isHidden = hiddenChats.includes(chat.id)
+      return showHiddenSection ? isHidden : !isHidden
+    })
+
+    // Sắp xếp: Pinned lên trước, sau đó theo thời gian tin nhắn mới nhất
+    return filtered.sort((a, b) => {
+      const aPinned = pinnedChats.includes(a.id)
+      const bPinned = pinnedChats.includes(b.id)
+      if (aPinned && !bPinned) return -1
+      if (!aPinned && bPinned) return 1
+
+      const timeA = new Date(a.last_message_time || a.created_at || 0).getTime()
+      const timeB = new Date(b.last_message_time || b.created_at || 0).getTime()
+      return timeB - timeA
+    })
+  }, [groups, friends, pinnedChats, hiddenChats, showHiddenSection])
+
+  const groupsSorted = useMemo(() => {
+    const filtered = groups.filter((g) => {
+      const isHidden = hiddenChats.includes(g.id)
+      return showHiddenSection ? isHidden : !isHidden
+    })
+
+    return filtered.sort((a, b) => {
+      const aPinned = pinnedChats.includes(a.id)
+      const bPinned = pinnedChats.includes(b.id)
+      if (aPinned && !bPinned) return -1
+      if (!aPinned && bPinned) return 1
+
+      const timeA = new Date(a.last_message_time || a.created_at || 0).getTime()
+      const timeB = new Date(b.last_message_time || b.created_at || 0).getTime()
+      return timeB - timeA
+    })
+  }, [groups, pinnedChats, hiddenChats, showHiddenSection])
+
+  const hiddenCount = useMemo(() => {
+    const all = [...groups, ...friends]
+    return all.filter((c) => hiddenChats.includes(c.id)).length
+  }, [groups, friends, hiddenChats])
+
 
   // Reset in-chat search & info panel when activeChat changes
   useEffect(() => {
@@ -3853,31 +3986,25 @@ function App() {
                   </div>
                 </div>
 
-                <div className="tg-menu-divider" />
-
-                {/* 👥 Tạo nhóm mới */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    setSelectedGroupMemberIds([])
-                    setGroupNameInput('')
-                    setGroupAvatarInput('')
-                    setCreateGroupError('')
-                    setShowCreateGroupModal(true)
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="9" cy="7" r="4"></circle>
-                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                    </svg>
-                  </span>
-                  <span>Tạo nhóm mới</span>
-                  <span className="tg-menu-badge" style={{ background: '#8774e1', color: '#fff', fontSize: 10 }}>+</span>
-                </button>
+                {/* 👁️‍🗨️ Đoạn chat đã ẩn */}
+                {hiddenCount > 0 && (
+                  <button
+                    className={`tg-menu-item ${showHiddenSection ? 'active' : ''}`}
+                    onClick={() => {
+                      setShowMenu(false)
+                      setShowHiddenSection((prev) => !prev)
+                    }}
+                  >
+                    <span className="tg-menu-icon">
+                      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                        <line x1="1" y1="1" x2="23" y2="23"></line>
+                      </svg>
+                    </span>
+                    <span>{showHiddenSection ? 'Xem chat thông thường' : 'Đoạn chat đã ẩn'}</span>
+                    <span className="tg-menu-badge" style={{ background: '#3b82f6', color: '#fff', fontSize: 10 }}>{hiddenCount}</span>
+                  </button>
+                )}
 
                 {/* ➕ Thêm bạn bè */}
                 <button
@@ -4286,197 +4413,267 @@ function App() {
                   </div>
                 )
               ) : folderTab === 'groups' ? (
-                groups.length > 0 ? (
-                  groups.map((group) => (
-                    <button
-                      className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
-                      key={group.id}
-                      onClick={() => setActiveChat(group)}
-                    >
+                groupsSorted.length > 0 ? (
+                  groupsSorted.map((group) => {
+                    const isPinned = pinnedChats.includes(group.id)
+                    const isHidden = hiddenChats.includes(group.id)
+                    const isMenuOpen = activeChatMenuId === group.id
+                    return (
                       <div
-                        className="tg-avatar"
-                        style={{
-                          background: !group.avatar_url
-                            ? getAvatarGradient(group.id || group.name)
-                            : undefined,
-                        }}
+                        className={`tg-chat-item-wrapper ${activeChat?.id === group.id ? 'active' : ''}`}
+                        key={group.id}
                       >
-                        {group.avatar_url ? (
-                          <img
-                            src={group.avatar_url}
-                            alt={group.name}
-                            className="avatar-img"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none'
+                        <button
+                          className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
+                          onClick={() => setActiveChat(group)}
+                        >
+                          <div
+                            className="tg-avatar"
+                            style={{
+                              background: !group.avatar_url
+                                ? getAvatarGradient(group.id || group.name)
+                                : undefined,
                             }}
-                          />
-                        ) : (
-                          getFriendInitials(group.name)
-                        )}
-                      </div>
-
-                      <div className="tg-chat-info">
-                        <div className="tg-chat-top">
-                          <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            {group.name}
-                            {group.is_community ? (
-                              <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
-                                CỘNG ĐỒNG
-                              </span>
+                          >
+                            {group.avatar_url ? (
+                              <img
+                                src={group.avatar_url}
+                                alt={group.name}
+                                className="avatar-img"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none'
+                                }}
+                              />
                             ) : (
-                              <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
-                                {group.member_count} tv
-                              </span>
+                              getFriendInitials(group.name)
                             )}
-                          </span>
-                          <span className="tg-chat-time">
-                            {formatChatListTime(group.last_message_time || group.created_at)}
-                          </span>
-                        </div>
-                        <div className="tg-chat-bottom">
-                          <span className="tg-chat-preview">
-                            {group.last_message || 'Chưa có tin nhắn trong nhóm'}
-                          </span>
+                          </div>
+
+                          <div className="tg-chat-info">
+                            <div className="tg-chat-top">
+                              <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
+                                {group.name}
+                                {group.is_community ? (
+                                  <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                    CỘNG ĐỒNG
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                    {group.member_count} tv
+                                  </span>
+                                )}
+                              </span>
+                              <span className="tg-chat-time">
+                                {formatChatListTime(group.last_message_time || group.created_at)}
+                              </span>
+                            </div>
+                            <div className="tg-chat-bottom">
+                              <span className="tg-chat-preview">
+                                {group.last_message || 'Chưa có tin nhắn trong nhóm'}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+
+                        {/* Nút 3 chấm trên từng nhóm */}
+                        <div className="tg-chat-item-actions">
+                          <button
+                            type="button"
+                            className="tg-chat-more-btn"
+                            title="Tùy chọn cuộc trò chuyện"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setActiveChatMenuId(isMenuOpen ? null : group.id)
+                            }}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                              <circle cx="12" cy="5" r="2.2"></circle>
+                              <circle cx="12" cy="12" r="2.2"></circle>
+                              <circle cx="12" cy="19" r="2.2"></circle>
+                            </svg>
+                          </button>
+
+                          {/* Context Menu Dropdown */}
+                          {isMenuOpen && (
+                            <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className="tg-chat-menu-action"
+                                onClick={(e) => handleTogglePinChat(group.id, e)}
+                              >
+                                <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="tg-chat-menu-action"
+                                onClick={(e) => handleToggleHideChat(group.id, e)}
+                              >
+                                <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </button>
-                  ))
+                    )
+                  })
                 ) : (
                   <div className="tg-empty-list">
                     <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
-                    <p>Chưa tham gia nhóm chat nào</p>
-                    <button
-                      className="primary-button"
-                      style={{ marginTop: 12, fontSize: 13, padding: '8px 16px' }}
-                      onClick={() => {
-                        setSelectedGroupMemberIds([])
-                        setGroupNameInput('')
-                        setGroupAvatarInput('')
-                        setCreateGroupError('')
-                        setShowCreateGroupModal(true)
-                      }}
-                    >
-                      + Tạo nhóm chat mới
-                    </button>
+                    <p>{showHiddenSection ? 'Không có nhóm nào bị ẩn' : 'Chưa tham gia nhóm chat nào'}</p>
+                    {!showHiddenSection && (
+                      <button
+                        className="primary-button"
+                        style={{ marginTop: 12, fontSize: 13, padding: '8px 16px' }}
+                        onClick={() => {
+                          setSelectedGroupMemberIds([])
+                          setGroupNameInput('')
+                          setGroupAvatarInput('')
+                          setCreateGroupError('')
+                          setShowCreateGroupModal(true)
+                        }}
+                      >
+                        + Tạo nhóm chat mới
+                      </button>
+                    )}
                   </div>
                 )
               ) : folderTab === 'all' ? (
-                (groups.length > 0 || friends.length > 0) ? (
+                allChatsSorted.length > 0 ? (
                   <>
-                    {/* Render Groups */}
-                    {groups.map((group) => (
-                      <button
-                        className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
-                        key={group.id}
-                        onClick={() => setActiveChat(group)}
-                      >
-                        <div
-                          className="tg-avatar"
-                          style={{
-                            background: !group.avatar_url
-                              ? getAvatarGradient(group.id || group.name)
-                              : undefined,
-                          }}
-                        >
-                          {group.avatar_url ? (
-                            <img
-                              src={group.avatar_url}
-                              alt={group.name}
-                              className="avatar-img"
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none'
-                              }}
-                            />
-                          ) : (
-                            getFriendInitials(group.name)
-                          )}
-                        </div>
+                    {allChatsSorted.map((item) => {
+                      const isPinned = pinnedChats.includes(item.id)
+                      const isHidden = hiddenChats.includes(item.id)
+                      const isMenuOpen = activeChatMenuId === item.id
+                      const isGroup = Boolean(item.is_group)
 
-                        <div className="tg-chat-info">
-                          <div className="tg-chat-top">
-                            <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              {group.name}
-                              {group.is_community ? (
-                                <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
-                                  CỘNG ĐỒNG
-                                </span>
+                      return (
+                        <div
+                          className={`tg-chat-item-wrapper ${activeChat?.id === item.id ? 'active' : ''}`}
+                          key={item.id}
+                        >
+                          <button
+                            className={`tg-chat-item ${activeChat?.id === item.id ? 'active' : ''}`}
+                            onClick={() => setActiveChat(item)}
+                          >
+                            <div
+                              className="tg-avatar"
+                              style={{
+                                background: !item.avatar_url
+                                  ? getAvatarGradient(item.id || (isGroup ? item.name : item.username))
+                                  : undefined,
+                              }}
+                            >
+                              {item.avatar_url ? (
+                                <img
+                                  src={item.avatar_url}
+                                  alt={isGroup ? item.name : item.username}
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
                               ) : (
-                                <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
-                                  {group.member_count} tv
-                                </span>
+                                getFriendInitials(isGroup ? item.name : getFriendName(item))
                               )}
-                            </span>
-                            <span className="tg-chat-time">
-                              {formatChatListTime(group.last_message_time || group.created_at)}
-                            </span>
-                          </div>
-                          <div className="tg-chat-bottom">
-                            <span className="tg-chat-preview">
-                              {group.last_message || 'Chưa có tin nhắn trong nhóm'}
-                            </span>
-                          </div>
-                        </div>
-                      </button>
-                    ))}
+                              {!isGroup && (
+                                <div className={`tg-online-dot ${item.is_online ? 'online' : 'offline'}`} />
+                              )}
+                            </div>
 
-                    {/* Render Friends */}
-                    {friends.map((friend) => (
-                      <button
-                        className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
-                        key={friend.id}
-                        onClick={() => setActiveChat(friend)}
-                      >
-                        <div
-                          className="tg-avatar"
-                          style={{
-                            background: !friend.avatar_url
-                              ? getAvatarGradient(friend.id || friend.username)
-                              : undefined,
-                          }}
-                        >
-                          {friend.avatar_url ? (
-                            <img
-                              src={friend.avatar_url}
-                              alt={friend.username}
-                              className="avatar-img"
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none'
+                            <div className="tg-chat-info">
+                              <div className="tg-chat-top">
+                                <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
+                                  {isGroup ? item.name : getFriendName(item)}
+                                  {isGroup && item.is_community && (
+                                    <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                      CỘNG ĐỒNG
+                                    </span>
+                                  )}
+                                  {isGroup && !item.is_community && (
+                                    <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                      {item.member_count} tv
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="tg-chat-time">
+                                  {formatChatListTime(item.last_message_time || item.created_at)}
+                                </span>
+                              </div>
+                              <div className="tg-chat-bottom">
+                                <span className="tg-chat-preview">
+                                  {isGroup
+                                    ? item.last_message || 'Chưa có tin nhắn trong nhóm'
+                                    : formatLastMessagePreview(item, currentUser)}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+
+                          {/* Nút 3 chấm trên từng hội thoại */}
+                          <div className="tg-chat-item-actions">
+                            <button
+                              type="button"
+                              className="tg-chat-more-btn"
+                              title="Tùy chọn cuộc trò chuyện"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setActiveChatMenuId(isMenuOpen ? null : item.id)
                               }}
-                            />
-                          ) : (
-                            getFriendInitials(getFriendName(friend))
-                          )}
-                          <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
-                        </div>
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="5" r="2.2"></circle>
+                                <circle cx="12" cy="12" r="2.2"></circle>
+                                <circle cx="12" cy="19" r="2.2"></circle>
+                              </svg>
+                            </button>
 
-                        <div className="tg-chat-info">
-                          <div className="tg-chat-top">
-                            <span className="tg-chat-name">
-                              {getFriendName(friend)}
-                            </span>
-                            <span className="tg-chat-time">
-                              {formatChatListTime(friend.last_message_time)}
-                            </span>
-                          </div>
-                          <div className="tg-chat-bottom">
-                            <span className="tg-chat-preview">
-                              {formatLastMessagePreview(friend, currentUser)}
-                            </span>
+                            {/* Dropdown Menu 3 chấm: Ghim chat, Ẩn chat, Thêm nhóm */}
+                            {isMenuOpen && (
+                              <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
+                                {!isGroup && (
+                                  <button
+                                    type="button"
+                                    className="tg-chat-menu-action highlight"
+                                    onClick={(e) => handleStartGroupWithFriend(item, e)}
+                                  >
+                                    <span>👥 Thêm nhóm mới (+)</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="tg-chat-menu-action"
+                                  onClick={(e) => handleTogglePinChat(item.id, e)}
+                                >
+                                  <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="tg-chat-menu-action"
+                                  onClick={(e) => handleToggleHideChat(item.id, e)}
+                                >
+                                  <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      </button>
-                    ))}
+                      )
+                    })}
                   </>
                 ) : (
                   <div className="tg-empty-list">
-                    <p>Chưa có cuộc trò chuyện nào.</p>
-                    <button
-                      className="secondary-button"
-                      style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
-                      onClick={() => setShowAddFriendModal(true)}
-                    >
-                      + Thêm bạn bè để bắt đầu
-                    </button>
+                    <p>{showHiddenSection ? 'Không có cuộc trò chuyện nào bị ẩn.' : 'Chưa có cuộc trò chuyện nào.'}</p>
+                    {!showHiddenSection && (
+                      <button
+                        className="secondary-button"
+                        style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
+                        onClick={() => setShowAddFriendModal(true)}
+                      >
+                        + Thêm bạn bè để bắt đầu
+                      </button>
+                    )}
                   </div>
                 )
               ) : (
@@ -4485,44 +4682,101 @@ function App() {
                   alphabeticalFriends.map((group) => (
                     <div key={group.letter} className="tg-friend-group">
                       <div className="tg-friend-group-header">{group.letter}</div>
-                      {group.items.map((friend) => (
-                        <button
-                          className={`tg-chat-item tg-friend-item ${activeChat?.id === friend.id ? 'active' : ''}`}
-                          key={friend.id}
-                          onClick={() => setActiveChat(friend)}
-                        >
-                          <div
-                            className="tg-avatar"
-                            style={{
-                              background: !friend.avatar_url
-                                ? getAvatarGradient(friend.id || friend.username)
-                                : undefined,
-                            }}
-                          >
-                            {friend.avatar_url ? (
-                              <img
-                                src={friend.avatar_url}
-                                alt=""
-                                className="avatar-img"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none'
-                                }}
-                              />
-                            ) : (
-                              getFriendInitials(getFriendName(friend))
-                            )}
-                            <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
-                          </div>
+                      {group.items.map((friend) => {
+                        const isPinned = pinnedChats.includes(friend.id)
+                        const isHidden = hiddenChats.includes(friend.id)
+                        const isMenuOpen = activeChatMenuId === friend.id
 
-                          <div className="tg-chat-info">
-                            <div className="tg-chat-top">
-                              <span className="tg-chat-name">
-                                {getFriendName(friend)}
-                              </span>
+                        return (
+                          <div
+                            className={`tg-chat-item-wrapper ${activeChat?.id === friend.id ? 'active' : ''}`}
+                            key={friend.id}
+                          >
+                            <button
+                              className={`tg-chat-item tg-friend-item ${activeChat?.id === friend.id ? 'active' : ''}`}
+                              onClick={() => setActiveChat(friend)}
+                            >
+                              <div
+                                className="tg-avatar"
+                                style={{
+                                  background: !friend.avatar_url
+                                    ? getAvatarGradient(friend.id || friend.username)
+                                    : undefined,
+                                }}
+                              >
+                                {friend.avatar_url ? (
+                                  <img
+                                    src={friend.avatar_url}
+                                    alt=""
+                                    className="avatar-img"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none'
+                                    }}
+                                  />
+                                ) : (
+                                  getFriendInitials(getFriendName(friend))
+                                )}
+                                <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
+                              </div>
+
+                              <div className="tg-chat-info">
+                                <div className="tg-chat-top">
+                                  <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
+                                    {getFriendName(friend)}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+
+                            {/* Nút 3 chấm trên từng bạn bè */}
+                            <div className="tg-chat-item-actions">
+                              <button
+                                type="button"
+                                className="tg-chat-more-btn"
+                                title="Tùy chọn cuộc trò chuyện"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setActiveChatMenuId(isMenuOpen ? null : friend.id)
+                                }}
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="5" r="2.2"></circle>
+                                <circle cx="12" cy="12" r="2.2"></circle>
+                                <circle cx="12" cy="19" r="2.2"></circle>
+                                </svg>
+                              </button>
+
+                              {/* Dropdown Menu 3 chấm */}
+                              {isMenuOpen && (
+                                <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    className="tg-chat-menu-action highlight"
+                                    onClick={(e) => handleStartGroupWithFriend(friend, e)}
+                                  >
+                                    <span>👥 Thêm nhóm mới (+)</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="tg-chat-menu-action"
+                                    onClick={(e) => handleTogglePinChat(friend.id, e)}
+                                  >
+                                    <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="tg-chat-menu-action"
+                                    onClick={(e) => handleToggleHideChat(friend.id, e)}
+                                  >
+                                    <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
-                        </button>
-                      ))}
+                        )
+                      })}
                     </div>
                   ))
                 ) : (

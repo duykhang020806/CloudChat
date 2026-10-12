@@ -1047,6 +1047,144 @@ button {
   font-size: 13px;
 }
 
+/* Chat Item Wrapper with 3-dot Actions Menu */
+.tg-chat-item-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: 14px;
+  margin-bottom: 2px;
+  transition: background 0.15s ease;
+}
+
+.tg-chat-item-wrapper:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tg-chat-item-wrapper.active {
+  background: #2a2e38;
+}
+
+.tg-chat-item-wrapper .tg-chat-item {
+  margin-bottom: 0;
+  padding-right: 36px;
+  background: transparent;
+}
+
+.tg-chat-item-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  z-index: 10;
+}
+
+.tg-chat-more-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #727e90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+}
+
+.tg-chat-item-wrapper:hover .tg-chat-more-btn,
+.tg-chat-item-wrapper.active .tg-chat-more-btn,
+.tg-chat-more-btn:focus,
+.tg-chat-item-actions:hover .tg-chat-more-btn {
+  opacity: 1;
+}
+
+.tg-chat-more-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  transform: scale(1.08);
+}
+
+.tg-pin-icon {
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  animation: tgPinBounce 0.3s ease;
+}
+
+@keyframes tgPinBounce {
+  0% { transform: scale(0.6); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* 3-dot Dropdown Context Menu */
+.tg-chat-context-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 175px;
+  background: #1e2229;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 999;
+  animation: tgMenuFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes tgMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.tg-chat-menu-action {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.tg-chat-menu-action:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.tg-chat-menu-action.highlight {
+  color: #a78bfa;
+  font-weight: 600;
+}
+
+.tg-chat-menu-action.highlight:hover {
+  background: rgba(135, 116, 225, 0.16);
+  color: #c4b5fd;
+}
+
 /* ===================================================
    RIGHT MAIN AREA (EMPTY & CHAT)
    =================================================== */
