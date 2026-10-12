@@ -1476,8 +1476,42 @@ button {
   transform: scale(1.12);
 }
 
-.tg-msg-act-btn:active {
-  transform: scale(0.95);
+.tg-msg-act-btn.active {
+  background: #3b4255;
+  color: #c4b5fd;
+  transform: scale(1.08);
+}
+
+/* Popover Menu cho nút ... */
+.tg-msg-popover-menu {
+  animation: popoverFadeIn 0.15s ease-out;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.tg-popover-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.tg-popover-item.danger:hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #f87171 !important;
+}
+
+.tg-load-more-btn:hover {
+  background: rgba(135, 116, 225, 0.28) !important;
+  border-color: #8774e1 !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
 }
 
 /* ===================================================

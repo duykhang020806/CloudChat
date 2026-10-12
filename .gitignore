@@ -5,3 +5,7 @@ dist/
 !.env.example
 .dev.vars
 .wrangler/
+*.db
+*.sqlite
+*.sqlite3
+

@@ -1106,6 +1106,28 @@ function App() {
   const [previewMediaUrl, setPreviewMediaUrl] = useState(null)
   const fileInputRef = useRef(null)
 
+  // Pagination / Load 20 tin nhắn gần nhất & Tối ưu hiệu năng
+  const [visibleCount, setVisibleCount] = useState(20)
+
+  // Message Actions Popover (khi ấn nút ...)
+  const [activeActionMsgId, setActiveActionMsgId] = useState(null)
+  const [deletingMsgId, setDeletingMsgId] = useState(null)
+
+  // Groups & Community State
+  const [groups, setGroups] = useState([])
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
+  const [groupNameInput, setGroupNameInput] = useState('')
+  const [groupAvatarInput, setGroupAvatarInput] = useState('')
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState([])
+  const [createGroupError, setCreateGroupError] = useState('')
+  const [createGroupLoading, setCreateGroupLoading] = useState(false)
+  const [groupDetailData, setGroupDetailData] = useState(null)
+  const [upgradingCommunity, setUpgradingCommunity] = useState(false)
+  const [showAddGroupMemberModal, setShowAddGroupMemberModal] = useState(false)
+  const [addMemberSelectedIds, setAddMemberSelectedIds] = useState([])
+  const [addMemberLoading, setAddMemberLoading] = useState(false)
+  const [addMemberError, setAddMemberError] = useState('')
+
   // Reply & Share State
   const [replyingMessage, setReplyingMessage] = useState(null)
   const [sharingMessage, setSharingMessage] = useState(null)
@@ -1516,10 +1538,206 @@ function App() {
     navigator.clipboard
       .writeText(textToCopy)
       .then(() => {
-        setCopyToast('Đã sao chép tin nhắn!')
-        setTimeout(() => setCopyToast(''), 2000)
+        showFloatingToast('Đã sao chép tin nhắn!')
       })
       .catch(() => {})
+  }
+
+  // Xóa tin nhắn (Delete Message)
+  const handleDeleteMessage = async (messageId) => {
+    if (!messageId) return
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    setDeletingMsgId(messageId)
+    // Optimistic UI: xóa khỏi danh sách tin nhắn ngay lập tức
+    setMessages((prev) => prev.filter((m) => m.id !== messageId))
+    setActiveActionMsgId(null)
+    showFloatingToast('Đã xóa tin nhắn')
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/messages/${messageId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        console.error('Delete message failed:', data)
+      }
+    } catch (err) {
+      console.error('Delete message error:', err)
+    } finally {
+      setDeletingMsgId(null)
+    }
+  }
+
+  // Tải danh sách nhóm chat của người dùng
+  const loadGroups = async () => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/groups`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (response.ok && data.success) {
+        setGroups(data.groups || [])
+      }
+    } catch (err) {
+      console.error('Load groups error:', err)
+    }
+  }
+
+  // Tải chi tiết nhóm (bao gồm danh sách thành viên tuân thủ rule <= 50 và > 50)
+  const loadGroupDetail = async (groupId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token || !groupId) return
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/groups/${groupId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (response.ok && data.success) {
+        setGroupDetailData(data.group)
+      }
+    } catch (err) {
+      console.error('Load group detail error:', err)
+    }
+  }
+
+  // Tạo nhóm chat mới
+  const handleCreateGroup = async (e) => {
+    if (e) e.preventDefault()
+    const name = groupNameInput.trim()
+    if (!name) {
+      setCreateGroupError('Vui lòng nhập tên nhóm')
+      return
+    }
+
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    setCreateGroupLoading(true)
+    setCreateGroupError('')
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/groups`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name,
+          avatar_url: groupAvatarInput.trim(),
+          member_ids: selectedGroupMemberIds,
+        }),
+      })
+
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        setCreateGroupError(data.message || 'Tạo nhóm thất bại')
+        return
+      }
+
+      showFloatingToast(`Đã tạo nhóm "${name}" thành công! 🎉`)
+      setShowCreateGroupModal(false)
+      setGroupNameInput('')
+      setGroupAvatarInput('')
+      setSelectedGroupMemberIds([])
+      await loadGroups()
+
+      if (data.group) {
+        setActiveChat(data.group)
+      }
+    } catch (err) {
+      setCreateGroupError('Lỗi kết nối khi tạo nhóm: ' + err.message)
+    } finally {
+      setCreateGroupLoading(false)
+    }
+  }
+
+  // Nâng cấp nhóm lên Cộng đồng (chỉ người tạo nhóm)
+  const handleUpgradeCommunity = async (groupId) => {
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token || !groupId) return
+
+    setUpgradingCommunity(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/groups/${groupId}/upgrade-community`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (response.ok && data.success) {
+        showFloatingToast('🚀 Nhóm đã được nâng cấp lên Cộng đồng! Không giới hạn thành viên.')
+        await loadGroups()
+        await loadGroupDetail(groupId)
+        // Cập nhật activeChat
+        setActiveChat((prev) => (prev ? { ...prev, is_community: 1 } : prev))
+      } else {
+        alert(data.message || 'Nâng cấp thất bại')
+      }
+    } catch (err) {
+      console.error('Upgrade community error:', err)
+      alert('Lỗi nâng cấp nhóm: ' + err.message)
+    } finally {
+      setUpgradingCommunity(false)
+    }
+  }
+
+  // Thêm thành viên vào nhóm hiện tại
+  const handleAddMembersToGroup = async () => {
+    if (!activeChat || !activeChat.is_group) return
+    if (addMemberSelectedIds.length === 0) {
+      setAddMemberError('Vui lòng chọn ít nhất một người bạn')
+      return
+    }
+
+    const token = localStorage.getItem('cloudchat_token')
+    if (!token) return
+
+    setAddMemberLoading(true)
+    setAddMemberError('')
+
+    try {
+      const response = await fetch(`${API_BASE}/api/protected/groups/${activeChat.id}/members`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          member_ids: addMemberSelectedIds,
+        }),
+      })
+
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        setAddMemberError(data.message || 'Không thể thêm thành viên')
+        return
+      }
+
+      showFloatingToast(data.message || 'Đã thêm thành viên thành công!')
+      setShowAddGroupMemberModal(false)
+      setAddMemberSelectedIds([])
+      await loadGroupDetail(activeChat.id)
+      await loadGroups()
+    } catch (err) {
+      setAddMemberError('Lỗi thêm thành viên: ' + err.message)
+    } finally {
+      setAddMemberLoading(false)
+    }
   }
 
   const handleForwardMessage = async (targetFriendId, msg) => {
@@ -1945,11 +2163,13 @@ function App() {
     if (!currentUser) return
 
     loadFriends()
+    loadGroups()
     loadFriendRequests()
     loadSentFriendRequests()
 
     const interval = setInterval(() => {
       loadFriends()
+      loadGroups()
       loadFriendRequests()
       loadSentFriendRequests()
     }, 10000)
@@ -1960,17 +2180,28 @@ function App() {
   useEffect(() => {
     if (!activeChat?.id) {
       setMessages([])
+      setGroupDetailData(null)
       return
     }
 
+    setVisibleCount(20) // Reset về 20 tin nhắn mỗi khi đổi chat
     loadMessages(activeChat.id, false)
+    if (activeChat.is_group) {
+      loadGroupDetail(activeChat.id)
+    }
 
     const interval = setInterval(() => {
       loadMessages(activeChat.id, true)
+      if (activeChat.is_group) {
+        loadGroupDetail(activeChat.id)
+      }
     }, 2000)
 
     const handleFocus = () => {
       loadMessages(activeChat.id, true)
+      if (activeChat.is_group) {
+        loadGroupDetail(activeChat.id)
+      }
     }
     window.addEventListener('focus', handleFocus)
 
@@ -1982,18 +2213,38 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages.length])
 
+  // Gửi tin nhắn tối ưu: 0ms delay (Optimistic UI update)
   const handleSend = async () => {
     const text = message.trim()
-
     if (!text || !activeChat) return
 
     const token = localStorage.getItem('cloudchat_token')
-
     if (!token) return
 
     const replyId = replyingMessage?.id || null
+    const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+    const now = new Date().toISOString()
+
+    // ⚡ OPTIMISTIC UPDATE: Đưa ngay lập tức vào state messages không chờ backend
+    const optimisticMsg = {
+      id: tempId,
+      sender_id: currentUser.id,
+      receiver_id: activeChat.id,
+      content: text,
+      created_at: now,
+      sender_username: currentUser.username,
+      sender_name: currentUser.display_name || currentUser.username,
+      sender_avatar: currentUser.avatar_url || '',
+      is_optimistic: true,
+      reply_to_id: replyId,
+    }
+
+    setMessages((current) => [...current, optimisticMsg])
+    setMessage('')
+    setReplyingMessage(null)
+    msgInputRef.current?.focus()
 
     try {
       const response = await fetch(
@@ -2015,23 +2266,24 @@ function App() {
 
       if (!response.ok || !data.success) {
         console.error('Send message failed:', data)
+        // Nếu lỗi, loại bỏ optimisticMsg khỏi danh sách
+        setMessages((current) => current.filter((m) => m.id !== tempId))
+        showFloatingToast('Không thể gửi tin nhắn. Vui lòng thử lại!')
         return
       }
 
       if (data.message) {
-        setMessages((current) => {
-          if (current.some((m) => m.id === data.message.id)) {
-            return current
-          }
-          return [...current, data.message]
-        })
+        // Thay thế temp message bằng tin nhắn chính thức từ DB
+        setMessages((current) =>
+          current.map((m) => (m.id === tempId ? data.message : m))
+        )
         loadFriends()
+        loadGroups()
       }
-
-      setMessage('')
-      setReplyingMessage(null)
     } catch (error) {
       console.error('Send message error:', error)
+      setMessages((current) => current.filter((m) => m.id !== tempId))
+      showFloatingToast('Lỗi mạng khi gửi tin nhắn')
     }
   }
 
@@ -3603,6 +3855,30 @@ function App() {
 
                 <div className="tg-menu-divider" />
 
+                {/* 👥 Tạo nhóm mới */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    setSelectedGroupMemberIds([])
+                    setGroupNameInput('')
+                    setGroupAvatarInput('')
+                    setCreateGroupError('')
+                    setShowCreateGroupModal(true)
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="9" cy="7" r="4"></circle>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                  </span>
+                  <span>Tạo nhóm mới</span>
+                  <span className="tg-menu-badge" style={{ background: '#8774e1', color: '#fff', fontSize: 10 }}>+</span>
+                </button>
+
                 {/* ➕ Thêm bạn bè */}
                 <button
                   className="tg-menu-item"
@@ -3875,6 +4151,13 @@ function App() {
                 <span>Tất cả</span>
               </button>
               <button
+                className={`tg-folder-tab ${folderTab === 'groups' ? 'active' : ''}`}
+                onClick={() => setFolderTab('groups')}
+              >
+                <span>Nhóm</span>
+                {groups.length > 0 && <span className="tg-tab-badge">{groups.length}</span>}
+              </button>
+              <button
                 className={`tg-folder-tab ${folderTab === 'friends' ? 'active' : ''}`}
                 onClick={() => setFolderTab('friends')}
               >
@@ -4002,55 +4285,203 @@ function App() {
                     </button>
                   </div>
                 )
-              ) : friends.length > 0 ? (
-                folderTab === 'all' ? (
-                  friends.map((friend) => (
+              ) : folderTab === 'groups' ? (
+                groups.length > 0 ? (
+                  groups.map((group) => (
                     <button
-                      className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
-                      key={friend.id}
-                      onClick={() => setActiveChat(friend)}
+                      className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
+                      key={group.id}
+                      onClick={() => setActiveChat(group)}
                     >
                       <div
                         className="tg-avatar"
                         style={{
-                          background: !friend.avatar_url
-                            ? getAvatarGradient(friend.id || friend.username)
+                          background: !group.avatar_url
+                            ? getAvatarGradient(group.id || group.name)
                             : undefined,
                         }}
                       >
-                        {friend.avatar_url ? (
+                        {group.avatar_url ? (
                           <img
-                            src={friend.avatar_url}
-                            alt={friend.username}
+                            src={group.avatar_url}
+                            alt={group.name}
                             className="avatar-img"
                             onError={(e) => {
                               e.currentTarget.style.display = 'none'
                             }}
                           />
                         ) : (
-                          getFriendInitials(getFriendName(friend))
+                          getFriendInitials(group.name)
                         )}
-                        <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
                       </div>
 
                       <div className="tg-chat-info">
                         <div className="tg-chat-top">
-                          <span className="tg-chat-name">
-                            {getFriendName(friend)}
+                          <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {group.name}
+                            {group.is_community ? (
+                              <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                CỘNG ĐỒNG
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                {group.member_count} tv
+                              </span>
+                            )}
                           </span>
                           <span className="tg-chat-time">
-                            {formatChatListTime(friend.last_message_time)}
+                            {formatChatListTime(group.last_message_time || group.created_at)}
                           </span>
                         </div>
                         <div className="tg-chat-bottom">
                           <span className="tg-chat-preview">
-                            {formatLastMessagePreview(friend, currentUser)}
+                            {group.last_message || 'Chưa có tin nhắn trong nhóm'}
                           </span>
                         </div>
                       </div>
                     </button>
                   ))
                 ) : (
+                  <div className="tg-empty-list">
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
+                    <p>Chưa tham gia nhóm chat nào</p>
+                    <button
+                      className="primary-button"
+                      style={{ marginTop: 12, fontSize: 13, padding: '8px 16px' }}
+                      onClick={() => {
+                        setSelectedGroupMemberIds([])
+                        setGroupNameInput('')
+                        setGroupAvatarInput('')
+                        setCreateGroupError('')
+                        setShowCreateGroupModal(true)
+                      }}
+                    >
+                      + Tạo nhóm chat mới
+                    </button>
+                  </div>
+                )
+              ) : folderTab === 'all' ? (
+                (groups.length > 0 || friends.length > 0) ? (
+                  <>
+                    {/* Render Groups */}
+                    {groups.map((group) => (
+                      <button
+                        className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
+                        key={group.id}
+                        onClick={() => setActiveChat(group)}
+                      >
+                        <div
+                          className="tg-avatar"
+                          style={{
+                            background: !group.avatar_url
+                              ? getAvatarGradient(group.id || group.name)
+                              : undefined,
+                          }}
+                        >
+                          {group.avatar_url ? (
+                            <img
+                              src={group.avatar_url}
+                              alt={group.name}
+                              className="avatar-img"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none'
+                              }}
+                            />
+                          ) : (
+                            getFriendInitials(group.name)
+                          )}
+                        </div>
+
+                        <div className="tg-chat-info">
+                          <div className="tg-chat-top">
+                            <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {group.name}
+                              {group.is_community ? (
+                                <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                  CỘNG ĐỒNG
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                  {group.member_count} tv
+                                </span>
+                              )}
+                            </span>
+                            <span className="tg-chat-time">
+                              {formatChatListTime(group.last_message_time || group.created_at)}
+                            </span>
+                          </div>
+                          <div className="tg-chat-bottom">
+                            <span className="tg-chat-preview">
+                              {group.last_message || 'Chưa có tin nhắn trong nhóm'}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+
+                    {/* Render Friends */}
+                    {friends.map((friend) => (
+                      <button
+                        className={`tg-chat-item ${activeChat?.id === friend.id ? 'active' : ''}`}
+                        key={friend.id}
+                        onClick={() => setActiveChat(friend)}
+                      >
+                        <div
+                          className="tg-avatar"
+                          style={{
+                            background: !friend.avatar_url
+                              ? getAvatarGradient(friend.id || friend.username)
+                              : undefined,
+                          }}
+                        >
+                          {friend.avatar_url ? (
+                            <img
+                              src={friend.avatar_url}
+                              alt={friend.username}
+                              className="avatar-img"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none'
+                              }}
+                            />
+                          ) : (
+                            getFriendInitials(getFriendName(friend))
+                          )}
+                          <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
+                        </div>
+
+                        <div className="tg-chat-info">
+                          <div className="tg-chat-top">
+                            <span className="tg-chat-name">
+                              {getFriendName(friend)}
+                            </span>
+                            <span className="tg-chat-time">
+                              {formatChatListTime(friend.last_message_time)}
+                            </span>
+                          </div>
+                          <div className="tg-chat-bottom">
+                            <span className="tg-chat-preview">
+                              {formatLastMessagePreview(friend, currentUser)}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                ) : (
+                  <div className="tg-empty-list">
+                    <p>Chưa có cuộc trò chuyện nào.</p>
+                    <button
+                      className="secondary-button"
+                      style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
+                      onClick={() => setShowAddFriendModal(true)}
+                    >
+                      + Thêm bạn bè để bắt đầu
+                    </button>
+                  </div>
+                )
+              ) : (
+                /* Tab Bạn bè */
+                friends.length > 0 ? (
                   alphabeticalFriends.map((group) => (
                     <div key={group.letter} className="tg-friend-group">
                       <div className="tg-friend-group-header">{group.letter}</div>
@@ -4094,18 +4525,18 @@ function App() {
                       ))}
                     </div>
                   ))
+                ) : (
+                  <div className="tg-empty-list">
+                    <p>Chưa có bạn bè nào.</p>
+                    <button
+                      className="secondary-button"
+                      style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
+                      onClick={() => setShowAddFriendModal(true)}
+                    >
+                      + Thêm bạn bè để bắt đầu
+                    </button>
+                  </div>
                 )
-              ) : (
-                <div className="tg-empty-list">
-                  <p>Chưa có bạn bè nào.</p>
-                  <button
-                    className="secondary-button"
-                    style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
-                    onClick={() => setShowAddFriendModal(true)}
-                  >
-                    + Thêm bạn bè để bắt đầu
-                  </button>
-                </div>
               )}
             </div>
           </>
@@ -4154,21 +4585,31 @@ function App() {
                   {activeChat.avatar_url ? (
                     <img
                       src={activeChat.avatar_url}
-                      alt={activeChat.username}
+                      alt={activeChat.username || activeChat.name}
                       className="avatar-img"
                       onError={(e) => {
                         e.currentTarget.style.display = 'none'
                       }}
                     />
+                  ) : activeChat.is_group ? (
+                    getFriendInitials(activeChat.name)
                   ) : (
                     getFriendName(activeChat).charAt(0).toUpperCase()
                   )}
-                  <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
+                  {!activeChat.is_group && (
+                    <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
+                  )}
                 </div>
                 <div className="tg-header-details">
-                  <strong>{getFriendName(activeChat)}</strong>
-                  <span className={`tg-header-status ${activeChat.is_online ? 'online' : 'offline'}`}>
-                    {formatUserStatus(activeChat)}
+                  <strong>
+                    {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
+                  </strong>
+                  <span className={`tg-header-status ${activeChat.is_group ? 'online' : (activeChat.is_online ? 'online' : 'offline')}`}>
+                    {activeChat.is_group
+                      ? activeChat.is_community
+                        ? `🚀 Cộng đồng • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên`
+                        : `👥 Nhóm chat • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên (tối đa 50)`
+                      : formatUserStatus(activeChat)}
                   </span>
                 </div>
               </div>
@@ -4301,169 +4742,367 @@ function App() {
                   )
                   const latestMineId = latestMineMsg ? latestMineMsg.id : null
 
-                  return messages.map((item, idx) => {
-                    const isMine = Boolean(
-                      currentUser?.id != null &&
-                      String(item.sender_id) === String(currentUser.id)
-                    )
-                    const isLatestMine = isMine && item.id === latestMineId
-                    const isCurrentMatch =
-                      matchingMessageIds.length > 0 &&
-                      matchingMessageIds[chatSearchIndex] === item.id
+                  // QUY TẮC HIỆU NĂNG: Chỉ hiển thị visibleCount (mặc định 20) tin nhắn gần nhất để mượt mà, không lag
+                  const displayedMessages = messages.slice(-visibleCount)
+                  const hiddenCount = Math.max(0, messages.length - visibleCount)
 
-                    const currentDateStr = formatDate(item.created_at)
-                    const prevDateStr = idx > 0 ? formatDate(messages[idx - 1].created_at) : null
-                    const showDateBubble = idx === 0 || (currentDateStr && currentDateStr !== prevDateStr)
+                  return (
+                    <>
+                      {/* Nút Tải Thêm Tin Nhắn Cũ (Giảm Lag) */}
+                      {hiddenCount > 0 && (
+                        <div className="tg-load-more-container" style={{ textAlign: 'center', margin: '8px 0 16px' }}>
+                          <button
+                            type="button"
+                            className="tg-load-more-btn"
+                            onClick={() => setVisibleCount((prev) => prev + 20)}
+                            style={{
+                              background: 'rgba(135, 116, 225, 0.15)',
+                              border: '1px solid rgba(135, 116, 225, 0.35)',
+                              color: '#c4b5fd',
+                              padding: '8px 18px',
+                              borderRadius: 20,
+                              fontSize: 12.5,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              transition: 'all 0.2s ease',
+                            }}
+                          >
+                            <span>⬆️ Tải thêm tin nhắn cũ</span>
+                            <span style={{ background: '#8774e1', color: '#fff', padding: '1px 7px', borderRadius: 10, fontSize: 11 }}>
+                              Còn {hiddenCount} tin
+                            </span>
+                          </button>
+                        </div>
+                      )}
 
-                    const prevItem = idx > 0 ? messages[idx - 1] : null
-                    const isFirstInSequence =
-                      idx === 0 ||
-                      showDateBubble ||
-                      String(prevItem?.sender_id) !== String(item.sender_id)
+                      {displayedMessages.map((item, idx) => {
+                        const isMine = Boolean(
+                          currentUser?.id != null &&
+                          String(item.sender_id) === String(currentUser.id)
+                        )
+                        const isLatestMine = isMine && item.id === latestMineId
+                        const isCurrentMatch =
+                          matchingMessageIds.length > 0 &&
+                          matchingMessageIds[chatSearchIndex] === item.id
 
-                    return (
-                      <div key={item.id}>
-                        {showDateBubble && currentDateStr && (
-                          <div className="tg-bubble-date">{currentDateStr}</div>
-                        )}
-                        <div
-                          className={`tg-msg-row ${isMine ? 'mine' : 'theirs'} ${isFirstInSequence ? 'first-in-sequence' : 'consecutive'}`}
-                          id={`msg-${item.id}`}
-                        >
-                          {!isMine && (
-                            <div className="tg-msg-avatar-col theirs">
-                              {isFirstInSequence ? (
-                                <div className="tg-msg-avatar theirs" title={getFriendName(activeChat)}>
-                                  {activeChat.avatar_url ? (
-                                    <img
-                                      src={activeChat.avatar_url}
-                                      alt={activeChat.username}
-                                      onError={(e) => {
-                                        e.currentTarget.style.display = 'none'
-                                      }}
-                                    />
+                        const currentDateStr = formatDate(item.created_at)
+                        const prevDateStr = idx > 0 ? formatDate(displayedMessages[idx - 1].created_at) : null
+                        const showDateBubble = idx === 0 || (currentDateStr && currentDateStr !== prevDateStr)
+
+                        const prevItem = idx > 0 ? displayedMessages[idx - 1] : null
+                        const isFirstInSequence =
+                          idx === 0 ||
+                          showDateBubble ||
+                          String(prevItem?.sender_id) !== String(item.sender_id)
+
+                        const isActionMenuOpen = activeActionMsgId === item.id
+
+                        return (
+                          <div key={item.id}>
+                            {showDateBubble && currentDateStr && (
+                              <div className="tg-bubble-date">{currentDateStr}</div>
+                            )}
+                            <div
+                              className={`tg-msg-row ${isMine ? 'mine' : 'theirs'} ${isFirstInSequence ? 'first-in-sequence' : 'consecutive'}`}
+                              id={`msg-${item.id}`}
+                              style={{ position: 'relative' }}
+                            >
+                              {!isMine && (
+                                <div className="tg-msg-avatar-col theirs">
+                                  {isFirstInSequence ? (
+                                    <div
+                                      className="tg-msg-avatar theirs"
+                                      title={item.sender_name || item.sender_username || getFriendName(activeChat)}
+                                    >
+                                      {item.sender_avatar || activeChat.avatar_url ? (
+                                        <img
+                                          src={item.sender_avatar || activeChat.avatar_url}
+                                          alt=""
+                                          onError={(e) => {
+                                            e.currentTarget.style.display = 'none'
+                                          }}
+                                        />
+                                      ) : (
+                                        (item.sender_name || item.sender_username || getFriendName(activeChat)).charAt(0).toUpperCase()
+                                      )}
+                                    </div>
                                   ) : (
-                                    getFriendName(activeChat).charAt(0).toUpperCase()
+                                    <div className="tg-msg-avatar-placeholder" />
+                                  )}
+                                  <div
+                                    className="tg-msg-hover-time"
+                                    title={formatFullDateTime(item.created_at)}
+                                  >
+                                    {formatTime(item.created_at)}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* If mine: action buttons sit to the left of the bubble */}
+                              {isMine && (
+                                <div className="tg-msg-actions" style={{ position: 'relative' }}>
+                                  <button
+                                    className="tg-msg-act-btn"
+                                    title="Trả lời (Reply)"
+                                    onClick={() => handleStartReply(item)}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                      <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    className="tg-msg-act-btn"
+                                    title="Chia sẻ (Share / Forward)"
+                                    onClick={() => handleStartShare(item)}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="15 14 20 9 15 4"></polyline>
+                                      <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                    </svg>
+                                  </button>
+                                  <button
+                                    className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
+                                    title="Tùy chọn tin nhắn (...)"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
+                                    }}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                      <circle cx="5" cy="12" r="2.2"></circle>
+                                      <circle cx="12" cy="12" r="2.2"></circle>
+                                      <circle cx="19" cy="12" r="2.2"></circle>
+                                    </svg>
+                                  </button>
+
+                                  {/* Popover Menu khi ấn nút ... */}
+                                  {isActionMenuOpen && (
+                                    <div
+                                      className="tg-msg-popover-menu"
+                                      onClick={(e) => e.stopPropagation()}
+                                      style={{
+                                        position: 'absolute',
+                                        bottom: '100%',
+                                        right: 0,
+                                        background: '#212d3b',
+                                        borderRadius: 10,
+                                        boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                                        border: '1px solid rgba(255,255,255,0.12)',
+                                        padding: 4,
+                                        zIndex: 100,
+                                        minWidth: 150,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 2,
+                                        marginBottom: 6,
+                                      }}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="tg-popover-item"
+                                        onClick={() => {
+                                          handleCopyMessage(item.content)
+                                          setActiveActionMsgId(null)
+                                        }}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 8,
+                                          padding: '7px 10px',
+                                          background: 'transparent',
+                                          border: 'none',
+                                          color: '#e2e8f0',
+                                          fontSize: 13,
+                                          borderRadius: 6,
+                                          cursor: 'pointer',
+                                          textAlign: 'left',
+                                        }}
+                                      >
+                                        <span>📋</span> Sao chép
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="tg-popover-item danger"
+                                        onClick={() => handleDeleteMessage(item.id)}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 8,
+                                          padding: '7px 10px',
+                                          background: 'transparent',
+                                          border: 'none',
+                                          color: '#ef4444',
+                                          fontSize: 13,
+                                          borderRadius: 6,
+                                          cursor: 'pointer',
+                                          textAlign: 'left',
+                                        }}
+                                      >
+                                        <span>🗑️</span> Xóa tin nhắn
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
-                              ) : (
-                                <div className="tg-msg-avatar-placeholder" />
                               )}
+
                               <div
-                                className="tg-msg-hover-time"
+                                className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''} ${isImageMessage(item.content) && !item.reply_to_id ? 'image-only-bubble' : ''}`}
                                 title={formatFullDateTime(item.created_at)}
                               >
-                                {formatTime(item.created_at)}
-                              </div>
-                            </div>
-                          )}
+                                {/* Nếu là trong nhóm và là tin nhắn của người khác, hiển thị tên người gửi */}
+                                {activeChat.is_group && !isMine && isFirstInSequence && (
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      color: '#a78bfa',
+                                      marginBottom: 4,
+                                    }}
+                                  >
+                                    {item.sender_name || item.sender_username || 'Thành viên'}
+                                  </div>
+                                )}
 
-                          {/* If mine: action buttons sit to the left of the bubble */}
-                          {isMine && (
-                            <div className="tg-msg-actions">
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Trả lời (Reply)"
-                                onClick={() => handleStartReply(item)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                  <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
-                                </svg>
-                              </button>
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Chia sẻ (Share / Forward)"
-                                onClick={() => handleStartShare(item)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="15 14 20 9 15 4"></polyline>
-                                  <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
-                                </svg>
-                              </button>
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Sao chép tin nhắn"
-                                onClick={() => handleCopyMessage(item.content)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                  <circle cx="5" cy="12" r="2.2"></circle>
-                                  <circle cx="12" cy="12" r="2.2"></circle>
-                                  <circle cx="19" cy="12" r="2.2"></circle>
-                                </svg>
-                              </button>
-                            </div>
-                          )}
+                                {/* Replied Message Quote */}
+                                {item.reply_to_id && (
+                                  <div
+                                    className="tg-reply-quote"
+                                    onClick={() => scrollToMessage(item.reply_to_id)}
+                                    title="Bấm để chuyển tới tin nhắn gốc"
+                                  >
+                                    <div className="tg-reply-bar" />
+                                    <div className="tg-reply-quote-content">
+                                      <span className="tg-reply-author">
+                                        {getReplyAuthorName(item)}
+                                      </span>
+                                      <span className="tg-reply-snippet">
+                                        {getMessageSnippet(getReplyContent(item))}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
 
-                          <div
-                            className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''} ${isImageMessage(item.content) && !item.reply_to_id ? 'image-only-bubble' : ''}`}
-                            title={formatFullDateTime(item.created_at)}
-                          >
-                            {/* Replied Message Quote (Images 1 & 2) */}
-                            {item.reply_to_id && (
-                              <div
-                                className="tg-reply-quote"
-                                onClick={() => scrollToMessage(item.reply_to_id)}
-                                title="Bấm để chuyển tới tin nhắn gốc"
-                              >
-                                <div className="tg-reply-bar" />
-                                <div className="tg-reply-quote-content">
-                                  <span className="tg-reply-author">
-                                    {getReplyAuthorName(item)}
-                                  </span>
-                                  <span className="tg-reply-snippet">
-                                    {getMessageSnippet(getReplyContent(item))}
-                                  </span>
+                                <div className="tg-msg-text">
+                                  {renderMessageContent(item.content, chatSearchQuery)}
                                 </div>
+                                {isLatestMine && (
+                                  <div className="tg-msg-meta status-only">
+                                    <span className={`tg-msg-receipt ${item.is_read ? 'read' : 'sent'}`}>
+                                      {item.is_read ? 'Đã xem' : 'Đã gửi'}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
-                            )}
 
-                            <div className="tg-msg-text">
-                              {renderMessageContent(item.content, chatSearchQuery)}
-                            </div>
-                            {isLatestMine && (
-                              <div className="tg-msg-meta status-only">
-                                <span className={`tg-msg-receipt ${item.is_read ? 'read' : 'sent'}`}>
-                                  {item.is_read ? 'Đã xem' : 'Đã gửi'}
-                                </span>
-                              </div>
-                            )}
-                          </div>
+                              {/* If theirs: action buttons sit to the right of the bubble */}
+                              {!isMine && (
+                                <div className="tg-msg-actions" style={{ position: 'relative' }}>
+                                  <button
+                                    className="tg-msg-act-btn"
+                                    title="Trả lời (Reply)"
+                                    onClick={() => handleStartReply(item)}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                      <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    className="tg-msg-act-btn"
+                                    title="Chia sẻ (Share / Forward)"
+                                    onClick={() => handleStartShare(item)}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="15 14 20 9 15 4"></polyline>
+                                      <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                    </svg>
+                                  </button>
+                                  <button
+                                    className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
+                                    title="Tùy chọn tin nhắn (...)"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
+                                    }}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                      <circle cx="5" cy="12" r="2.2"></circle>
+                                      <circle cx="12" cy="12" r="2.2"></circle>
+                                      <circle cx="19" cy="12" r="2.2"></circle>
+                                    </svg>
+                                  </button>
 
-                          {/* If theirs: action buttons sit to the right of the bubble */}
-                          {!isMine && (
-                            <div className="tg-msg-actions">
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Trả lời (Reply)"
-                                onClick={() => handleStartReply(item)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                  <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
-                                </svg>
-                              </button>
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Chia sẻ (Share / Forward)"
-                                onClick={() => handleStartShare(item)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="15 14 20 9 15 4"></polyline>
-                                  <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
-                                </svg>
-                              </button>
-                              <button
-                                className="tg-msg-act-btn"
-                                title="Sao chép tin nhắn"
-                                onClick={() => handleCopyMessage(item.content)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                  <circle cx="5" cy="12" r="2.2"></circle>
-                                  <circle cx="12" cy="12" r="2.2"></circle>
-                                  <circle cx="19" cy="12" r="2.2"></circle>
-                                </svg>
-                              </button>
-                            </div>
-                          )}
+                                  {/* Popover Menu khi ấn nút ... */}
+                                  {isActionMenuOpen && (
+                                    <div
+                                      className="tg-msg-popover-menu"
+                                      onClick={(e) => e.stopPropagation()}
+                                      style={{
+                                        position: 'absolute',
+                                        bottom: '100%',
+                                        left: 0,
+                                        background: '#212d3b',
+                                        borderRadius: 10,
+                                        boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                                        border: '1px solid rgba(255,255,255,0.12)',
+                                        padding: 4,
+                                        zIndex: 100,
+                                        minWidth: 150,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 2,
+                                        marginBottom: 6,
+                                      }}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="tg-popover-item"
+                                        onClick={() => {
+                                          handleCopyMessage(item.content)
+                                          setActiveActionMsgId(null)
+                                        }}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 8,
+                                          padding: '7px 10px',
+                                          background: 'transparent',
+                                          border: 'none',
+                                          color: '#e2e8f0',
+                                          fontSize: 13,
+                                          borderRadius: 6,
+                                          cursor: 'pointer',
+                                          textAlign: 'left',
+                                        }}
+                                      >
+                                        <span>📋</span> Sao chép
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="tg-popover-item danger"
+                                        onClick={() => handleDeleteMessage(item.id)}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 8,
+                                          padding: '7px 10px',
+                                          background: 'transparent',
+                                          border: 'none',
+                                          color: '#ef4444',
+                                          fontSize: 13,
+                                          borderRadius: 6,
+                                          cursor: 'pointer',
+                                          textAlign: 'left',
+                                        }}
+                                      >
+                                        <span>🗑️</span> Xóa tin nhắn
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
 
                           {isMine && (
                             <div className="tg-msg-avatar-col mine">
@@ -4495,11 +5134,13 @@ function App() {
                         </div>
                       </div>
                     )
-                  })
-                })()
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+                  })}
+                </>
+              )
+            })()
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
             {/* Hidden File Picker Input */}
             <input
@@ -4624,7 +5265,7 @@ function App() {
             </div>
 
           <div className="tg-info-body">
-            {/* User Card: Avatar lớn + Tên + Nút sửa biệt danh (Ảnh 1) */}
+            {/* User or Group Card */}
             <div className="tg-info-user-card">
               <div className="tg-info-avatar-large">
                 {activeChat.avatar_url ? (
@@ -4635,46 +5276,72 @@ function App() {
                       e.currentTarget.style.display = 'none'
                     }}
                   />
+                ) : activeChat.is_group ? (
+                  getFriendInitials(activeChat.name)
                 ) : (
                   getFriendName(activeChat).charAt(0).toUpperCase()
                 )}
               </div>
 
-              {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
-              <div className="tg-info-name-wrap">
-                <h2>{getFriendName(activeChat)}</h2>
-                <button
-                  className="tg-edit-nickname-btn"
-                  title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
-                  onClick={() => {
-                    setNicknameInput(
-                      nicknames[activeChat.id] ||
-                      activeChat.display_name ||
-                      activeChat.username ||
-                      ''
-                    )
-                    setEditingNickname(true)
-                  }}
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                  </svg>
-                </button>
-              </div>
+              {activeChat.is_group ? (
+                <>
+                  <div className="tg-info-name-wrap">
+                    <h2>{activeChat.name}</h2>
+                    {activeChat.is_community ? (
+                      <span style={{ fontSize: 11, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '2px 8px', borderRadius: 10, fontWeight: 700 }}>
+                        CỘNG ĐỒNG
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '2px 8px', borderRadius: 10 }}>
+                        Nhóm ({groupDetailData?.member_count || activeChat.member_count || 1}/50)
+                      </span>
+                    )}
+                  </div>
+                  <p className="tg-info-bio">
+                    {activeChat.is_community
+                      ? '🚀 Nhóm cộng đồng không giới hạn thành viên'
+                      : '👥 Nhóm giới hạn tối đa 50 người'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
+                  <div className="tg-info-name-wrap">
+                    <h2>{getFriendName(activeChat)}</h2>
+                    <button
+                      className="tg-edit-nickname-btn"
+                      title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
+                      onClick={() => {
+                        setNicknameInput(
+                          nicknames[activeChat.id] ||
+                          activeChat.display_name ||
+                          activeChat.username ||
+                          ''
+                        )
+                        setEditingNickname(true)
+                      }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                      </svg>
+                    </button>
+                  </div>
 
-              {nicknames[activeChat.id] && (
-                <p className="tg-info-original-name">
-                  Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
-                </p>
-              )}
-              {!nicknames[activeChat.id] && (
-                <p className="tg-info-original-name">@{activeChat.username}</p>
-              )}
+                  {nicknames[activeChat.id] && (
+                    <p className="tg-info-original-name">
+                      Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
+                    </p>
+                  )}
+                  {!nicknames[activeChat.id] && (
+                    <p className="tg-info-original-name">@{activeChat.username}</p>
+                  )}
 
-              <p className="tg-info-bio">
-                {activeChat.bio || 'Chưa có tiểu sử'}
-              </p>
+                  <p className="tg-info-bio">
+                    {activeChat.bio || 'Chưa có tiểu sử'}
+                  </p>
+                </>
+              )}
 
               {/* Nút Đổi hình nền riêng cho hội thoại này */}
               <button
@@ -4695,6 +5362,128 @@ function App() {
                 <span className="arrow">›</span>
               </button>
             </div>
+
+            {/* NẾU LÀ NHÓM CHAT: PHẦN QUẢN LÝ THÀNH VIÊN VÀ QUY TẮC HIỂN THỊ */}
+            {activeChat.is_group && (
+              <div className="tg-accordion-section" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px 8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                      Thành viên ({groupDetailData?.member_count || activeChat.member_count || 1})
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddMemberSelectedIds([])
+                      setAddMemberError('')
+                      setShowAddGroupMemberModal(true)
+                    }}
+                    style={{
+                      background: 'rgba(135, 116, 225, 0.2)',
+                      border: '1px solid #8774e1',
+                      color: '#c4b5fd',
+                      padding: '4px 10px',
+                      borderRadius: 14,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    + Thêm thành viên
+                  </button>
+                </div>
+
+                {/* Kiểm tra nút Nâng cấp Cộng đồng (nếu là người tạo nhóm và chưa phải cộng đồng) */}
+                {groupDetailData?.is_creator && !activeChat.is_community && (
+                  <div style={{ margin: '8px 16px', padding: 12, background: 'rgba(56, 189, 248, 0.08)', borderRadius: 10, border: '1px solid rgba(56, 189, 248, 0.25)' }}>
+                    <div style={{ fontSize: 12.5, color: '#e0f2fe', marginBottom: 6, lineHeight: 1.4 }}>
+                      💡 <strong>Nâng cấp lên Cộng đồng:</strong> Nhóm thường giới hạn 50 người. Với tư cách là người lập nhóm, bạn có thể nâng cấp để thêm không giới hạn thành viên.
+                    </div>
+                    <button
+                      type="button"
+                      disabled={upgradingCommunity}
+                      onClick={() => handleUpgradeCommunity(activeChat.id)}
+                      style={{
+                        background: 'linear-gradient(135deg, #0284c7, #2563eb)',
+                        border: 'none',
+                        color: '#fff',
+                        padding: '6px 14px',
+                        borderRadius: 14,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        width: '100%',
+                      }}
+                    >
+                      {upgradingCommunity ? 'Đang nâng cấp...' : '🚀 Nâng cấp nhóm lên Cộng đồng'}
+                    </button>
+                  </div>
+                )}
+
+                {/* QUY TẮC HIỂN THỊ DANH SÁCH THÀNH VIÊN: Dưới hoặc bằng 50 hiện, trên 50 thì KHÔNG hiện */}
+                {(groupDetailData?.member_count || 0) <= 50 && !groupDetailData?.members_hidden ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '4px 16px' }}>
+                    {(groupDetailData?.members || []).map((m) => (
+                      <div
+                        key={m.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 8px',
+                          background: 'rgba(255,255,255,0.03)',
+                          borderRadius: 8,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div
+                            className="tg-avatar sm"
+                            style={{
+                              width: 32,
+                              height: 32,
+                              fontSize: 13,
+                              background: !m.avatar_url ? getAvatarGradient(m.id || m.username) : undefined,
+                            }}
+                          >
+                            {m.avatar_url ? (
+                              <img src={m.avatar_url} alt="" className="avatar-img" />
+                            ) : (
+                              (m.display_name || m.username).charAt(0).toUpperCase()
+                            )}
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>
+                              {m.display_name || m.username}
+                              {m.id === currentUser?.id && <span style={{ color: '#94a3b8', fontSize: 11 }}> (Bạn)</span>}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#64748b' }}>@{m.username}</div>
+                          </div>
+                        </div>
+
+                        {m.role === 'creator' ? (
+                          <span style={{ fontSize: 10, background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', padding: '2px 7px', borderRadius: 8, fontWeight: 700 }}>
+                            👑 Người tạo
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 10, color: '#94a3b8' }}>Thành viên</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ padding: '12px 16px', textAlign: 'center', background: 'rgba(0,0,0,0.2)', margin: '6px 16px', borderRadius: 8 }}>
+                    <div style={{ fontSize: 24, marginBottom: 4 }}>🔒</div>
+                    <div style={{ fontSize: 12.5, color: '#cbd5e1', fontWeight: 600 }}>
+                      Danh sách thành viên được ẩn
+                    </div>
+                    <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>
+                      Nhóm có hơn 50 thành viên. Danh sách được ẩn để bảo mật thông tin cộng đồng.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
             <div className="tg-accordion-section">
@@ -6719,6 +7508,263 @@ function App() {
               >
                 📋 Sao chép nội dung
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tạo nhóm mới (Gôm thành viên vào nhóm) */}
+      {showCreateGroupModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateGroupModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon" style={{ background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1' }}>
+                  👥
+                </div>
+                <div>
+                  <h3>Tạo nhóm chat mới</h3>
+                  <p>Gôm bạn bè vào nhóm (tối đa 50 người)</p>
+                </div>
+              </div>
+              <button className="modal-close-button" onClick={() => setShowCreateGroupModal(false)}>
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateGroup} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {createGroupError && (
+                <div className="modal-alert error" style={{ margin: 0 }}>
+                  {createGroupError}
+                </div>
+              )}
+
+              <div>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 6 }}>
+                  Tên nhóm *
+                </label>
+                <input
+                  type="text"
+                  className="tg-msg-input"
+                  style={{ width: '100%', borderRadius: 10, padding: '10px 14px', border: '1px solid rgba(255,255,255,0.1)' }}
+                  placeholder="Ví dụ: Team CloudChat, Hội Bạn Thân..."
+                  value={groupNameInput}
+                  onChange={(e) => setGroupNameInput(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 6 }}>
+                  Chọn bạn bè vào nhóm ({selectedGroupMemberIds.length}/49)
+                </label>
+                <div
+                  style={{
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                    background: 'rgba(0,0,0,0.2)',
+                    borderRadius: 10,
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    padding: 8,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                  }}
+                >
+                  {friends.length === 0 ? (
+                    <div style={{ textAlign: 'center', color: '#64748b', fontSize: 12, padding: 16 }}>
+                      Chưa có bạn bè nào để thêm. Bạn vẫn có thể tạo nhóm và thêm sau!
+                    </div>
+                  ) : (
+                    friends.map((f) => {
+                      const isSelected = selectedGroupMemberIds.includes(f.id)
+                      return (
+                        <div
+                          key={f.id}
+                          onClick={() => {
+                            setSelectedGroupMemberIds((prev) => {
+                              if (prev.includes(f.id)) {
+                                return prev.filter((id) => id !== f.id)
+                              }
+                              if (prev.length >= 49) {
+                                alert('Nhóm thường giới hạn tối đa 50 người (tính cả người tạo). Muốn nhiều hơn cần nâng cấp lên Cộng đồng.')
+                                return prev
+                              }
+                              return [...prev, f.id]
+                            })
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '6px 10px',
+                            borderRadius: 8,
+                            cursor: 'pointer',
+                            background: isSelected ? 'rgba(135, 116, 225, 0.2)' : 'transparent',
+                            border: isSelected ? '1px solid rgba(135, 116, 225, 0.4)' : '1px solid transparent',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div className="tg-avatar sm" style={{ width: 28, height: 28, fontSize: 12 }}>
+                              {f.avatar_url ? (
+                                <img src={f.avatar_url} alt="" className="avatar-img" />
+                              ) : (
+                                getFriendInitials(getFriendName(f))
+                              )}
+                            </div>
+                            <span style={{ fontSize: 13, color: '#f1f5f9' }}>{getFriendName(f)}</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            style={{ cursor: 'pointer' }}
+                          />
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShowCreateGroupModal(false)}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={createGroupLoading || !groupNameInput.trim()}
+                >
+                  {createGroupLoading ? 'Đang tạo...' : 'Tạo nhóm'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Thêm thành viên vào nhóm hiện tại */}
+      {showAddGroupMemberModal && (
+        <div className="modal-overlay" onClick={() => setShowAddGroupMemberModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8' }}>
+                  ➕
+                </div>
+                <div>
+                  <h3>Thêm thành viên</h3>
+                  <p>Vào nhóm "{activeChat?.name}"</p>
+                </div>
+              </div>
+              <button className="modal-close-button" onClick={() => setShowAddGroupMemberModal(false)}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {addMemberError && (
+                <div className="modal-alert error" style={{ margin: 0 }}>
+                  {addMemberError}
+                </div>
+              )}
+
+              <div
+                style={{
+                  maxHeight: 240,
+                  overflowY: 'auto',
+                  background: 'rgba(0,0,0,0.2)',
+                  borderRadius: 10,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  padding: 8,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                }}
+              >
+                {(() => {
+                  const currentMemberIds = new Set(
+                    (groupDetailData?.members || []).map((m) => m.id)
+                  )
+                  const candidates = friends.filter((f) => !currentMemberIds.has(f.id))
+
+                  if (candidates.length === 0) {
+                    return (
+                      <div style={{ textAlign: 'center', color: '#64748b', fontSize: 12, padding: 20 }}>
+                        Tất cả bạn bè của bạn đã có mặt trong nhóm này rồi!
+                      </div>
+                    )
+                  }
+
+                  return candidates.map((f) => {
+                    const isSelected = addMemberSelectedIds.includes(f.id)
+                    return (
+                      <div
+                        key={f.id}
+                        onClick={() => {
+                          setAddMemberSelectedIds((prev) => {
+                            if (prev.includes(f.id)) {
+                              return prev.filter((id) => id !== f.id)
+                            }
+                            return [...prev, f.id]
+                          })
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 10px',
+                          borderRadius: 8,
+                          cursor: 'pointer',
+                          background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                          border: isSelected ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid transparent',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div className="tg-avatar sm" style={{ width: 28, height: 28, fontSize: 12 }}>
+                            {f.avatar_url ? (
+                              <img src={f.avatar_url} alt="" className="avatar-img" />
+                            ) : (
+                              getFriendInitials(getFriendName(f))
+                            )}
+                          </div>
+                          <span style={{ fontSize: 13, color: '#f1f5f9' }}>{getFriendName(f)}</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </div>
+                    )
+                  })
+                })()}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShowAddGroupMemberModal(false)}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={addMemberLoading || addMemberSelectedIds.length === 0}
+                  onClick={handleAddMembersToGroup}
+                >
+                  {addMemberLoading ? 'Đang thêm...' : `Thêm (${addMemberSelectedIds.length})`}
+                </button>
+              </div>
             </div>
           </div>
         </div>
