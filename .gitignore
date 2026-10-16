@@ -8,4 +8,10 @@ dist/
 *.db
 *.sqlite
 *.sqlite3
+*.zip
+*.rar
+*.7z
+.vscode/
+.idea/
+scratch/
 

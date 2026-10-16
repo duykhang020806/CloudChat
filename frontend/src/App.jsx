@@ -1,13 +1,20 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import QRCode from 'qrcode'
 import jsQR from 'jsqr'
 import './App.css'
+import { supabase } from './supabaseClient'
+import { getAppleEmojiUrl, renderWithAppleEmoji } from './appleEmoji.jsx'
+import ErrorBoundary from './ErrorBoundary.jsx'
+import {
+  getMemoryCachedMessages,
+  setMemoryCachedMessages,
+  saveMessagesToDb,
+  getMessagesFromDb,
+  deleteMessagesFromDb,
+  preloadImage,
+} from './chatMediaDb.js'
+import ChatImage from './ChatImage.jsx'
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE ||
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:8787'
-    : '')
 
 const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/bottts/svg?seed=Felix',
@@ -219,7 +226,7 @@ function parseAndValidateColor(input) {
         formatted: s,
       }
     }
-  } catch {}
+  } catch { }
 
   return null
 }
@@ -289,23 +296,29 @@ function formatChatListTime(value) {
   const date = parseUtcDate(value)
   if (!date) return ''
 
-  const now = new Date()
-  const vnNowStr = now.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
-  const vnDateStr = date.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+  const now = Date.now()
+  const diffMs = now - date.getTime()
+  if (diffMs < 0) return 'vài giây'
 
-  if (vnNowStr === vnDateStr) {
-    return date.toLocaleTimeString('vi-VN', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
+  const diffSec = Math.floor(diffMs / 1000)
+  const diffMin = Math.floor(diffSec / 60)
+  const diffHours = Math.floor(diffMin / 60)
+  const diffDays = Math.floor(diffHours / 24)
+
+  if (diffSec < 60) {
+    return 'vài giây'
   }
-
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-  const vnYesterdayStr = yesterday.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
-  if (vnDateStr === vnYesterdayStr) {
+  if (diffMin < 60) {
+    return `${diffMin} phút`
+  }
+  if (diffHours < 24) {
+    return `${diffHours} giờ`
+  }
+  if (diffDays === 1) {
     return 'Hôm qua'
+  }
+  if (diffDays < 7) {
+    return `${diffDays} ngày`
   }
 
   return date.toLocaleDateString('vi-VN', {
@@ -345,6 +358,21 @@ function formatLastMessagePreview(friend, currentUser) {
   const prefix = isMine ? 'Bạn: ' : ''
   const content = friend.last_message.trim()
 
+  if (content === '__REVOKED__' || content === '[Tin nhắn đã được thu hồi]') {
+    return `${prefix}🚫 Tin nhắn đã được thu hồi`
+  }
+
+  if (content.startsWith('{') && content.endsWith('}')) {
+    try {
+      const p = JSON.parse(content)
+      if (p.isRevoked) return `${prefix}🚫 Tin nhắn đã được thu hồi`
+      if (p.isVoice) return `${prefix}🎤 Tin nhắn thoại`
+      if (p.isImage) return `${prefix}📷 ${p.caption ? p.caption : 'Hình ảnh'}`
+      if (p.isVideo) return `${prefix}🎥 ${p.caption ? p.caption : 'Video'}`
+      if (p.isAttachment) return `${prefix}📎 ${p.fileName || 'Tệp đính kèm'}`
+    } catch { }
+  }
+
   const att = parseAttachment(content)
   if (att) {
     return `${prefix}📎 ${att.fileName || 'Tệp đính kèm'}`
@@ -361,18 +389,39 @@ function formatLastMessagePreview(friend, currentUser) {
   return `${prefix}${content}`
 }
 
-function getFriendInitials(name) {
-  if (!name || !name.trim()) return '?'
-  const parts = name.trim().split(/\s+/).filter(Boolean)
-  if (parts.length >= 2) {
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+export function getDefaultAvatar(name) {
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return 'https://cdn.auth0.com/avatars/u.png'
   }
-  return name.trim().charAt(0).toUpperCase()
+  const clean = name
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+  const parts = clean.split(/\s+/).filter(Boolean)
+  let initials = ''
+  if (parts.length >= 2) {
+    initials = (parts[0][0] + parts[parts.length - 1][0]).toLowerCase()
+  } else if (parts.length === 1) {
+    initials = parts[0].slice(0, 2).toLowerCase()
+  }
+  initials = initials.replace(/[^a-z0-9]/gi, '')
+  if (!initials) initials = 'u'
+  return `https://cdn.auth0.com/avatars/${initials}.png`
+}
+
+function getFriendInitials(name) {
+  if (!name || typeof name !== 'string' || !name.trim()) return '?'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length >= 2 && parts[0] && parts[parts.length - 1]) {
+    return ((parts[0][0] || '') + (parts[parts.length - 1][0] || '')).toUpperCase() || '?'
+  }
+  return (name.trim().charAt(0) || '?').toUpperCase()
 }
 
 function getFirstCharGroup(name) {
-  if (!name || !name.trim()) return '#'
-  const first = name.trim().charAt(0).toUpperCase()
+  if (!name || typeof name !== 'string' || !name.trim()) return '#'
+  const first = (name.trim().charAt(0) || '#').toUpperCase()
   if (first === 'Đ') return 'Đ'
   const base = first.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   if (/^[A-Z]$/.test(base)) return base
@@ -399,13 +448,27 @@ function getAvatarGradient(seed) {
 function renderHighlightedSnippet(content, query) {
   if (!content) return null
   let text = content
-  const att = parseAttachment(content)
-  if (att) {
-    text = `📎 ${att.fileName || 'Tệp đính kèm'}`
-  } else if (content.startsWith('data:image/') || /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)/i.test(content)) {
-    text = '📷 Hình ảnh'
-  } else if (content.startsWith('data:video/') || /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)/i.test(content)) {
-    text = '🎥 Video'
+  const trimmed = content.trim()
+  if (trimmed === '__REVOKED__' || trimmed === '[Tin nhắn đã được thu hồi]') {
+    text = '🚫 Tin nhắn đã được thu hồi'
+  } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const p = JSON.parse(trimmed)
+      if (p.isRevoked) text = '🚫 Tin nhắn đã được thu hồi'
+      else if (p.isVoice) text = '🎤 Tin nhắn thoại'
+      else if (p.isImage) text = p.caption ? `📷 ${p.caption}` : '📷 Hình ảnh'
+      else if (p.isVideo) text = p.caption ? `🎥 ${p.caption}` : '🎥 Video'
+      else if (p.isAttachment) text = `📎 ${p.fileName || 'Tệp đính kèm'}`
+    } catch { }
+  } else {
+    const att = parseAttachment(content)
+    if (att) {
+      text = `📎 ${att.fileName || 'Tệp đính kèm'}`
+    } else if (content.startsWith('data:image/') || /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)/i.test(content)) {
+      text = '📷 Hình ảnh'
+    } else if (content.startsWith('data:video/') || /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)/i.test(content)) {
+      text = '🎥 Video'
+    }
   }
 
   const q = (query || '').trim()
@@ -445,9 +508,228 @@ function renderHighlightedSnippet(content, query) {
 function isImageMessage(content) {
   if (!content) return false
   const trimmed = content.trim()
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const p = JSON.parse(trimmed)
+      if (p.isImage) return !p.caption
+    } catch { }
+  }
   return (
     trimmed.startsWith('data:image/') ||
     /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(trimmed)
+  )
+}
+
+function isRevokedMessage(content) {
+  if (!content || typeof content !== 'string') return false
+  const trimmed = content.trim()
+  if (trimmed === '__REVOKED__' || trimmed === '[Tin nhắn đã được thu hồi]') return true
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const p = JSON.parse(trimmed)
+      return Boolean(p.isRevoked)
+    } catch { }
+  }
+  return false
+}
+
+function getEmojiOnlyList(content) {
+  if (!content || typeof content !== 'string') return null
+  const trimmed = content.trim()
+  if (!trimmed) return null
+
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || /^https?:\/\//i.test(trimmed)) {
+    return null
+  }
+
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    try {
+      const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' })
+      const segments = Array.from(segmenter.segment(trimmed))
+      const emojis = []
+      for (const seg of segments) {
+        const s = seg.segment
+        if (/^\s+$/.test(s)) {
+          continue
+        }
+        if (/\p{Extended_Pictographic}/u.test(s) || /^[\u{1F1E6}-\u{1F1FF}]{2}$/u.test(s)) {
+          emojis.push(s)
+        } else {
+          return null
+        }
+      }
+      if (emojis.length > 0) {
+        return emojis
+      }
+      return null
+    } catch { }
+  }
+
+  const singleEmojiRegex = /^(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\p{Emoji_Modifier})?)*|[\u{1F1E6}-\u{1F1FF}]{2})$/u
+  if (singleEmojiRegex.test(trimmed)) {
+    return [trimmed]
+  }
+
+  return null
+}
+
+function isSingleEmojiMessage(content) {
+  const list = getEmojiOnlyList(content)
+  return Boolean(list && list.length === 1)
+}
+
+function renderTextWithMentionsAndEmoji(text, keyPrefix) {
+  if (!text) return null
+  const mentionPattern = /(@everyone|@[a-zA-Z0-9_.-]+(?:@[a-zA-Z0-9_.-]+)?)/g
+  const parts = text.split(mentionPattern)
+  if (parts.length === 1) {
+    return renderWithAppleEmoji(text, keyPrefix)
+  }
+  return parts.map((part, idx) => {
+    if (part.toLowerCase() === '@everyone') {
+      return (
+        <span key={`${keyPrefix}-ev-${idx}`} className="tg-mention-tag tg-mention-everyone">
+          @everyone
+        </span>
+      )
+    }
+    if (part.startsWith('@') && part.length > 1) {
+      return (
+        <span key={`${keyPrefix}-usr-${idx}`} className="tg-mention-tag">
+          {part}
+        </span>
+      )
+    }
+    return renderWithAppleEmoji(part, `${keyPrefix}-txt-${idx}`)
+  })
+}
+
+function renderHighlightedText(content, highlightQuery) {
+  if (!content) return null
+  const urlPattern = /(https?:\/\/[^\s]+)/g
+  const segments = content.split(urlPattern)
+  const q = (highlightQuery || '').trim()
+
+  return (
+    <span style={{ whiteSpace: 'pre-wrap' }}>
+      {segments.map((seg, segIdx) => {
+        if (/^https?:\/\/[^\s]+$/i.test(seg)) {
+          return (
+            <a
+              key={segIdx}
+              href={seg}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#93c5fd',
+                textDecoration: 'underline',
+                wordBreak: 'break-all',
+              }}
+            >
+              {seg}
+            </a>
+          )
+        }
+
+        if (q) {
+          const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const qPattern = new RegExp(`(${escaped})`, 'gi')
+          const parts = seg.split(qPattern)
+          return parts.map((part, pIdx) =>
+            part.toLowerCase() === q.toLowerCase() ? (
+              <mark key={`${segIdx}-${pIdx}`} className="search-highlight">
+                {renderWithAppleEmoji(part, `hl-${segIdx}-${pIdx}`)}
+              </mark>
+            ) : (
+              renderTextWithMentionsAndEmoji(part, `txt-${segIdx}-${pIdx}`)
+            )
+          )
+        }
+
+        return renderTextWithMentionsAndEmoji(seg, `seg-${segIdx}`)
+      })}
+    </span>
+  )
+}
+
+function VoicePlayer({ audioUrl, duration }) {
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [currentTime, setCurrentTime] = useState(0)
+  const audioRef = useRef(null)
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const updateTime = () => {
+      setCurrentTime(audio.currentTime)
+      if (audio.duration) {
+        setProgress((audio.currentTime / audio.duration) * 100)
+      }
+    }
+    const onEnded = () => {
+      setIsPlaying(false)
+      setProgress(0)
+      setCurrentTime(0)
+    }
+    audio.addEventListener('timeupdate', updateTime)
+    audio.addEventListener('ended', onEnded)
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime)
+      audio.removeEventListener('ended', onEnded)
+    }
+  }, [])
+
+  const togglePlay = (e) => {
+    e.stopPropagation()
+    const audio = audioRef.current
+    if (!audio) return
+    if (isPlaying) {
+      audio.pause()
+      setIsPlaying(false)
+    } else {
+      audio.play().then(() => setIsPlaying(true)).catch((err) => console.error('Audio play error:', err))
+    }
+  }
+
+  const formatSec = (sec) => {
+    const s = Math.floor(sec || 0)
+    const m = Math.floor(s / 60)
+    const rem = s % 60
+    return `${m}:${rem < 10 ? '0' : ''}${rem}`
+  }
+
+  return (
+    <div className="tg-voice-player">
+      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      <button type="button" className={`tg-voice-play-btn ${isPlaying ? 'playing' : ''}`} onClick={togglePlay}>
+        {isPlaying ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1" />
+            <rect x="14" y="4" width="4" height="16" rx="1" />
+          </svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+        )}
+      </button>
+      <div className="tg-voice-body">
+        <div className="tg-voice-waveform">
+          {[40, 75, 30, 95, 60, 100, 45, 80, 55, 90, 35, 75, 50, 85, 65, 40, 70, 35].map((h, i) => (
+            <span
+              key={i}
+              className={`tg-wave-bar ${(i / 18) * 100 <= progress ? 'active' : ''}`}
+              style={{ height: `${h}%` }}
+            />
+          ))}
+        </div>
+        <div className="tg-voice-meta">
+          <span>{isPlaying ? formatSec(currentTime) : formatSec(duration || 0)}</span>
+          <span> •</span>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -525,6 +807,7 @@ function parseAttachment(content) {
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
     try {
       const p = JSON.parse(trimmed)
+      if (p.isRevoked || p.isVoice || p.isImage) return null
       if (p && (p.isAttachment || p.fileName)) {
         return {
           fileName: p.fileName || 'Tài liệu đính kèm',
@@ -927,8 +1210,526 @@ async function downloadQrCardImage(qrDataUrl, user, remainingText) {
   link.click()
 }
 
+const AUTH_TRANSLATIONS = {
+  vi: {
+    brandName: 'CloudChat',
+    brandBadge: 'CLOUD',
+    sloganMain: 'Kết nối mọi khoảng cách, hiệu suất không giới hạn !',
+    sloganSub: 'CloudChat - Nền tảng giao tiếp đám mây bảo mật & tức thì',
+    loginTitle: 'Đăng nhập CloudChat',
+    loginSubtitle: 'Sử dụng tài khoản email và mật khẩu để tiếp tục',
+    emailLabel: 'Email tài khoản',
+    emailPlaceholder: 'Nhập Email của bạn',
+    passwordLabel: 'Mật khẩu',
+    passwordPlaceholder: 'Nhập mật khẩu',
+    showPwd: 'Hiện',
+    hidePwd: 'Ẩn',
+    signInBtn: 'Đăng nhập',
+    signingInBtn: 'Đang đăng nhập...',
+    orDivider: 'Hoặc tiếp tục với',
+    googleBtn: 'Đăng nhập với Google',
+    noAccount: 'Chưa có tài khoản?',
+    signUpNow: 'Đăng ký ngay',
+    registerSloganMain: 'Tạo tài khoản mới, bắt đầu kết nối tức thì !',
+    registerSloganSub: 'Gia nhập không gian trò chuyện đám mây thế hệ mới',
+    registerTitle: 'Tạo tài khoản CloudChat',
+    registerSubtitle: 'Đăng ký tài khoản để bắt đầu trải nghiệm',
+    displayNameLabel: 'Tên hiển thị',
+    displayNamePlaceholder: 'Ví dụ: Nguyễn Văn A',
+    registerEmailLabel: 'Email đăng ký',
+    confirmPasswordLabel: 'Xác nhận mật khẩu',
+    confirmPasswordPlaceholder: 'Nhập lại mật khẩu',
+    registerBtn: 'Đăng ký tài khoản',
+    registeringBtn: 'Đang tạo tài khoản...',
+    hasAccount: 'Đã có tài khoản?',
+    backToLogin: '← Quay lại Đăng nhập',
+    mockSearch: 'Tìm kiếm',
+    mockTabAll: 'Tất cả',
+    mockTabGroup: 'Nhóm',
+    mockTabDirect: 'Cá nhân',
+    mockTabUnread: 'Chưa đọc',
+    mockTabMention: 'Được nhắc',
+    mockTyping: '••• Đang nhập...',
+    mockMsg1: 'Chào buổi sáng tốt lành nhé!',
+    mockMsg2: 'CloudChat v2.0 đã cập nhật thành công!',
+    mockMsg3: 'Dự_án_CloudChat.pdf',
+    langEn: 'Tiếng Anh',
+    langVi: 'Tiếng Việt',
+  },
+  en: {
+    brandName: 'CloudChat',
+    brandBadge: 'CLOUD',
+    sloganMain: 'Connecting Every Distance, Limitless Performance !',
+    sloganSub: 'CloudChat - Next-generation secure cloud messaging',
+    loginTitle: 'Sign in to CloudChat',
+    loginSubtitle: 'Enter your email and password to access workspace',
+    emailLabel: 'Account Email',
+    emailPlaceholder: 'Enter your email',
+    passwordLabel: 'Password',
+    passwordPlaceholder: 'Enter your password',
+    showPwd: 'Show',
+    hidePwd: 'Hide',
+    signInBtn: 'Sign In',
+    signingInBtn: 'Signing in...',
+    orDivider: 'Or continue with',
+    googleBtn: 'Sign in with Google',
+    noAccount: "Don't have an account?",
+    signUpNow: 'Sign up now',
+    registerSloganMain: 'Create a new account, connect instantly !',
+    registerSloganSub: 'Join the next-generation secure cloud workspace',
+    registerTitle: 'Create CloudChat Account',
+    registerSubtitle: 'Register an account to start your journey',
+    displayNameLabel: 'Display Name',
+    displayNamePlaceholder: 'e.g. Duy Khang',
+    registerEmailLabel: 'Email Address',
+    confirmPasswordLabel: 'Confirm Password',
+    confirmPasswordPlaceholder: 'Re-enter your password',
+    registerBtn: 'Create Account',
+    registeringBtn: 'Creating account...',
+    hasAccount: 'Already have an account?',
+    backToLogin: '← Back to Sign In',
+    mockSearch: 'Search',
+    mockTabAll: 'All',
+    mockTabGroup: 'Groups',
+    mockTabDirect: 'Direct',
+    mockTabUnread: 'Unread',
+    mockTabMention: 'Mentions',
+    mockTyping: '••• Typing...',
+    mockMsg1: 'Hello! Have a productive working day! 🚀',
+    mockMsg2: 'CloudChat v2.0 updated successfully!',
+    mockMsg3: 'Project_Report.pdf',
+    langEn: 'English',
+    langVi: 'Vietnamese',
+  }
+}
+
+/* ==========================================================================
+   CUSTOM DOB SELECT DROPDOWN (KHỚP THEO ẢNH 1: VIỀN XANH, POPUP BO TRÒN, TÍCH XANH)
+   ========================================================================== */
+function CustomDobSelect({ value, options, onChange, placeholder = '' }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const selectRef = useRef(null)
+  const dropdownRef = useRef(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (selectRef.current && !selectRef.current.contains(e.target)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    if (isOpen && dropdownRef.current) {
+      const selectedEl = dropdownRef.current.querySelector('.selected')
+      if (selectedEl) {
+        selectedEl.scrollIntoView({ block: 'nearest' })
+      }
+    }
+  }, [isOpen])
+
+  const selectedOption = options.find((opt) => String(opt.value) === String(value))
+  const displayLabel = selectedOption ? selectedOption.label : (value || placeholder)
+
+  return (
+    <div className={`custom-dob-select-wrap ${isOpen ? 'open' : ''}`} ref={selectRef}>
+      <button
+        type="button"
+        className="custom-dob-trigger"
+        onClick={() => setIsOpen((prev) => !prev)}
+      >
+        <span>{displayLabel}</span>
+        <svg
+          className={`custom-dob-chevron ${isOpen ? 'rotate' : ''}`}
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="custom-dob-dropdown" ref={dropdownRef}>
+          {options.map((opt) => {
+            const isSelected = String(opt.value) === String(value)
+            return (
+              <div
+                key={opt.value}
+                className={`custom-dob-option ${isSelected ? 'selected' : ''}`}
+                onClick={() => {
+                  onChange(opt.value)
+                  setIsOpen(false)
+                }}
+              >
+                <span>{opt.label}</span>
+                {isSelected && (
+                  <span className="custom-dob-option-check">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ==========================================================================
+   VERIFIED BLUE BADGE (TÍCH XANH CHÍNH THỨC)
+   ========================================================================== */
+export function VerifiedBadge({ size = 16, style = {} }) {
+  return (
+    <span
+      className="tg-verified-badge"
+      title="Tài khoản chính thức đã xác minh"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: 4,
+        verticalAlign: 'middle',
+        ...style,
+      }}
+    >
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" fill="#2563eb" />
+        <path
+          d="M8.5 12.5l2.5 2.5 5-5"
+          stroke="#ffffff"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  )
+}
+
+/* ==========================================================================
+   AVATAR CROP MODAL (CHỈNH SỬA HÌNH ẢNH - CHUẨN GIAO DIỆN HÌNH ẢNH YÊU CẦU)
+   ========================================================================== */
+function AvatarCropModal({ imageSource, onApply, onCancel }) {
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [rotation, setRotation] = useState(0) // 0, 90, 180, 270
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0, initialPanX: 0, initialPanY: 0 })
+  const [naturalDimensions, setNaturalDimensions] = useState({ width: 0, height: 0 })
+  const imgRef = useRef(null)
+
+  const CROP_DIAMETER = 260
+
+  const handleImageLoad = (e) => {
+    const nw = e.target.naturalWidth || 300
+    const nh = e.target.naturalHeight || 300
+    setNaturalDimensions({ width: nw, height: nh })
+  }
+
+  // Tính scale cơ sở để ảnh luôn phủ kín vòng tròn cắt
+  const isPerpendicular = rotation % 180 !== 0
+  const effW = isPerpendicular ? naturalDimensions.height : naturalDimensions.width
+  const effH = isPerpendicular ? naturalDimensions.width : naturalDimensions.height
+  const baseScale = effW && effH ? Math.max(CROP_DIAMETER / effW, CROP_DIAMETER / effH) : 1
+  const currentScale = baseScale * zoom
+
+  // Kéo thả chuột
+  const handleMouseDown = (e) => {
+    setIsDragging(true)
+    setDragStart({
+      x: e.clientX,
+      y: e.clientY,
+      initialPanX: pan.x,
+      initialPanY: pan.y,
+    })
+  }
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return
+    const dx = e.clientX - dragStart.x
+    const dy = e.clientY - dragStart.y
+    setPan({
+      x: dragStart.initialPanX + dx,
+      y: dragStart.initialPanY + dy,
+    })
+  }
+
+  const handleMouseUp = () => setIsDragging(false)
+
+  // Kéo thả cảm ứng trên điện thoại
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 1) {
+      setIsDragging(true)
+      setDragStart({
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        initialPanX: pan.x,
+        initialPanY: pan.y,
+      })
+    }
+  }
+
+  const handleTouchMove = (e) => {
+    if (!isDragging || e.touches.length !== 1) return
+    const dx = e.touches[0].clientX - dragStart.x
+    const dy = e.touches[0].clientY - dragStart.y
+    setPan({
+      x: dragStart.initialPanX + dx,
+      y: dragStart.initialPanY + dy,
+    })
+  }
+
+  const handleTouchEnd = () => setIsDragging(false)
+
+  // Lăn chuột để phóng to / thu nhỏ
+  const handleWheel = (e) => {
+    e.preventDefault()
+    const delta = e.deltaY * -0.002
+    setZoom((prev) => Math.min(3, Math.max(1, +(prev + delta).toFixed(2))))
+  }
+
+  // Nút xoay 90 độ cùng chiều kim đồng hồ
+  const handleRotate = () => {
+    setRotation((prev) => (prev + 90) % 360)
+  }
+
+  // Cắt ảnh xuất ra Canvas chuẩn 512x512 độ phân giải cao
+  const handleApply = () => {
+    if (!imgRef.current) return
+    const img = imgRef.current
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 512
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const ratio = 512 / CROP_DIAMETER
+
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.save()
+
+    // Căn giữa canvas
+    ctx.translate(256, 256)
+    // Tịnh tiến vị trí kéo
+    ctx.translate(pan.x * ratio, pan.y * ratio)
+    // Xoay ảnh
+    ctx.rotate((rotation * Math.PI) / 180)
+    // Phóng to thu nhỏ
+    const finalScale = baseScale * zoom * ratio
+    ctx.scale(finalScale, finalScale)
+
+    // Vẽ ảnh ở trung tâm
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2)
+    ctx.restore()
+
+    const croppedDataUrl = canvas.toDataURL('image/jpeg', 0.92)
+    onApply(croppedDataUrl)
+  }
+
+  const rawUrl = typeof imageSource === 'string' ? imageSource : imageSource?.dataUrl || ''
+
+  return (
+    <div className="modal-overlay tg-crop-modal-overlay" onClick={onCancel}>
+      <div className="modal-card tg-crop-modal-card" onClick={(e) => e.stopPropagation()}>
+        {/* Tiêu đề & nút đóng theo đúng ảnh mẫu */}
+        <div className="modal-header tg-crop-header">
+          <h3 className="tg-crop-title">Chỉnh sửa Hình ảnh</h3>
+          <button className="modal-close-button" onClick={onCancel} title="Đóng">
+            ✕
+          </button>
+        </div>
+
+        {/* Khung xem trước kéo cắt với vòng tròn viền trắng */}
+        <div
+          className={`tg-crop-workspace ${isDragging ? 'dragging' : ''}`}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onWheel={handleWheel}
+        >
+          <img
+            ref={imgRef}
+            src={rawUrl}
+            alt="Target"
+            onLoad={handleImageLoad}
+            className="tg-crop-target-img"
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) rotate(${rotation}deg) scale(${currentScale})`,
+            }}
+            draggable={false}
+          />
+          {/* Lớp phủ vòng tròn cắt hình tròn */}
+          <div className="tg-crop-circle-mask" />
+        </div>
+
+        {/* Thanh công cụ: Icon nhỏ, Slider Zoom, Icon lớn, Nút Xoay 90 độ */}
+        <div className="tg-crop-controls">
+          <button
+            type="button"
+            className="tg-crop-icon-btn"
+            onClick={() => setZoom((z) => Math.max(1, +(z - 0.2).toFixed(2)))}
+            title="Thu nhỏ"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </button>
+
+          <input
+            type="range"
+            min="1"
+            max="3"
+            step="0.01"
+            value={zoom}
+            onChange={(e) => setZoom(parseFloat(e.target.value))}
+            className="tg-crop-slider"
+          />
+
+          <button
+            type="button"
+            className="tg-crop-icon-btn"
+            onClick={() => setZoom((z) => Math.min(3, +(z + 0.2).toFixed(2)))}
+            title="Phóng to"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            className="tg-crop-icon-btn rotate-btn"
+            onClick={handleRotate}
+            title="Xoay 90°"
+          >
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.5 2v6h-6" />
+              <path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Nút hành động */}
+        <div className="tg-crop-footer">
+          <button type="button" className="secondary-button" onClick={onCancel}>
+            Hủy
+          </button>
+          <button type="button" className="primary-button" onClick={handleApply}>
+            Áp dụng
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ==========================================================================
+   CLOUDCHAT OFFICIAL SYSTEM BOT & CLIENT INFO
+   ========================================================================== */
+export const CLOUDCHAT_BOT_ID = 'cloudchat_system_bot'
+
+export const CLOUDCHAT_SYSTEM_BOT = {
+  id: CLOUDCHAT_BOT_ID,
+  username: 'cloudchat',
+  display_name: 'CloudChat',
+  avatar_url: '',
+  is_group: false,
+  is_verified: true,
+  is_system_bot: true,
+  bio: 'Tài khoản chính thức của CloudChat',
+  is_online: true,
+  last_message: 'You have successfully logged in to use ChatCloud.',
+}
+
+function getClientBrowserInfo() {
+  const ua = navigator.userAgent
+  let browser = 'Chrome 132'
+  let os = 'Windows'
+
+  if (ua.includes('Edg/')) {
+    const match = ua.match(/Edg\/(\d+)/)
+    browser = `Edge ${match ? match[1] : ''}`
+  } else if (ua.includes('Chrome/')) {
+    const match = ua.match(/Chrome\/(\d+)/)
+    browser = `Chrome ${match ? match[1] : '132'}`
+  } else if (ua.includes('Firefox/')) {
+    const match = ua.match(/Firefox\/(\d+)/)
+    browser = `Firefox ${match ? match[1] : ''}`
+  } else if (ua.includes('Safari/') && !ua.includes('Chrome')) {
+    browser = 'Safari'
+  }
+
+  if (ua.includes('Windows NT 10.0')) os = 'Windows'
+  else if (ua.includes('Windows')) os = 'Windows'
+  else if (ua.includes('Mac OS')) os = 'macOS'
+  else if (ua.includes('Android')) os = 'Android'
+  else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS'
+  else if (ua.includes('Linux')) os = 'Linux'
+
+  return `${browser} on ${os}`
+}
+
+const EMOJI_CATEGORIES = [
+  {
+    title: 'Cảm xúc',
+    icon: '😊',
+    emojis: ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😘', '😗', '😋', '😛', '😜', '🤪', '😎', '🥳', '😏', '😒', '😞', '🥺', '😢', '😭', '😤', '😡', '🤬', '🤯', '😳', '😱', '😰', '🤔', '🤫', '🤐', '😴', '🤤', '😵'],
+  },
+  {
+    title: 'Cử chỉ',
+    icon: '👍',
+    emojis: ['👍', '👎', '👏', '🙌', '👐', '🤝', '👊', '✊', '🤛', '🤜', '✌️', '🤟', '🤘', '👌', '🤏', '👈', '👉', '👆', '👇', '✋', '👋', '🤙', '💪', '🙏', '✍️', '🤳', '💅'],
+  },
+  {
+    title: 'Trái tim',
+    icon: '❤️',
+    emojis: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '🔥', '✨', '🌟', '⭐', '💫', '💥', '💯', '💢', '💬', '💭'],
+  },
+  {
+    title: 'Đồ vật',
+    icon: '🎉',
+    emojis: ['🎉', '🎊', '🎈', '🎁', '🏆', '🥇', '🎯', '🚀', '✈️', '🚗', '🔔', '📢', '🎵', '🎶', '💡', '🔑', '🔒', '📱', '💻', '☕', '🍺', '🍕', '🍔', '🍰', '🎂', '🌸', '🌹', '🍀'],
+  },
+]
+
 function App() {
-  const [page, setPage] = useState('loading')
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cloudchat_current_user')
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [page, setPage] = useState(() => {
+    try {
+      return localStorage.getItem('cloudchat_current_user') ? 'chat' : 'loading'
+    } catch {
+      return 'loading'
+    }
+  })
+  const [loginEmail, setLoginEmail] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [registerDisplayName, setRegisterDisplayName] = useState('')
@@ -937,10 +1738,21 @@ function App() {
   const [authSuccess, setAuthSuccess] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [currentUser, setCurrentUser] = useState(null)
 
-  const [friends, setFriends] = useState([])
+  const [friends, setFriends] = useState(() => {
+    try {
+      const cached = localStorage.getItem('cloudchat_cached_friends')
+      return cached ? JSON.parse(cached) : []
+    } catch {
+      return []
+    }
+  })
   const [activeChat, setActiveChat] = useState(null)
+  const activeChatRef = useRef(activeChat)
+  useEffect(() => {
+    activeChatRef.current = activeChat
+  }, [activeChat])
+
   const [messages, setMessages] = useState([])
 
   const [search, setSearch] = useState('')
@@ -953,9 +1765,28 @@ function App() {
   const [message, setMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const messagesEndRef = useRef(null)
+  const messagesContainerRef = useRef(null)
+  const prevChatIdRef = useRef(null)
+  const isJustSwitchedChatRef = useRef(false)
+  const userSentMessageRef = useRef(false)
 
   // Auto-hide scrollbars after 3 seconds of inactivity (show only when scrolling/mouse wheel)
   useEffect(() => {
+    // Purge any corrupted cached messages from localStorage
+    try {
+      const keysToRemove = []
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k && k.startsWith('cloudchat_cached_msgs_')) {
+          const val = localStorage.getItem(k)
+          if (val && val.includes('base64,...')) {
+            keysToRemove.push(k)
+          }
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k))
+    } catch { }
+
     let scrollTimeout = null
     const handleScrollActivity = () => {
       document.body.classList.add('is-scrolling')
@@ -981,26 +1812,94 @@ function App() {
 
   // Profile Modal State
   const [showProfileModal, setShowProfileModal] = useState(false)
-  const [profileTab, setProfileTab] = useState('info') // 'info' | 'password'
   const [profileDisplayName, setProfileDisplayName] = useState('')
   const [profileBio, setProfileBio] = useState('')
   const [profileAvatarUrl, setProfileAvatarUrl] = useState('')
+  const [profileGender, setProfileGender] = useState('nam') // 'nam' | 'nu'
+  const [birthDay, setBirthDay] = useState('02')
+  const [birthMonth, setBirthMonth] = useState('08')
+  const [birthYear, setBirthYear] = useState('2006')
   const [profileLoading, setProfileLoading] = useState(false)
   const [profileError, setProfileError] = useState('')
   const [profileSuccess, setProfileSuccess] = useState('')
+  const avatarFileInputRef = useRef(null)
+  const [profileTab, setProfileTab] = useState('info') // 'info' | 'password'
+  const [avatarDragOver, setAvatarDragOver] = useState(false)
+  const [avatarMethodTab, setAvatarMethodTab] = useState('upload') // 'upload' | 'url' | 'preset'
+  const [avatarFileMeta, setAvatarFileMeta] = useState(null)
+  const [avatarUrlInput, setAvatarUrlInput] = useState('')
+  const [avatarUrlStatus, setAvatarUrlStatus] = useState(null) // null | 'valid' | 'invalid'
+  const [avatarCheckingUrl, setAvatarCheckingUrl] = useState(false)
+  const [avatarConvertingBase64, setAvatarConvertingBase64] = useState(false)
+
+  // System Theme & Settings Modal State
+  const [themeMode, setThemeMode] = useState(() => {
+    try {
+      return localStorage.getItem('cloudchat_theme') || 'dark'
+    } catch {
+      return 'dark'
+    }
+  })
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [loginLang, setLoginLang] = useState(() => {
+    try {
+      return localStorage.getItem('cloudchat_auth_lang') || 'vi'
+    } catch {
+      return 'vi'
+    }
+  })
+  const handleSetLang = (lang) => {
+    setLoginLang(lang)
+    try {
+      localStorage.setItem('cloudchat_auth_lang', lang)
+    } catch { }
+  }
+  const authT = AUTH_TRANSLATIONS[loginLang] || AUTH_TRANSLATIONS.vi
+
+  // DevTools & F12 Security Blocker State
+  const [isDevToolsBlocked, setIsDevToolsBlocked] = useState(false)
+
+  // Blocked Users State (Danh sách đã chặn)
+  const [blockedUserIds, setBlockedUserIds] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cloudchat_blocked_users')
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  })
+
+  // Anti-Spam Login / Register State (Chống spam, honeypot & rate limit)
+  const formMountTimeRef = useRef(Date.now())
+  const [honeypotVal, setHoneypotVal] = useState('')
+  const [authAttempts, setAuthAttempts] = useState(() => {
+    try {
+      return parseInt(sessionStorage.getItem('cc_auth_attempts') || '0', 10)
+    } catch {
+      return 0
+    }
+  })
+  const [authLockoutUntil, setAuthLockoutUntil] = useState(() => {
+    try {
+      return parseInt(sessionStorage.getItem('cc_lockout_until') || '0', 10)
+    } catch {
+      return 0
+    }
+  })
+  const [mathChallenge, setMathChallenge] = useState({ q: '', a: 0 })
+  const [userMathAnswer, setUserMathAnswer] = useState('')
+
+  // CloudChat Bot Messages
+  const [cloudChatBotMessages, setCloudChatBotMessages] = useState([])
+
+  // Security Modal State (Bảo mật tài khoản / Đổi mật khẩu)
+  const [showSecurityModal, setShowSecurityModal] = useState(false)
+  const [securityLoading, setSecurityLoading] = useState(false)
+  const [securityError, setSecurityError] = useState('')
+  const [securitySuccess, setSecuritySuccess] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
-
-  // External Avatar Source State
-  const [avatarMethodTab, setAvatarMethodTab] = useState('upload') // 'upload' | 'url' | 'preset'
-  const [avatarUrlInput, setAvatarUrlInput] = useState('')
-  const [avatarCheckingUrl, setAvatarCheckingUrl] = useState(false)
-  const [avatarUrlStatus, setAvatarUrlStatus] = useState(null) // null | 'valid' | 'invalid'
-  const [avatarConvertingBase64, setAvatarConvertingBase64] = useState(false)
-  const [avatarDragOver, setAvatarDragOver] = useState(false)
-  const [avatarFileMeta, setAvatarFileMeta] = useState(null)
-  const avatarFileInputRef = useRef(null)
 
   // Telegram Hamburger Menu State (Image 2)
   const [showMenu, setShowMenu] = useState(false)
@@ -1033,8 +1932,8 @@ function App() {
   const [searchFriendSuccess, setSearchFriendSuccess] = useState('')
   const [searchFriendLoading, setSearchFriendLoading] = useState(false)
 
-  // Add Friend Tab State ('search' | 'qr_scan')
-  const [addFriendTab, setAddFriendTab] = useState('search') // 'search' | 'qr_scan'
+  // Add Friend Tab State ('search' | 'received' | 'sent')
+  const [addFriendTab, setAddFriendTab] = useState('search') // 'search' | 'received' | 'sent'
   const [qrScanInput, setQrScanInput] = useState('')
   const [qrScanning, setQrScanning] = useState(false)
   const [qrScanError, setQrScanError] = useState('')
@@ -1065,29 +1964,6 @@ function App() {
     value: '#0e1621',
   })
   const [chatWallpapers, setChatWallpapers] = useState({})
-  const [showWallpaperModal, setShowWallpaperModal] = useState(false)
-  const [wallpaperModalTab, setWallpaperModalTab] = useState('colors') // 'colors' | 'custom_picker' | 'upload'
-  const [wallpaperScope, setWallpaperScope] = useState('chat') // 'chat' | 'global'
-  const [tempWallpaper, setTempWallpaper] = useState({
-    type: 'color',
-    value: '#0e1621',
-    name: 'Telegram Dark Cổ Điển',
-  })
-  const [customColorHex, setCustomColorHex] = useState('#0e1621')
-  const [customColorInput, setCustomColorInput] = useState('#0e1621')
-  const [colorInputStatus, setColorInputStatus] = useState('valid') // 'valid' | 'invalid' | 'empty'
-  const [wallpaperUrlInput, setWallpaperUrlInput] = useState('')
-  const [wallpaperUrlStatus, setWallpaperUrlStatus] = useState(null)
-  const [wallpaperDragOver, setWallpaperDragOver] = useState(false)
-  const [wallpaperFileMeta, setWallpaperFileMeta] = useState(null)
-  const wallpaperFileInputRef = useRef(null)
-  const [doubleClickAction, setDoubleClickAction] = useState(() => {
-    try {
-      return localStorage.getItem('cloudchat_dblclick_action') || 'next'
-    } catch {
-      return 'next'
-    }
-  })
 
   // Custom Nicknames State (Chỉ 1 mình mình thấy tên)
   const [nicknames, setNicknames] = useState({})
@@ -1108,7 +1984,45 @@ function App() {
     wallpapers: true,
   })
   const [previewMediaUrl, setPreviewMediaUrl] = useState(null)
+  const [showAllMedia, setShowAllMedia] = useState(false)
+  const [cropImageSource, setCropImageSource] = useState(null)
   const fileInputRef = useRef(null)
+  const cameraInputRef = useRef(null)
+  const photoInputRef = useRef(null)
+  const documentInputRef = useRef(null)
+  const attachMenuRef = useRef(null)
+
+  // Attachment Picker & Preview states
+  const [showAttachMenu, setShowAttachMenu] = useState(false)
+  const [pendingAttachment, setPendingAttachment] = useState(null)
+
+  // Voice Note Recording states
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false)
+  const [isVoicePaused, setIsVoicePaused] = useState(false)
+  const [voiceDuration, setVoiceDuration] = useState(0)
+  const [voiceDurationMs, setVoiceDurationMs] = useState(0)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
+  const voiceTimerRef = useRef(null)
+  const voiceStreamRef = useRef(null)
+  const voiceStartTimeRef = useRef(0)
+  const voicePausedDurationRef = useRef(0)
+  const voicePauseTimeRef = useRef(0)
+
+  // Emoji Picker states
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [activeEmojiTab, setActiveEmojiTab] = useState(0)
+  const emojiPickerRef = useRef(null)
+
+  // Local hidden message IDs ("Xóa mình tôi")
+  const [hiddenMessageIds, setHiddenMessageIds] = useState(() => {
+    try {
+      const stored = localStorage.getItem('cloudchat_hidden_msgs')
+      return stored ? JSON.parse(stored) : []
+    } catch {
+      return []
+    }
+  })
 
   // Pagination / Load 20 tin nhắn gần nhất & Tối ưu hiệu năng
   const [visibleCount, setVisibleCount] = useState(20)
@@ -1118,7 +2032,14 @@ function App() {
   const [deletingMsgId, setDeletingMsgId] = useState(null)
 
   // Groups & Community State
-  const [groups, setGroups] = useState([])
+  const [groups, setGroups] = useState(() => {
+    try {
+      const cached = localStorage.getItem('cloudchat_cached_groups')
+      return cached ? JSON.parse(cached) : []
+    } catch {
+      return []
+    }
+  })
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
   const [groupNameInput, setGroupNameInput] = useState('')
   const [groupAvatarInput, setGroupAvatarInput] = useState('')
@@ -1126,11 +2047,31 @@ function App() {
   const [createGroupError, setCreateGroupError] = useState('')
   const [createGroupLoading, setCreateGroupLoading] = useState(false)
   const [groupDetailData, setGroupDetailData] = useState(null)
-  const [upgradingCommunity, setUpgradingCommunity] = useState(false)
   const [showAddGroupMemberModal, setShowAddGroupMemberModal] = useState(false)
   const [addMemberSelectedIds, setAddMemberSelectedIds] = useState([])
   const [addMemberLoading, setAddMemberLoading] = useState(false)
   const [addMemberError, setAddMemberError] = useState('')
+
+  // Nhắc tên (@username & @everyone)
+  const [showMentionPopover, setShowMentionPopover] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const [mentionCursorPos, setMentionCursorPos] = useState(0)
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0)
+  const mentionPopoverRef = useRef(null)
+
+  // Quản lý nhóm & Lời mời tham gia nhóm
+  const [groupInvitations, setGroupInvitations] = useState([])
+  const [showRenameGroupModal, setShowRenameGroupModal] = useState(false)
+  const [renameGroupNameInput, setRenameGroupNameInput] = useState('')
+  const [renameGroupLoading, setRenameGroupLoading] = useState(false)
+  const [showDisbandConfirmModal, setShowDisbandConfirmModal] = useState(false)
+  const [disbandGroupLoading, setDisbandGroupLoading] = useState(false)
+  const [showLeaveGroupConfirmModal, setShowLeaveGroupConfirmModal] = useState(false)
+  const [leaveGroupLoading, setLeaveGroupLoading] = useState(false)
+  const [activeMemberMenuId, setActiveMemberMenuId] = useState(null)
+  const [memberToKickModal, setMemberToKickModal] = useState(null)
+  const groupAvatarInputRef = useRef(null)
+  const [groupAvatarLoading, setGroupAvatarLoading] = useState(false)
 
   // Reply & Share State
   const [replyingMessage, setReplyingMessage] = useState(null)
@@ -1148,14 +2089,135 @@ function App() {
   const [activeChatMenuId, setActiveChatMenuId] = useState(null)
   const [showHiddenSection, setShowHiddenSection] = useState(false)
 
-  const showFloatingToast = (msg, duration = 2200) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
-    setCopyToast(msg)
-    toastTimerRef.current = setTimeout(() => {
-      setCopyToast('')
-    }, duration)
-  }
+  // Tắt hoàn toàn các thông báo popup bé bé theo yêu cầu người dùng
+  const showFloatingToast = () => { }
   const msgInputRef = useRef(null)
+
+  // Đóng emoji picker, attachment menu, mention popover và member menu khi click ra ngoài
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target)) {
+        setShowEmojiPicker(false)
+      }
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target)) {
+        setShowAttachMenu(false)
+      }
+      if (mentionPopoverRef.current && !mentionPopoverRef.current.contains(e.target) && msgInputRef.current && !msgInputRef.current.contains(e.target)) {
+        setShowMentionPopover(false)
+      }
+      if (activeMemberMenuId && !e.target.closest('.tg-member-actions-dropdown-wrapper')) {
+        setActiveMemberMenuId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
+  }, [activeMemberMenuId])
+
+  const mentionCandidates = useMemo(() => {
+    if (!activeChat?.is_group) return []
+    const q = (mentionQuery || '').toLowerCase().trim()
+    const all = [
+      { isEveryone: true, id: 'everyone', username: 'everyone', display_name: 'Tất cả mọi người (@everyone)' },
+      ...(groupDetailData?.members || []).filter((m) => m.id !== currentUser?.id)
+    ]
+    if (!q) return all
+    return all.filter((item) =>
+      item.username?.toLowerCase().includes(q) ||
+      item.display_name?.toLowerCase().includes(q)
+    )
+  }, [activeChat?.is_group, groupDetailData?.members, mentionQuery, currentUser?.id])
+
+  const handleInsertEmoji = (emoji) => {
+    setMessage((prev) => prev + emoji)
+    // Chỉ focus input trên màn hình lớn để tránh bàn phím ảo mobile nhảy lên che picker
+    if (window.innerWidth > 860 && msgInputRef.current) {
+      msgInputRef.current.focus()
+    }
+  }
+
+  const handleChatInputChange = (e) => {
+    const val = e.target.value
+    setMessage(val)
+    if (!activeChat?.is_group) {
+      setShowMentionPopover(false)
+      return
+    }
+    const cursorPos = e.target.selectionStart || val.length
+    const textBeforeCursor = val.slice(0, cursorPos)
+    const atIndex = textBeforeCursor.lastIndexOf('@')
+    if (atIndex !== -1) {
+      const charBeforeAt = atIndex === 0 ? ' ' : textBeforeCursor[atIndex - 1]
+      const queryAfterAt = textBeforeCursor.slice(atIndex + 1)
+      if (/\s/.test(charBeforeAt) && !/\s/.test(queryAfterAt)) {
+        setMentionQuery(queryAfterAt)
+        setMentionCursorPos(atIndex)
+        setMentionSelectedIndex(0)
+        setShowMentionPopover(true)
+        return
+      }
+    }
+    setShowMentionPopover(false)
+  }
+
+  const handleChatInputKeyDown = (e) => {
+    if (showMentionPopover && mentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionSelectedIndex((prev) => (prev + 1) % mentionCandidates.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionSelectedIndex((prev) => (prev - 1 + mentionCandidates.length) % mentionCandidates.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const selected = mentionCandidates[mentionSelectedIndex] || mentionCandidates[0]
+        if (selected) {
+          handleSelectMention(selected)
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowMentionPopover(false)
+        return
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  const handleSelectMention = (cand) => {
+    const tag = cand.isEveryone ? '@everyone ' : `@${cand.username} `
+    const before = message.slice(0, mentionCursorPos)
+    const after = message.slice(mentionCursorPos + 1 + (mentionQuery || '').length)
+    const newMsg = before + tag + after
+    setMessage(newMsg)
+    setShowMentionPopover(false)
+    setMentionQuery('')
+    if (msgInputRef.current) {
+      msgInputRef.current.focus()
+      const newPos = before.length + tag.length
+      setTimeout(() => {
+        msgInputRef.current?.setSelectionRange(newPos, newPos)
+      }, 0)
+    }
+  }
+
+  // Xác định người dùng đăng nhập bằng OAuth (Google, v.v.)
+  const isOAuthUser = Boolean(
+    currentUser?.is_oauth ||
+    currentUser?.provider === 'google' ||
+    (currentUser?.app_metadata?.provider && currentUser?.app_metadata?.provider !== 'email')
+  )
 
   // Sync nicknames per user account
   useEffect(() => {
@@ -1243,8 +2305,8 @@ function App() {
     setPinnedChats(updated)
     try {
       localStorage.setItem(`cloudchat_pinned_${currentUser.id}`, JSON.stringify(updated))
-    } catch {}
-    showFloatingToast(isPinned ? 'Đã bỏ ghim đoạn chat' : '📌 Đã ghim đoạn chat lên đầu')
+    } catch { }
+    showFloatingToast(isPinned ? 'Đã bỏ ghim đoạn chat' : 'Đã ghim đoạn chat lên đầu')
   }
 
   const handleToggleHideChat = (chatId, e) => {
@@ -1258,8 +2320,8 @@ function App() {
     setHiddenChats(updated)
     try {
       localStorage.setItem(`cloudchat_hidden_${currentUser.id}`, JSON.stringify(updated))
-    } catch {}
-    showFloatingToast(isHidden ? '👁️ Đã hiện lại đoạn chat' : '👁️‍🗨️ Đã ẩn đoạn chat')
+    } catch { }
+    showFloatingToast(isHidden ? 'Đã hiện lại đoạn chat' : 'Đã ẩn đoạn chat')
   }
 
   // Bắt đầu tạo nhóm mới với người bạn này được chọn sẵn
@@ -1283,9 +2345,11 @@ function App() {
   }, [activeChat, chatWallpapers, globalWallpaper])
 
   const getFriendName = (friend) => {
-    if (!friend) return ''
-    if (nicknames[friend.id]) return nicknames[friend.id]
-    return friend.display_name || friend.username
+    if (!friend) return 'Người dùng'
+    if (friend.id === CLOUDCHAT_BOT_ID || friend.username === 'cloudchat' || friend.is_system_bot) return 'CloudChat'
+    if (nicknames && nicknames[friend.id]) return nicknames[friend.id]
+    const resolved = friend.display_name || friend.username || friend.name || friend.full_name || 'Người dùng'
+    return typeof resolved === 'string' && resolved.trim() ? resolved.trim() : 'Người dùng'
   }
 
   const handleSaveNickname = (friendId, newNickname) => {
@@ -1307,8 +2371,11 @@ function App() {
   }
 
   // Group and sort friends alphabetically for "Bạn bè" tab (Images A, B headers)
+  // Group and sort friends alphabetically for "Bạn bè" tab (Images A, B headers)
   const alphabeticalFriends = useMemo(() => {
-    const sorted = [...friends].sort((a, b) => {
+    // Tự động ẩn người dùng đã bị chặn khỏi tab Bạn bè
+    const visibleFriends = friends.filter((f) => !blockedUserIds.includes(String(f.id)))
+    const sorted = [...visibleFriends].sort((a, b) => {
       const nameA = getFriendName(a).trim()
       const nameB = getFriendName(b).trim()
       return nameA.localeCompare(nameB, 'vi', { sensitivity: 'base' })
@@ -1331,24 +2398,53 @@ function App() {
       letter: key,
       items: groups[key],
     }))
-  }, [friends, nicknames])
+  }, [friends, nicknames, blockedUserIds])
 
-  // Sắp xếp và phân loại danh sách chat: Pinned đưa lên đầu, Hidden lọc ra ngoài
+  // Sắp xếp và phân loại danh sách chat: CloudChat Bot & Pinned đưa lên đầu, Hidden lọc ra ngoài
   const allChatsSorted = useMemo(() => {
-    // Gộp cả nhóm và bạn bè thành 1 danh sách
+    // CloudChat Bot chính thức
+    const botChat = {
+      ...CLOUDCHAT_SYSTEM_BOT,
+      last_message: cloudChatBotMessages.length > 0
+        ? cloudChatBotMessages[cloudChatBotMessages.length - 1].content.split('\n')[0]
+        : 'You have successfully logged in to use ChatCloud.',
+      last_message_time: cloudChatBotMessages.length > 0
+        ? cloudChatBotMessages[cloudChatBotMessages.length - 1].created_at
+        : new Date().toISOString(),
+    }
+
+    // Gộp cả bot, nhóm và bạn bè thành 1 danh sách
     const all = [
+      botChat,
       ...groups.map((g) => ({ ...g, is_group: true })),
       ...friends.map((f) => ({ ...f, is_group: false })),
     ]
 
-    // Lọc theo chế độ xem (ẩn hay bình thường)
+    // Lọc theo chế độ xem (ẩn hay bình thường) và tự động ẩn hoàn toàn người dùng bị chặn
     const filtered = all.filter((chat) => {
+      if (chat.id === CLOUDCHAT_BOT_ID) return true
+      // Nếu là người dùng và đang bị chặn -> ẩn luôn khỏi danh sách hội thoại
+      if (!chat.is_group && blockedUserIds.includes(String(chat.id))) {
+        return false
+      }
       const isHidden = hiddenChats.includes(chat.id)
       return showHiddenSection ? isHidden : !isHidden
+    }).map((chat) => {
+      const clearKey = `cloudchat_cleared_at_${currentUser?.id}_${chat.id}`
+      const clearedAtStr = localStorage.getItem(clearKey)
+      if (clearedAtStr && chat.last_message_time) {
+        if (new Date(chat.last_message_time).getTime() <= new Date(clearedAtStr).getTime()) {
+          return { ...chat, last_message: '' }
+        }
+      }
+      return chat
     })
 
-    // Sắp xếp: Pinned lên trước, sau đó theo thời gian tin nhắn mới nhất
+    // Sắp xếp: Bot luôn ở đầu (hoặc sau pinned), Pinned lên trước
     return filtered.sort((a, b) => {
+      if (a.id === CLOUDCHAT_BOT_ID && !pinnedChats.includes(b.id)) return -1
+      if (b.id === CLOUDCHAT_BOT_ID && !pinnedChats.includes(a.id)) return 1
+
       const aPinned = pinnedChats.includes(a.id)
       const bPinned = pinnedChats.includes(b.id)
       if (aPinned && !bPinned) return -1
@@ -1358,7 +2454,7 @@ function App() {
       const timeB = new Date(b.last_message_time || b.created_at || 0).getTime()
       return timeB - timeA
     })
-  }, [groups, friends, pinnedChats, hiddenChats, showHiddenSection])
+  }, [groups, friends, pinnedChats, hiddenChats, showHiddenSection, cloudChatBotMessages, blockedUserIds, currentUser?.id])
 
   const groupsSorted = useMemo(() => {
     const filtered = groups.filter((g) => {
@@ -1383,6 +2479,475 @@ function App() {
     return all.filter((c) => hiddenChats.includes(c.id)).length
   }, [groups, friends, hiddenChats])
 
+  // Modal xác nhận xoá lịch sử trò chuyện
+  const [chatToDeleteHistory, setChatToDeleteHistory] = useState(null)
+  const [isDeletingChatHistory, setIsDeletingChatHistory] = useState(false)
+
+  // Mở hộp thoại xác nhận xoá trò chuyện (khớp ảnh thiết kế)
+  const handleClearChatHistory = (chatTarget) => {
+    if (!chatTarget?.id || !currentUser?.id) return
+    setChatToDeleteHistory(chatTarget)
+  }
+
+  // Thực hiện xoá lịch sử trò chuyện khi người dùng xác nhận "Xóa"
+  const confirmClearChatHistory = async () => {
+    if (!chatToDeleteHistory?.id || !currentUser?.id) return
+    const targetId = chatToDeleteHistory.id
+    setIsDeletingChatHistory(true)
+
+    try {
+      const nowIso = new Date().toISOString()
+      const clearKey = `cloudchat_cleared_at_${currentUser.id}_${targetId}`
+      localStorage.setItem(clearKey, nowIso)
+
+      try {
+        deleteMessagesFromDb(targetId)
+        localStorage.removeItem(`cloudchat_cached_msgs_${targetId}`)
+      } catch { }
+
+      if (targetId === CLOUDCHAT_BOT_ID) {
+        setCloudChatBotMessages([])
+        try {
+          localStorage.removeItem(`cloudchat_bot_msgs_${currentUser.id}`)
+        } catch { }
+      }
+
+      if (activeChat && String(activeChat.id) === String(targetId)) {
+        setMessages([])
+      }
+
+      if (chatToDeleteHistory.is_group) {
+        await supabase
+          .from('messages')
+          .delete()
+          .eq('group_id', targetId)
+          .eq('sender_id', currentUser.id)
+      } else {
+        const { error: delErr } = await supabase
+          .from('messages')
+          .delete()
+          .is('group_id', null)
+          .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${targetId}),and(sender_id.eq.${targetId},receiver_id.eq.${currentUser.id})`)
+
+        if (delErr) {
+          await supabase
+            .from('messages')
+            .delete()
+            .eq('sender_id', currentUser.id)
+            .eq('receiver_id', targetId)
+        }
+      }
+
+      showFloatingToast('Đã xoá lịch sử trò chuyện')
+    } catch (err) {
+      console.error('Lỗi xoá lịch sử chat:', err)
+      showFloatingToast('Đã xoá lịch sử trò chuyện')
+    } finally {
+      setIsDeletingChatHistory(false)
+      setChatToDeleteHistory(null)
+    }
+  }
+
+  // Modal xác nhận Chặn người dùng (Khớp chuẩn hộp thoại xác nhận xoá chat)
+  const [userToBlock, setUserToBlock] = useState(null)
+
+  // Xử lý Chặn / Bỏ chặn người dùng
+  const handleToggleBlockUser = (user) => {
+    if (!user?.id) return
+    const uid = String(user.id)
+    if (blockedUserIds.includes(uid)) {
+      // Đang bị chặn -> Bỏ chặn trực tiếp
+      setBlockedUserIds((prev) => {
+        const updated = prev.filter((id) => id !== uid)
+        showFloatingToast(`Đã bỏ chặn ${user.display_name || user.username}`)
+        try {
+          localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+        } catch { }
+        return updated
+      })
+    } else {
+      // Chưa chặn -> Bật modal xác nhận Chặn
+      setUserToBlock(user)
+    }
+  }
+
+  // Xác nhận chặn người dùng
+  const confirmBlockUser = () => {
+    if (!userToBlock?.id) return
+    const uid = String(userToBlock.id)
+    setBlockedUserIds((prev) => {
+      const updated = prev.includes(uid) ? prev : [...prev, uid]
+      showFloatingToast(`Đã chặn ${userToBlock.display_name || userToBlock.username}`)
+      if (activeChat && String(activeChat.id) === uid) {
+        setActiveChat(null)
+      }
+      try {
+        localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+      } catch { }
+      return updated
+    })
+    setUserToBlock(null)
+  }
+
+  // Mở modal chỉnh sửa hồ sơ cá nhân (Giao diện mới)
+  const handleOpenProfileModal = () => {
+    setProfileDisplayName(currentUser?.display_name || currentUser?.username || '')
+    setProfileBio(currentUser?.bio || '')
+    const curAvatar = currentUser?.avatar_url || ''
+    setProfileAvatarUrl(curAvatar)
+
+    const storedGender =
+      currentUser?.gender ||
+      currentUser?.user_metadata?.gender ||
+      (currentUser?.id ? localStorage.getItem(`cloudchat_gender_${currentUser.id}`) : null) ||
+      'nam'
+    setProfileGender(storedGender === 'female' || storedGender === 'nu' ? 'nu' : 'nam')
+
+    let d = '02'
+    let m = '08'
+    let y = '2006'
+    const storedDob =
+      currentUser?.birthday ||
+      currentUser?.user_metadata?.birthday ||
+      (currentUser?.id ? localStorage.getItem(`cloudchat_dob_${currentUser.id}`) : null)
+    if (storedDob && typeof storedDob === 'string') {
+      const parts = storedDob.split('-')
+      if (parts.length === 3) {
+        y = parts[0]
+        m = String(parseInt(parts[1], 10)).padStart(2, '0')
+        d = String(parseInt(parts[2], 10)).padStart(2, '0')
+      }
+    }
+    setBirthDay(d)
+    setBirthMonth(m)
+    setBirthYear(y)
+
+    setProfileError('')
+    setProfileSuccess('')
+    setShowProfileModal(true)
+  }
+
+  // Cập nhật thông tin cá nhân (Giao diện mới: Tên hiển thị, Bio, Avatar, Giới tính, Ngày sinh)
+  const handleUpdateProfile = async (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    if (!currentUser?.id) return
+
+    setProfileLoading(true)
+    setProfileError('')
+    setProfileSuccess('')
+
+    const birthdayStr = `${birthYear}-${String(birthMonth).padStart(2, '0')}-${String(birthDay).padStart(2, '0')}`
+
+    try {
+      const updates = {
+        display_name: (profileDisplayName || '').trim() || currentUser.username,
+        bio: (profileBio || '').trim(),
+        avatar_url: (profileAvatarUrl || '').trim(),
+        gender: profileGender,
+        birthday: birthdayStr,
+      }
+
+      // Cập nhật vào Supabase profiles
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update(updates)
+          .eq('id', currentUser.id)
+        if (error) {
+          await supabase
+            .from('profiles')
+            .update({
+              display_name: updates.display_name,
+              bio: updates.bio,
+              avatar_url: updates.avatar_url,
+            })
+            .eq('id', currentUser.id)
+        }
+      } catch {
+        await supabase
+          .from('profiles')
+          .update({
+            display_name: updates.display_name,
+            bio: updates.bio,
+            avatar_url: updates.avatar_url,
+          })
+          .eq('id', currentUser.id)
+      }
+
+      // Lưu vào Supabase Auth user_metadata
+      try {
+        await supabase.auth.updateUser({
+          data: {
+            display_name: updates.display_name,
+            avatar_url: updates.avatar_url,
+            bio: updates.bio,
+            gender: profileGender,
+            birthday: birthdayStr,
+          },
+        })
+      } catch { }
+
+      // Lưu vào localStorage
+      try {
+        localStorage.setItem(`cloudchat_gender_${currentUser.id}`, profileGender)
+        localStorage.setItem(`cloudchat_dob_${currentUser.id}`, birthdayStr)
+      } catch { }
+
+      setCurrentUser((prev) => ({
+        ...prev,
+        ...updates,
+      }))
+      setProfileSuccess('Cập nhật thông tin cá nhân thành công!')
+      setTimeout(() => {
+        setShowProfileModal(false)
+        setProfileSuccess('')
+      }, 1000)
+    } catch (err) {
+      console.error('Update profile error:', err)
+      setProfileError(err?.message || 'Cập nhật thất bại. Vui lòng thử lại!')
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  // Xử lý tệp hình ảnh đại diện (Mở modal xem trước & kéo cắt avatar)
+  const handleAvatarFile = (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setProfileError('Vui lòng chọn tệp hình ảnh hợp lệ!')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setProfileError('Kích thước ảnh đại diện tối đa là 10MB!')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const res = e.target?.result
+      if (res) {
+        setCropImageSource({
+          dataUrl: res,
+          fileName: file.name,
+          fileSize: file.size,
+        })
+      }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  // Khi người dùng bấm "Áp dụng" trong modal Chỉnh sửa Hình ảnh
+  const handleApplyCroppedAvatar = async (croppedDataUrl) => {
+    if (cropImageSource?.isGroupAvatar) {
+      setCropImageSource(null)
+      await handleUpdateGroupAvatar(croppedDataUrl)
+      return
+    }
+    setProfileAvatarUrl(croppedDataUrl)
+    setAvatarFileMeta({
+      name: cropImageSource?.fileName || 'avatar.jpg',
+      size: 'Đã cắt chuẩn tròn',
+    })
+    setCropImageSource(null)
+    setProfileSuccess('Đã căn chỉnh ảnh đại diện! Nhấn "Lưu thay đổi" để áp dụng.')
+  }
+
+  const handleAvatarFileSelect = (e) => {
+    const file = e.target.files?.[0]
+    if (file) handleAvatarFile(file)
+    e.target.value = ''
+  }
+
+  const handleAvatarDragOver = (e) => {
+    e.preventDefault()
+    setAvatarDragOver(true)
+  }
+
+  const handleAvatarDragLeave = () => {
+    setAvatarDragOver(false)
+  }
+
+  const handleAvatarDrop = (e) => {
+    e.preventDefault()
+    setAvatarDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) handleAvatarFile(file)
+  }
+
+  const handleProfilePaste = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) {
+          handleAvatarFile(file)
+          break
+        }
+      }
+    }
+  }
+
+  const handleRemoveAvatar = () => {
+    setProfileAvatarUrl('')
+    setAvatarFileMeta(null)
+    setAvatarUrlInput('')
+    setAvatarUrlStatus(null)
+    setProfileSuccess('Đã gỡ ảnh đại diện. Nhấn "Lưu thay đổi" để dùng chữ cái mặc định.')
+  }
+
+  const handleSelectPreset = (url) => {
+    setProfileAvatarUrl(url)
+    setProfileSuccess('Đã chọn avatar mẫu! Nhấn "Lưu thay đổi" để áp dụng.')
+  }
+
+  const handleApplyAvatarUrl = () => {
+    const trimmed = avatarUrlInput.trim()
+    if (!trimmed) return
+    setAvatarCheckingUrl(true)
+    const img = new Image()
+    img.onload = () => {
+      setAvatarCheckingUrl(false)
+      setAvatarUrlStatus('valid')
+      setProfileAvatarUrl(trimmed)
+      setProfileSuccess('Liên kết ảnh hợp lệ! Nhấn "Lưu thay đổi" để hoàn tất.')
+    }
+    img.onerror = () => {
+      setAvatarCheckingUrl(false)
+      setAvatarUrlStatus('invalid')
+      setProfileError('Không thể tải ảnh từ URL này. Vui lòng kiểm tra lại link hoặc tải ảnh về máy!')
+    }
+    img.src = trimmed
+  }
+
+  const handleSaveUrlAsBase64 = async () => {
+    if (!profileAvatarUrl) return
+    setAvatarConvertingBase64(true)
+    try {
+      const res = await fetch(profileAvatarUrl)
+      const blob = await res.blob()
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const result = e.target?.result
+        if (result) {
+          setProfileAvatarUrl(result)
+          setProfileSuccess('Đã chuyển thành ảnh lưu trữ vĩnh viễn!')
+        }
+        setAvatarConvertingBase64(false)
+      }
+      reader.readAsDataURL(blob)
+    } catch {
+      setAvatarConvertingBase64(false)
+      setProfileError('Không thể chuyển đổi trực tiếp liên kết ngoài này do CORS. Bạn hãy tải ảnh về máy và dùng tab "Tải ảnh từ máy" nhé!')
+    }
+  }
+
+  // Khởi tạo câu đố toán học chống bot spam
+  const generateNewMathChallenge = () => {
+    const num1 = Math.floor(Math.random() * 8) + 2
+    const num2 = Math.floor(Math.random() * 8) + 1
+    setMathChallenge({ q: `${num1} + ${num2}`, a: num1 + num2 })
+    setUserMathAnswer('')
+  }
+
+  // Chặn phím tắt mở Developer Tools (F12, Ctrl+Shift+I, v.v.)
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem('cloudchat_devtools_locked')
+    } catch { }
+
+    const handleKeyDown = (e) => {
+      if (
+        e.key === 'F12' ||
+        e.keyCode === 123 ||
+        (e.ctrlKey && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
+        (e.ctrlKey && ['u', 'U', 's', 'S'].includes(e.key))
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        setIsDevToolsBlocked(true)
+        return false
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [])
+
+  // Khởi tạo tin nhắn bảo mật của CloudChat Bot khi đăng nhập
+  useEffect(() => {
+    if (!currentUser?.id) return
+
+    const loadBotMessages = async () => {
+      const storageKey = `cloudchat_bot_msgs_${currentUser.id}`
+      let saved = []
+      try {
+        const raw = localStorage.getItem(storageKey)
+        if (raw) saved = JSON.parse(raw)
+      } catch { }
+
+      let ipStr = '171.237.228.53 (Ho Chi Minh City, Vietnam)'
+      try {
+        const res = await fetch('https://ipwho.is/?fields=ip,city,country')
+        const data = await res.json()
+        if (data && data.ip) {
+          ipStr = `${data.ip} (${data.city || 'Ho Chi Minh City'}, ${data.country || 'Vietnam'})`
+        }
+      } catch { }
+
+      const browserStr = getClientBrowserInfo()
+      const now = new Date()
+      const timeStr = now.toLocaleTimeString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+
+      const noticeText = `Bạn đã đăng nhập thành công vào CloudChat.\n\nBrowser: ${browserStr}\nIP: ${ipStr}\n\nBạn có thể nhấn "Đăng xuất phiên" để kết thúc phiên này. ${timeStr}`
+
+      if (saved.length === 0) {
+        const initMsg = {
+          id: `bot_msg_${Date.now()}`,
+          sender_id: CLOUDCHAT_BOT_ID,
+          receiver_id: currentUser.id,
+          content: noticeText,
+          created_at: new Date().toISOString(),
+          is_login_notice: true,
+          sender_name: 'CloudChat',
+          sender_username: 'cloudchat',
+          is_verified: true,
+        }
+        saved = [initMsg]
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(saved))
+        } catch { }
+      } else {
+        let hasUpdated = false
+        saved = saved.map((m) => {
+          if (m.is_login_notice || (typeof m.content === 'string' && (m.content.includes('successfully logged in') || m.content.includes('đăng nhập thành công') || m.content.includes('Terminate session')))) {
+            hasUpdated = true
+            return {
+              ...m,
+              content: noticeText,
+              is_login_notice: true,
+            }
+          }
+          return m
+        })
+        if (hasUpdated) {
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(saved))
+          } catch { }
+        }
+      }
+
+      setCloudChatBotMessages(saved)
+    }
+
+    loadBotMessages()
+  }, [currentUser?.id])
 
   // Reset in-chat search & info panel when activeChat changes
   useEffect(() => {
@@ -1393,10 +2958,10 @@ function App() {
     setReplyingMessage(null)
   }, [activeChat?.id])
 
-  // Global message search across all chats
+  // Global message search across all chats (Supabase PostgreSQL)
   useEffect(() => {
-    const q = search.trim()
-    if (!q) {
+    const q = search.trim().toLowerCase()
+    if (!q || !currentUser?.id) {
       setGlobalSearchResults([])
       setSearchUsersResults([])
       setSearchGroupsResults([])
@@ -1406,34 +2971,93 @@ function App() {
     }
 
     const timer = setTimeout(async () => {
-      const token = localStorage.getItem('cloudchat_token')
-      if (!token) return
       setSearchLoading(true)
       try {
-        const response = await fetch(
-          `${API_BASE}/api/protected/messages/search?q=${encodeURIComponent(q)}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
+        // 1. Tìm người dùng khớp username hoặc display_name
+        const { data: matchedUsers } = await supabase
+          .from('profiles')
+          .select('id, username, display_name, bio, avatar_url')
+          .neq('id', currentUser.id)
+          .or(`username.ilike.%${q}%,display_name.ilike.%${q}%`)
+          .limit(10)
+
+        const userResults = (matchedUsers || []).map((u) => ({
+          ...u,
+          is_user: true,
+          is_friend: friends.some((f) => f.id === u.id),
+        }))
+
+        // 2. Tìm nhóm chat mà user đã tham gia khớp tên nhóm
+        const matchedGroups = groups.filter((g) => g.name.toLowerCase().includes(q)).slice(0, 10)
+        const groupResults = matchedGroups.map((g) => ({ ...g, is_group: true }))
+
+        // 3. Tìm tin nhắn khớp từ khóa
+        const { data: matchedMsgs } = await supabase
+          .from('messages')
+          .select('id, sender_id, receiver_id, group_id, content, created_at')
+          .ilike('content', `%${q}%`)
+          .order('created_at', { ascending: false })
+          .limit(50)
+
+        const enrichedMsgs = (matchedMsgs || []).map((m) => {
+          if (m.group_id) {
+            const g = groups.find((grp) => String(grp.id) === String(m.group_id))
+            return {
+              ...m,
+              friend_id: m.group_id,
+              username: g?.name || 'Nhóm',
+              display_name: g?.name || 'Nhóm chat',
+              avatar_url: g?.avatar_url || '',
+              is_group: true,
+            }
           }
-        )
-        const data = await response.json()
-        if (data.success) {
-          setGlobalSearchResults(data.results || [])
-          setSearchUsersResults(data.users || [])
-          setSearchGroupsResults(data.groups || [])
-          setSearchSuggestions(data.suggestions || [])
+          const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id
+          const f = friends.find((fr) => fr.id === otherId)
+          return {
+            ...m,
+            friend_id: otherId,
+            username: f?.username || 'User',
+            display_name: f?.display_name || f?.username || 'Người dùng',
+            avatar_url: f?.avatar_url || '',
+            is_group: false,
+          }
+        })
+
+        // 4. Trích xuất gợi ý từ khóa
+        const suggestionsSet = new Set()
+        for (const m of (matchedMsgs || [])) {
+          if (!m.content || m.content.startsWith('data:') || m.content.startsWith('{')) continue
+          const contentText = m.content.replace(/\s+/g, ' ')
+          const lowerText = contentText.toLowerCase()
+          let pos = lowerText.indexOf(q)
+          let count = 0
+          while (pos !== -1 && count < 3) {
+            const startIdx = Math.max(0, pos - 20)
+            const endIdx = Math.min(contentText.length, pos + q.length + 25)
+            let phrase = contentText.slice(startIdx, endIdx).trim()
+            phrase = phrase.replace(/^[^\w\s\u00C0-\u1EF9]+|[^\w\s\u00C0-\u1EF9]+$/g, '').trim()
+            if (phrase && phrase.toLowerCase() !== q && phrase.length >= q.length) {
+              suggestionsSet.add(phrase)
+            }
+            pos = lowerText.indexOf(q, pos + q.length + 1)
+            count++
+          }
+          if (suggestionsSet.size >= 8) break
         }
+
+        setGlobalSearchResults(enrichedMsgs)
+        setSearchUsersResults(userResults)
+        setSearchGroupsResults(groupResults)
+        setSearchSuggestions(Array.from(suggestionsSet).slice(0, 6))
       } catch (err) {
-        console.error('Search messages error:', err)
+        console.error('Search error:', err)
       } finally {
         setSearchLoading(false)
       }
     }, 200)
 
     return () => clearTimeout(timer)
-  }, [search])
+  }, [search, currentUser?.id, friends, groups])
 
   const handleSelectSearchResult = (res) => {
     const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
@@ -1502,90 +3126,168 @@ function App() {
 
     messages.forEach((m) => {
       if (!m.content) return
-      const text = m.content
+      const text = typeof m.content === 'string' ? m.content.trim() : ''
+      if (!text) return
 
-      // Check media (images)
-      const imgMatches = text.match(
-        /(https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?)|(data:image\/[a-z0-9+]+;base64,[^\s]+)/gi
-      )
-      if (imgMatches) {
-        imgMatches.forEach((url) => {
-          foundMedia.unshift({ id: m.id, type: 'image', url })
-        })
+      // 1. Kiểm tra nếu tin nhắn là định dạng JSON (Ảnh gửi từ máy, Video, File đính kèm)
+      let parsed = null
+      if (text.startsWith('{') && text.endsWith('}')) {
+        try {
+          parsed = JSON.parse(text)
+        } catch { }
       }
 
-      // Check video
-      const vidMatches = text.match(
-        /(https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?)|(data:video\/[a-z0-9+]+;base64,[^\s]+)/gi
-      )
-      if (vidMatches) {
-        vidMatches.forEach((url) => {
-          foundMedia.unshift({ id: m.id, type: 'video', url })
-        })
-      }
-
-      // Check files
-      const att = parseAttachment(text)
-      if (att) {
-        foundFiles.unshift({
-          id: m.id,
-          name: att.fileName,
-          size: formatFileSize(att.fileSize),
-          url: att.url,
-          fileType: att.fileType,
-          date: formatTime(m.created_at) || 'Hôm nay',
-        })
-      } else {
-        const fileMatches = text.match(
-          /https?:\/\/[^\s]+?\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|txt|csv)(?:\?[^\s]*)?/gi
-        )
-        if (fileMatches || m.type === 'file') {
-          const fileName =
-            text.split('/').pop()?.split('?')[0] || 'Tài liệu chia sẻ'
+      if (parsed) {
+        if (parsed.isRevoked) return // Bỏ qua tin nhắn đã thu hồi
+        if (parsed.isImage && parsed.url) {
+          foundMedia.unshift({
+            id: m.id,
+            type: 'image',
+            url: parsed.url,
+            caption: parsed.caption || '',
+            date: formatTime(m.created_at) || 'Hôm nay',
+          })
+        } else if (parsed.isVideo && parsed.url) {
+          foundMedia.unshift({
+            id: m.id,
+            type: 'video',
+            url: parsed.url,
+            caption: parsed.caption || '',
+            date: formatTime(m.created_at) || 'Hôm nay',
+          })
+        } else if (parsed.isAttachment || parsed.fileName) {
           foundFiles.unshift({
             id: m.id,
-            name: fileName,
-            size: 'Tệp đính kèm',
-            url: text,
+            name: parsed.fileName || 'Tài liệu đính kèm',
+            size: formatFileSize(parsed.fileSize),
+            url: parsed.url || parsed.data || '',
+            fileType: parsed.fileType || '',
             date: formatTime(m.created_at) || 'Hôm nay',
           })
         }
+
+        // Nếu có caption chứa link thì thêm vào danh sách link
+        if (parsed.caption) {
+          const capLinks = parsed.caption.match(/https?:\/\/[^\s"'<>]+/gi)
+          if (capLinks) {
+            capLinks.forEach((url) => {
+              let domain = 'web'
+              let iconType = 'generic'
+              let title = url
+              try {
+                const u = new URL(url)
+                domain = u.hostname
+                if (domain.includes('github.com')) {
+                  iconType = 'github'
+                  title = u.pathname.slice(1) ? `GitHub - ${u.pathname.slice(1)}` : 'GitHub'
+                } else if (domain.includes('meet.google.com')) {
+                  iconType = 'meet'
+                  title = 'Google Meet'
+                } else if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                  iconType = 'meet'
+                  title = 'YouTube'
+                }
+              } catch { }
+              foundLinks.unshift({
+                id: m.id,
+                url,
+                title,
+                domain,
+                iconType,
+                date: formatTime(m.created_at) || 'Hôm nay',
+              })
+            })
+          }
+        }
+        return
       }
 
-      // Check general links (only if not an attachment and not data URL)
-      if (!att && !text.startsWith('data:')) {
-        const linkMatches = text.match(/https?:\/\/[^\s]+/gi)
-        if (linkMatches) {
-          linkMatches.forEach((url) => {
-            let domain = 'web'
-            let iconType = 'generic'
-            let title = url
-            try {
-              const u = new URL(url)
-              domain = u.hostname
-              if (domain.includes('github.com')) {
-                iconType = 'github'
-                title = u.pathname.slice(1) ? `GitHub - ${u.pathname.slice(1)}` : 'GitHub'
-              } else if (domain.includes('meet.google.com')) {
-                iconType = 'meet'
-                title = 'Google Meet'
-              } else if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
-                iconType = 'meet'
-                title = 'YouTube'
-              } else {
-                title = url
-              }
-            } catch { }
+      // 2. Định dạng thông thường (data: URL hoặc văn bản chứa URL)
+      if (text.startsWith('data:image/')) {
+        foundMedia.unshift({ id: m.id, type: 'image', url: text, date: formatTime(m.created_at) || 'Hôm nay' })
+      } else if (text.startsWith('data:video/')) {
+        foundMedia.unshift({ id: m.id, type: 'video', url: text, date: formatTime(m.created_at) || 'Hôm nay' })
+      } else {
+        // Tìm ảnh thông thường trong văn bản
+        const imgMatches = text.match(/https?:\/\/[^\s"'<>]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s"'<>]*)?/gi)
+        if (imgMatches) {
+          imgMatches.forEach((url) => {
+            foundMedia.unshift({ id: m.id, type: 'image', url, date: formatTime(m.created_at) || 'Hôm nay' })
+          })
+        }
 
-            foundLinks.unshift({
+        // Tìm video
+        const vidMatches = text.match(/https?:\/\/[^\s"'<>]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s"'<>]*)?/gi)
+        if (vidMatches) {
+          vidMatches.forEach((url) => {
+            foundMedia.unshift({ id: m.id, type: 'video', url, date: formatTime(m.created_at) || 'Hôm nay' })
+          })
+        }
+
+        // Check files
+        const att = parseAttachment(text)
+        if (att) {
+          foundFiles.unshift({
+            id: m.id,
+            name: att.fileName,
+            size: formatFileSize(att.fileSize),
+            url: att.url,
+            fileType: att.fileType,
+            date: formatTime(m.created_at) || 'Hôm nay',
+          })
+        } else {
+          const fileMatches = text.match(
+            /https?:\/\/[^\s"'<>]+?\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|txt|csv)(?:\?[^\s"'<>]*)?/gi
+          )
+          if (fileMatches || m.type === 'file') {
+            const fileName =
+              text.split('/').pop()?.split('?')[0] || 'Tài liệu chia sẻ'
+            foundFiles.unshift({
               id: m.id,
-              url,
-              title,
-              domain,
-              iconType,
+              name: fileName,
+              size: 'Tệp đính kèm',
+              url: text,
               date: formatTime(m.created_at) || 'Hôm nay',
             })
-          })
+          }
+        }
+
+        // Check general links
+        if (!att && !text.startsWith('data:')) {
+          const linkMatches = text.match(/https?:\/\/[^\s"'<>]+/gi)
+          if (linkMatches) {
+            linkMatches.forEach((url) => {
+              const isMediaOrFile = /\.(?:png|jpe?g|gif|webp|svg|mp4|webm|mov|ogg|pdf|docx?|xlsx?|pptx?|zip|rar|txt|csv)(?:\?.*)?$/i.test(url)
+              if (!isMediaOrFile) {
+                let domain = 'web'
+                let iconType = 'generic'
+                let title = url
+                try {
+                  const u = new URL(url)
+                  domain = u.hostname
+                  if (domain.includes('github.com')) {
+                    iconType = 'github'
+                    title = u.pathname.slice(1) ? `GitHub - ${u.pathname.slice(1)}` : 'GitHub'
+                  } else if (domain.includes('meet.google.com')) {
+                    iconType = 'meet'
+                    title = 'Google Meet'
+                  } else if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+                    iconType = 'meet'
+                    title = 'YouTube'
+                  }
+                } catch { }
+
+                foundLinks.unshift({
+                  id: m.id,
+                  url,
+                  title,
+                  domain,
+                  iconType,
+                  date: formatTime(m.created_at) || 'Hôm nay',
+                })
+              }
+            })
+          }
         }
       }
     })
@@ -1602,6 +3304,19 @@ function App() {
   const getMessageSnippet = (rawContent) => {
     if (!rawContent) return 'Tin nhắn'
     const trimmed = rawContent.trim()
+    if (trimmed === '__REVOKED__' || trimmed === '[Tin nhắn đã được thu hồi]') {
+      return '🚫 Tin nhắn đã được thu hồi'
+    }
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const p = JSON.parse(trimmed)
+        if (p.isRevoked) return '🚫 Tin nhắn đã được thu hồi'
+        if (p.isVoice) return '🎤 Tin nhắn thoại'
+        if (p.isImage) return p.caption ? `📷 ${p.caption}` : '📷 Hình ảnh'
+        if (p.isVideo) return p.caption ? `🎥 ${p.caption}` : '🎥 Video'
+        if (p.isAttachment) return `📎 ${p.fileName || 'Tệp đính kèm'}`
+      } catch { }
+    }
     const attachment = parseAttachment(trimmed)
     if (attachment) {
       return `📎 ${attachment.fileName}`
@@ -1689,80 +3404,343 @@ function App() {
       .then(() => {
         showFloatingToast('Đã sao chép tin nhắn!')
       })
-      .catch(() => {})
+      .catch(() => { })
   }
 
-  // Xóa tin nhắn (Delete Message)
-  const handleDeleteMessage = async (messageId) => {
+  // 1. Thu hồi tin nhắn (Recall message) - Áp dụng cho tin nhắn của chính mình
+  const handleRecallMessage = async (messageId) => {
     if (!messageId) return
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    setDeletingMsgId(messageId)
-    // Optimistic UI: xóa khỏi danh sách tin nhắn ngay lập tức
-    setMessages((prev) => prev.filter((m) => m.id !== messageId))
     setActiveActionMsgId(null)
-    showFloatingToast('Đã xóa tin nhắn')
+
+    // Cập nhật Optimistic tại local
+    setMessages((prev) =>
+      prev.map((m) =>
+        Number(m.id) === Number(messageId)
+          ? { ...m, content: '__REVOKED__' }
+          : m
+      )
+    )
+    showFloatingToast('Đã thu hồi tin nhắn')
 
     try {
-      const response = await fetch(`${API_BASE}/api/protected/messages/${messageId}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        console.error('Delete message failed:', data)
-      }
+      const { error } = await supabase
+        .from('messages')
+        .update({ content: '__REVOKED__' })
+        .eq('id', messageId)
+      if (error) console.error('Recall message failed:', error)
     } catch (err) {
-      console.error('Delete message error:', err)
-    } finally {
-      setDeletingMsgId(null)
+      console.error('Recall message error:', err)
     }
   }
 
-  // Tải danh sách nhóm chat của người dùng
-  const loadGroups = async () => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
+  // 2. Xóa với mọi người (Delete for everyone) - Xóa hẳn bản ghi khỏi Supabase
+  const handleDeleteForEveryone = async (messageId) => {
+    if (!messageId) return
+    setActiveActionMsgId(null)
+
+    setMessages((prev) => prev.filter((m) => Number(m.id) !== Number(messageId)))
+    showFloatingToast('Đã xóa tin nhắn với mọi người')
 
     try {
-      const response = await fetch(`${API_BASE}/api/protected/groups`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (response.ok && data.success) {
-        setGroups(data.groups || [])
+      const { error } = await supabase.from('messages').delete().eq('id', messageId)
+      if (error) console.error('Delete for everyone failed:', error)
+    } catch (err) {
+      console.error('Delete for everyone error:', err)
+    }
+  }
+
+  // 3. Xóa mình tôi (Delete for me only) - Ẩn tin nhắn ở máy người dùng
+  const handleDeleteForMe = (messageId) => {
+    if (!messageId) return
+    setActiveActionMsgId(null)
+
+    const strId = String(messageId)
+    setHiddenMessageIds((prev) => {
+      const updated = [...prev, strId]
+      try {
+        localStorage.setItem('cloudchat_hidden_msgs', JSON.stringify(updated.slice(-500)))
+      } catch { }
+      return updated
+    })
+    setMessages((prev) => prev.filter((m) => String(m.id) !== strId))
+    showFloatingToast('Đã xoá tin nhắn ở phía tôi')
+  }
+
+  // Giữ lại alias handleDeleteMessage phòng trường hợp gọi ở nơi khác
+  const handleDeleteMessage = handleDeleteForEveryone
+
+  // Tải danh sách nhóm chat của người dùng (Supabase)
+  const loadGroups = async () => {
+    if (!currentUser?.id) return
+
+    try {
+      const { data: memberships, error: memErr } = await supabase
+        .from('group_members')
+        .select('group_id, role')
+        .eq('user_id', currentUser.id)
+
+      if (memErr) throw memErr
+      // Bỏ qua các lời mời đang chờ xác nhận
+      const acceptedMemberships = (memberships || []).filter((m) => m.role !== 'pending')
+      if (acceptedMemberships.length === 0) {
+        setGroups([])
+        return
       }
+
+      const groupIds = acceptedMemberships.map((m) => m.group_id)
+
+      const { data: groupList, error: grpErr } = await supabase
+        .from('groups')
+        .select('*')
+        .in('id', groupIds)
+        .order('created_at', { ascending: false })
+
+      if (grpErr) throw grpErr
+
+      const { data: allMembers } = await supabase
+        .from('group_members')
+        .select('group_id, role')
+        .in('group_id', groupIds)
+
+      const countMap = new Map()
+      for (const m of (allMembers || [])) {
+        if (m.role !== 'pending') {
+          countMap.set(m.group_id, (countMap.get(m.group_id) || 0) + 1)
+        }
+      }
+
+      const { data: recentMsgs } = await supabase
+        .from('messages')
+        .select('group_id, content, created_at')
+        .in('group_id', groupIds)
+        .order('created_at', { ascending: false })
+
+      const lastMsgMap = new Map()
+      for (const m of (recentMsgs || [])) {
+        if (!lastMsgMap.has(m.group_id)) {
+          lastMsgMap.set(m.group_id, m)
+        }
+      }
+
+      const formattedGroups = (groupList || []).map((g) => ({
+        ...g,
+        id: g.id,
+        is_group: true,
+        member_count: countMap.get(g.id) || 1,
+        last_message: lastMsgMap.get(g.id)?.content || null,
+        last_message_time: lastMsgMap.get(g.id)?.created_at || null,
+      }))
+
+      setGroups(formattedGroups)
+
+      try {
+        const cleanGroups = formattedGroups.slice(0, 50).map((g) => {
+          let lm = g.last_message
+          if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
+          return { ...g, last_message: lm }
+        })
+        localStorage.setItem(`cloudchat_cached_groups`, JSON.stringify(cleanGroups))
+      } catch { }
+
+      setActiveChat((current) => {
+        if (current && current.is_group) {
+          const updated = formattedGroups.find((g) => String(g.id) === String(current.id))
+          if (updated) return { ...current, ...updated }
+        }
+        return current
+      })
     } catch (err) {
       console.error('Load groups error:', err)
     }
   }
 
-  // Tải chi tiết nhóm (bao gồm danh sách thành viên tuân thủ rule <= 50 và > 50)
+  // Tải danh sách lời mời vào nhóm đang chờ xác nhận (Supabase)
+  const loadGroupInvitations = async () => {
+    if (!currentUser?.id) return
+    try {
+      const { data: rows, error } = await supabase
+        .from('group_members')
+        .select('group_id, joined_at')
+        .eq('user_id', currentUser.id)
+        .eq('role', 'pending')
+
+      if (error) throw error
+      if (!rows || rows.length === 0) {
+        setGroupInvitations([])
+        return
+      }
+
+      const groupIds = rows.map((r) => r.group_id)
+      const { data: groupList } = await supabase
+        .from('groups')
+        .select('*')
+        .in('id', groupIds)
+
+      const groupMap = new Map((groupList || []).map((g) => [g.id, g]))
+      const creatorIds = (groupList || []).map((g) => g.creator_id).filter(Boolean)
+      const { data: creatorProfiles } = await supabase
+        .from('profiles')
+        .select('id, username, display_name')
+        .in('id', creatorIds)
+
+      const creatorMap = new Map((creatorProfiles || []).map((p) => [p.id, p]))
+
+      const enriched = rows.map((r) => {
+        const grp = groupMap.get(r.group_id) || {}
+        const creator = creatorMap.get(grp.creator_id) || {}
+        return {
+          group_id: r.group_id,
+          name: grp.name || 'Nhóm chat',
+          avatar_url: grp.avatar_url || '',
+          creator_name: creator.display_name || creator.username || 'Người dùng',
+          created_at: r.joined_at || grp.created_at,
+        }
+      })
+      setGroupInvitations(enriched)
+    } catch (err) {
+      console.error('Load group invitations error:', err)
+    }
+  }
+
+  // Đồng ý chấp nhận lời mời vào nhóm
+  const handleAcceptGroupInvitation = async (invitation) => {
+    if (!currentUser?.id || !invitation) return
+    try {
+      const { error } = await supabase
+        .from('group_members')
+        .update({ role: 'member', joined_at: new Date().toISOString() })
+        .eq('group_id', invitation.group_id)
+        .eq('user_id', currentUser.id)
+
+      if (error) throw error
+
+      await supabase.from('messages').insert({
+        group_id: invitation.group_id,
+        sender_id: currentUser.id,
+        content: `👋 ${currentUser.display_name || currentUser.username} đã chấp nhận lời mời và tham gia nhóm!`,
+        is_read: false,
+      })
+
+      showFloatingToast(`Đã tham gia nhóm "${invitation.name}"!`)
+      await loadGroupInvitations()
+      await loadGroups()
+
+      const joinedGroup = {
+        id: invitation.group_id,
+        name: invitation.name,
+        avatar_url: invitation.avatar_url,
+        is_group: true,
+      }
+      setActiveChat(joinedGroup)
+    } catch (err) {
+      alert('Lỗi chấp nhận lời mời: ' + err.message)
+    }
+  }
+
+  // Từ chối lời mời vào nhóm
+  const handleDeclineGroupInvitation = async (invitation) => {
+    if (!currentUser?.id || !invitation) return
+    try {
+      const { error } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('group_id', invitation.group_id)
+        .eq('user_id', currentUser.id)
+
+      if (error) throw error
+
+      showFloatingToast('Đã từ chối lời mời vào nhóm.')
+      await loadGroupInvitations()
+    } catch (err) {
+      alert('Lỗi từ chối lời mời: ' + err.message)
+    }
+  }
+
+  // Tải chi tiết nhóm (Supabase)
   const loadGroupDetail = async (groupId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token || !groupId) return
+    if (!currentUser?.id || !groupId) return
 
     try {
-      const response = await fetch(`${API_BASE}/api/protected/groups/${groupId}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+      const { data: group, error: grpErr } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('id', groupId)
+        .single()
+
+      if (grpErr) throw grpErr
+
+      const { data: members, error: memErr } = await supabase
+        .from('group_members')
+        .select('user_id, role, joined_at')
+        .eq('group_id', groupId)
+
+      if (memErr) throw memErr
+
+      const acceptedMembers = (members || []).filter((m) => m.role !== 'pending')
+      const pendingMembers = (members || []).filter((m) => m.role === 'pending')
+
+      const memberCount = acceptedMembers.length
+      const myMembership = (members || []).find((m) => m.user_id === currentUser.id)
+      const isCreator = myMembership?.role === 'creator' || group?.creator_id === currentUser.id
+
+      const allUserIds = (members || []).map((m) => m.user_id)
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url, bio')
+        .in('id', allUserIds)
+
+      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
+
+      const formattedMembers = acceptedMembers.map((m) => {
+        const p = profileMap.get(m.user_id) || {}
+        return {
+          id: m.user_id,
+          username: p.username || 'User',
+          display_name: p.display_name || p.username || 'Thành viên',
+          avatar_url: p.avatar_url || '',
+          bio: p.bio || '',
+          role: m.role,
+          joined_at: m.joined_at,
+        }
       })
-      const data = await response.json()
-      if (response.ok && data.success) {
-        setGroupDetailData(data.group)
-      }
+      // Quản trị viên và người tạo lên đầu
+      formattedMembers.sort((a, b) => {
+        if (a.role === 'creator' && b.role !== 'creator') return -1
+        if (b.role === 'creator' && a.role !== 'creator') return 1
+        if (a.role === 'admin' && b.role !== 'admin') return -1
+        if (b.role === 'admin' && a.role !== 'admin') return 1
+        return 0
+      })
+
+      const formattedPending = pendingMembers.map((m) => {
+        const p = profileMap.get(m.user_id) || {}
+        return {
+          id: m.user_id,
+          username: p.username || 'User',
+          display_name: p.display_name || p.username || 'Thành viên',
+          avatar_url: p.avatar_url || '',
+          bio: p.bio || '',
+          role: m.role,
+          joined_at: m.joined_at,
+        }
+      })
+
+      setGroupDetailData({
+        ...group,
+        is_group: true,
+        member_count: memberCount,
+        user_role: myMembership?.role || 'member',
+        is_creator: isCreator,
+        members_hidden: false,
+        members: formattedMembers,
+        pending_members: formattedPending,
+      })
     } catch (err) {
       console.error('Load group detail error:', err)
     }
   }
 
-  // Tạo nhóm chat mới
+  // Tạo nhóm chat mới (Supabase) - Khi thành lập nhóm mời thành viên thì VÀO THẲNG không cần xác nhận
   const handleCreateGroup = async (e) => {
     if (e) e.preventDefault()
     const name = groupNameInput.trim()
@@ -1771,81 +3749,71 @@ function App() {
       return
     }
 
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
     setCreateGroupLoading(true)
     setCreateGroupError('')
 
     try {
-      const response = await fetch(`${API_BASE}/api/protected/groups`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      const totalInitial = 1 + selectedGroupMemberIds.length
+      const avatarUrl = groupAvatarInput.trim() || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name)}`
+
+      const { data: newGroup, error: grpErr } = await supabase
+        .from('groups')
+        .insert({
           name,
-          avatar_url: groupAvatarInput.trim(),
-          member_ids: selectedGroupMemberIds,
-        }),
+          avatar_url: avatarUrl,
+          creator_id: currentUser.id,
+          is_community: 0,
+        })
+        .select()
+        .single()
+
+      if (grpErr) throw grpErr
+
+      // Người tạo nhóm nhận quyền 'creator', thành viên được chọn khi tạo nhóm có quyền 'member' NGAY không cần xác nhận
+      const memberInserts = [
+        {
+          group_id: newGroup.id,
+          user_id: currentUser.id,
+          role: 'creator',
+        },
+        ...selectedGroupMemberIds.map((uid) => ({
+          group_id: newGroup.id,
+          user_id: uid,
+          role: 'member',
+        })),
+      ]
+
+      await supabase.from('group_members').insert(memberInserts)
+
+      await supabase.from('messages').insert({
+        group_id: newGroup.id,
+        sender_id: currentUser.id,
+        content: `🎉 Nhóm "${name}" đã được tạo. Chào mừng các thành viên!`,
+        is_read: false,
       })
 
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        setCreateGroupError(data.message || 'Tạo nhóm thất bại')
-        return
-      }
-
-      showFloatingToast(`Đã tạo nhóm "${name}" thành công! 🎉`)
+      showFloatingToast(`Đã tạo nhóm "${name}" thành công!`)
       setShowCreateGroupModal(false)
       setGroupNameInput('')
       setGroupAvatarInput('')
       setSelectedGroupMemberIds([])
+
       await loadGroups()
 
-      if (data.group) {
-        setActiveChat(data.group)
+      const createdChatTarget = {
+        ...newGroup,
+        is_group: true,
+        member_count: totalInitial,
       }
+      setActiveChat(createdChatTarget)
     } catch (err) {
-      setCreateGroupError('Lỗi kết nối khi tạo nhóm: ' + err.message)
+      setCreateGroupError('Lỗi tạo nhóm: ' + err.message)
     } finally {
       setCreateGroupLoading(false)
     }
   }
 
-  // Nâng cấp nhóm lên Cộng đồng (chỉ người tạo nhóm)
-  const handleUpgradeCommunity = async (groupId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token || !groupId) return
-
-    setUpgradingCommunity(true)
-    try {
-      const response = await fetch(`${API_BASE}/api/protected/groups/${groupId}/upgrade-community`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (response.ok && data.success) {
-        showFloatingToast('🚀 Nhóm đã được nâng cấp lên Cộng đồng! Không giới hạn thành viên.')
-        await loadGroups()
-        await loadGroupDetail(groupId)
-        // Cập nhật activeChat
-        setActiveChat((prev) => (prev ? { ...prev, is_community: 1 } : prev))
-      } else {
-        alert(data.message || 'Nâng cấp thất bại')
-      }
-    } catch (err) {
-      console.error('Upgrade community error:', err)
-      alert('Lỗi nâng cấp nhóm: ' + err.message)
-    } finally {
-      setUpgradingCommunity(false)
-    }
-  }
-
-  // Thêm thành viên vào nhóm hiện tại
+  // Thêm / Mời thành viên vào nhóm hiện tại (Supabase) - Phải chờ người ấy đồng ý chấp nhận vào (status: pending)
   const handleAddMembersToGroup = async () => {
     if (!activeChat || !activeChat.is_group) return
     if (addMemberSelectedIds.length === 0) {
@@ -1853,70 +3821,323 @@ function App() {
       return
     }
 
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
     setAddMemberLoading(true)
     setAddMemberError('')
 
     try {
-      const response = await fetch(`${API_BASE}/api/protected/groups/${activeChat.id}/members`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          member_ids: addMemberSelectedIds,
-        }),
-      })
+      const groupId = activeChat.id
 
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        setAddMemberError(data.message || 'Không thể thêm thành viên')
+      // Kiểm tra thành viên đã có hoặc đã nhận lời mời
+      const { data: existingMembers } = await supabase.from('group_members').select('user_id').eq('group_id', groupId)
+      const existingSet = new Set((existingMembers || []).map((m) => m.user_id))
+      const toInsertIds = addMemberSelectedIds.filter((uid) => !existingSet.has(uid))
+
+      if (toInsertIds.length === 0) {
+        setAddMemberError('Tất cả những người bạn chọn đã có trong nhóm hoặc đã nhận lời mời.')
         return
       }
 
-      showFloatingToast(data.message || 'Đã thêm thành viên thành công!')
+      // Mời vào nhóm với role: 'pending' (chờ chấp nhận)
+      const inserts = toInsertIds.map((uid) => ({
+        group_id: groupId,
+        user_id: uid,
+        role: 'pending',
+      }))
+
+      const { error } = await supabase.from('group_members').insert(inserts)
+      if (error) throw error
+
+      showFloatingToast('Đã gửi lời mời tham gia nhóm! Đang chờ bạn bè chấp nhận.')
       setShowAddGroupMemberModal(false)
       setAddMemberSelectedIds([])
-      await loadGroupDetail(activeChat.id)
-      await loadGroups()
+      await loadGroupDetail(groupId)
     } catch (err) {
-      setAddMemberError('Lỗi thêm thành viên: ' + err.message)
+      setAddMemberError('Lỗi gửi lời mời: ' + err.message)
     } finally {
       setAddMemberLoading(false)
     }
   }
 
+  // Thu hồi lời mời vào nhóm đã gửi (Quản trị viên / Nhóm trưởng)
+  const handleRevokeGroupInvitation = async (pendingUser) => {
+    if (!activeChat?.is_group || !pendingUser) return
+    try {
+      const { error } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('group_id', activeChat.id)
+        .eq('user_id', pendingUser.id)
+        .eq('role', 'pending')
+      if (error) throw error
+
+      showFloatingToast(`Đã thu hồi lời mời của ${pendingUser.display_name || pendingUser.username}.`)
+      await loadGroupDetail(activeChat.id)
+    } catch (err) {
+      alert('Lỗi thu hồi lời mời: ' + err.message)
+    }
+  }
+
+  // Nhóm trưởng: Đổi tên nhóm
+  const handleRenameGroup = async (e) => {
+    if (e) e.preventDefault()
+    const newName = renameGroupNameInput.trim()
+    if (!newName) return
+    if (!activeChat?.is_group || !groupDetailData?.is_creator) return
+
+    setRenameGroupLoading(true)
+    try {
+      const { error } = await supabase
+        .from('groups')
+        .update({ name: newName })
+        .eq('id', activeChat.id)
+
+      if (error) throw error
+
+      await supabase.from('messages').insert({
+        group_id: activeChat.id,
+        sender_id: currentUser.id,
+        content: `✏️ Quản trị viên đã đổi tên nhóm thành "${newName}".`,
+        is_read: false,
+      })
+
+      showFloatingToast(`Đã đổi tên nhóm thành "${newName}"!`)
+      setActiveChat((prev) => (prev ? { ...prev, name: newName } : prev))
+      setGroupDetailData((prev) => (prev ? { ...prev, name: newName } : prev))
+      setShowRenameGroupModal(false)
+      await loadGroups()
+    } catch (err) {
+      alert('Lỗi đổi tên nhóm: ' + err.message)
+    } finally {
+      setRenameGroupLoading(false)
+    }
+  }
+
+  // Nhóm trưởng: Chọn tệp ảnh đại diện cho nhóm
+  const handleGroupAvatarSelect = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      alert('Vui lòng chọn tệp hình ảnh hợp lệ (PNG, JPG, WEBP,...)')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Kích thước ảnh đại diện nhóm tối đa là 10MB!')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const res = ev.target?.result
+      if (res) {
+        setCropImageSource({
+          dataUrl: res,
+          fileName: file.name,
+          fileSize: file.size,
+          isGroupAvatar: true,
+        })
+      }
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  // Nhóm trưởng: Cập nhật ảnh đại diện nhóm lên Supabase
+  const handleUpdateGroupAvatar = async (avatarUrl) => {
+    if (!activeChat?.is_group || !activeChat?.id) return
+    const groupId = activeChat.id
+    setGroupAvatarLoading(true)
+    try {
+      const { error } = await supabase
+        .from('groups')
+        .update({ avatar_url: avatarUrl })
+        .eq('id', groupId)
+
+      if (error) throw error
+
+      await supabase.from('messages').insert({
+        group_id: groupId,
+        sender_id: currentUser.id,
+        content: avatarUrl
+          ? `🖼️ ${currentUser.display_name || currentUser.username} đã cập nhật ảnh đại diện của nhóm.`
+          : `🗑️ ${currentUser.display_name || currentUser.username} đã gỡ ảnh đại diện của nhóm.`,
+        is_read: false,
+      })
+
+      setActiveChat((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev))
+      setGroupDetailData((prev) => (prev ? { ...prev, avatar_url: avatarUrl } : prev))
+      setGroups((prev) =>
+        prev.map((g) => (String(g.id) === String(groupId) ? { ...g, avatar_url: avatarUrl } : g))
+      )
+      await loadGroups()
+    } catch (err) {
+      alert('Lỗi cập nhật ảnh đại diện nhóm: ' + err.message)
+    } finally {
+      setGroupAvatarLoading(false)
+    }
+  }
+
+  // Nhóm trưởng: Giải tán nhóm
+  const handleDisbandGroup = async () => {
+    if (!activeChat?.is_group || !groupDetailData?.is_creator) return
+
+    setDisbandGroupLoading(true)
+    try {
+      const groupId = activeChat.id
+
+      await supabase.from('messages').delete().eq('group_id', groupId)
+      await supabase.from('group_members').delete().eq('group_id', groupId)
+      const { error } = await supabase.from('groups').delete().eq('id', groupId)
+      if (error) throw error
+
+      showFloatingToast('Đã giải tán nhóm thành công.')
+      setShowDisbandConfirmModal(false)
+      setShowChatInfo(false)
+      setActiveChat(null)
+      await loadGroups()
+    } catch (err) {
+      alert('Lỗi giải tán nhóm: ' + err.message)
+    } finally {
+      setDisbandGroupLoading(false)
+    }
+  }
+
+  // Rời khỏi nhóm (Thành viên)
+  const handleLeaveGroup = async () => {
+    if (!activeChat?.is_group || !currentUser?.id) return
+    const groupId = activeChat.id
+
+    if (groupDetailData?.is_creator) {
+      alert('Bạn là nhóm trưởng (người tạo nhóm). Vui lòng chọn "Giải tán nhóm" nếu muốn đóng nhóm.')
+      return
+    }
+
+    setLeaveGroupLoading(true)
+    try {
+      const { error } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('group_id', groupId)
+        .eq('user_id', currentUser.id)
+
+      if (error) throw error
+
+      await supabase.from('messages').insert({
+        group_id: groupId,
+        sender_id: currentUser.id,
+        content: `🚪 ${currentUser.display_name || currentUser.username} đã rời khỏi nhóm.`,
+        is_read: false,
+      })
+
+      showFloatingToast('Bạn đã rời khỏi nhóm.')
+      setShowLeaveGroupConfirmModal(false)
+      setShowChatInfo(false)
+      setActiveChat(null)
+      await loadGroups()
+    } catch (err) {
+      alert('Lỗi rời nhóm: ' + err.message)
+    } finally {
+      setLeaveGroupLoading(false)
+    }
+  }
+
+  // Nhóm trưởng: Loại thành viên (Kick)
+  const handleKickMember = async (memberToKick) => {
+    if (!activeChat?.is_group || !groupDetailData?.is_creator || !memberToKick) return
+    if (memberToKick.id === currentUser.id) return
+
+    try {
+      const groupId = activeChat.id
+      const { error } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('group_id', groupId)
+        .eq('user_id', memberToKick.id)
+
+      if (error) throw error
+
+      await supabase.from('messages').insert({
+        group_id: groupId,
+        sender_id: currentUser.id,
+        content: `🚫 ${memberToKick.display_name || memberToKick.username} đã bị loại khỏi nhóm.`,
+        is_read: false,
+      })
+
+      showFloatingToast(`Đã loại ${memberToKick.display_name || memberToKick.username} khỏi nhóm.`)
+      setMemberToKickModal(null)
+      await loadGroupDetail(groupId)
+      await loadGroups()
+    } catch (err) {
+      alert('Lỗi loại thành viên: ' + err.message)
+    }
+  }
+
+  // Nhóm trưởng: Bổ nhiệm hoặc hạ quyền Quản trị viên
+  const handleToggleAdminRole = async (member) => {
+    if (!activeChat?.is_group || !groupDetailData?.is_creator || !member) return
+    if (member.id === currentUser.id) return
+
+    const newRole = member.role === 'admin' ? 'member' : 'admin'
+    try {
+      const groupId = activeChat.id
+      const { error } = await supabase
+        .from('group_members')
+        .update({ role: newRole })
+        .eq('group_id', groupId)
+        .eq('user_id', member.id)
+
+      if (error) throw error
+
+      const msg = newRole === 'admin'
+        ? `👑 ${member.display_name || member.username} đã được bổ nhiệm làm Quản trị viên.`
+        : `👤 ${member.display_name || member.username} đã chuyển về làm Thành viên thông thường.`
+
+      await supabase.from('messages').insert({
+        group_id: groupId,
+        sender_id: currentUser.id,
+        content: msg,
+        is_read: false,
+      })
+
+      showFloatingToast(newRole === 'admin' ? `Đã bổ nhiệm ${member.display_name || member.username} làm Quản trị viên!` : `Đã hạ quyền Quản trị viên của ${member.display_name || member.username}.`)
+      await loadGroupDetail(groupId)
+    } catch (err) {
+      alert('Lỗi cập nhật vai trò: ' + err.message)
+    }
+  }
+
   const handleForwardMessage = async (targetFriendId, msg) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token || !msg) return
+    if (!targetFriendId || !msg || !currentUser?.id) return
 
     setForwardSending((prev) => ({ ...prev, [targetFriendId]: true }))
     try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/messages/${targetFriendId}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            content: msg.content,
-          }),
-        }
-      )
-      const data = await response.json()
-      if (data.success) {
-        setForwardSent((prev) => ({ ...prev, [targetFriendId]: true }))
-        setForwardSuccessMessage('Đã chuyển tiếp tin nhắn thành công!')
-        if (activeChat && activeChat.id === targetFriendId && data.message) {
-          setMessages((prev) => [...prev, data.message])
-        }
-        loadFriends()
+      const isTargetGroup = groups.some((g) => String(g.id) === String(targetFriendId))
+      const payload = {
+        sender_id: currentUser.id,
+        receiver_id: isTargetGroup ? null : targetFriendId,
+        group_id: isTargetGroup ? targetFriendId : null,
+        content: msg.content,
+        reply_to_id: null,
+        is_read: false,
       }
+
+      const { data, error } = await supabase.from('messages').insert(payload).select().single()
+      if (error) throw error
+
+      setForwardSent((prev) => ({ ...prev, [targetFriendId]: true }))
+      setForwardSuccessMessage('Đã chuyển tiếp tin nhắn thành công!')
+
+      if (activeChat && String(activeChat.id) === String(targetFriendId) && data) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            ...data,
+            sender_username: currentUser.username,
+            sender_name: currentUser.display_name || currentUser.username,
+            sender_avatar: currentUser.avatar_url || '',
+          },
+        ])
+      }
+      loadFriends()
+      loadGroups()
     } catch (err) {
       console.error('Forward failed:', err)
     } finally {
@@ -1924,74 +4145,47 @@ function App() {
     }
   }
 
-  // Handle attachment selection & sending
+  // Handle attachment click: Mở trực tiếp bộ chọn file / camera hệ thống (hoạt động 100% trên cả PC và Mobile)
   const handleAttachmentClick = () => {
+    if (!activeChat?.is_group && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
+      showFloatingToast('Bạn cần kết bạn và được đối phương đồng ý trước khi gửi tệp tin!')
+      return
+    }
     fileInputRef.current?.click()
   }
 
-  const handleFileSelect = async (e) => {
+  // Nhận file từ Camera, Photos, hoặc Tệp tin -> Đưa vào Preview Bar thay vì tự gửi
+  const handleAttachmentFileSelected = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    e.target.value = ''
 
-    if (!activeChat) return
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Kích thước tệp tin tối đa là 5MB.')
-      e.target.value = ''
+    if (file.size > 8 * 1024 * 1024) {
+      alert('Kích thước tệp tin tối đa là 8MB.')
       return
     }
 
-    const replyId = replyingMessage?.id || null
     const reader = new FileReader()
-    reader.onload = async () => {
-      let content = reader.result
-      // If it's a document/file (not image and not video), package as structured JSON attachment
-      if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
-        content = JSON.stringify({
-          isAttachment: true,
-          fileName: file.name,
-          fileSize: file.size,
-          fileType: file.type || 'application/octet-stream',
-          data: reader.result,
-        })
-      }
-
-      try {
-        const response = await fetch(
-          `${API_BASE}/api/protected/messages/${activeChat.id}`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              content,
-              reply_to_id: replyId,
-            }),
-          }
-        )
-
-        const data = await response.json()
-        if (data.success && data.message) {
-          setMessages((current) => [...current, data.message])
-          loadFriends()
-          setReplyingMessage(null)
-        }
-      } catch (err) {
-        console.error('Send attachment error:', err)
-      }
+    reader.onload = () => {
+      const isImg = file.type.startsWith('image/')
+      const isVid = file.type.startsWith('video/')
+      setPendingAttachment({
+        file,
+        url: reader.result,
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        isImage: isImg,
+        isVideo: isVid,
+      })
     }
     reader.readAsDataURL(file)
-    e.target.value = ''
   }
 
-  // Handle clipboard paste (Ctrl + V to paste and send image)
+  // Handle clipboard paste (Ctrl + V): Đưa vào Preview Bar chứ KHÔNG tự gửi
   const handleInputPaste = async (e) => {
     const clipboardData = e.clipboardData
-    if (!clipboardData) return
+    if (!clipboardData || !activeChat || !currentUser?.id) return
 
     const items = clipboardData.items
     let imageFile = null
@@ -2005,40 +4199,223 @@ function App() {
 
     if (imageFile) {
       e.preventDefault()
-      if (!activeChat) return
-      const token = localStorage.getItem('cloudchat_token')
-      if (!token) return
-
-      const replyId = replyingMessage?.id || null
+      if (imageFile.size > 8 * 1024 * 1024) {
+        alert('Kích thước ảnh tối đa là 8MB.')
+        return
+      }
       const reader = new FileReader()
-      reader.onload = async () => {
-        const content = reader.result
-        try {
-          const response = await fetch(
-            `${API_BASE}/api/protected/messages/${activeChat.id}`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({
-                content,
-                reply_to_id: replyId,
-              }),
-            }
-          )
-          const data = await response.json()
-          if (data.success && data.message) {
-            setMessages((current) => [...current, data.message])
-            loadFriends()
-            setReplyingMessage(null)
-          }
-        } catch (err) {
-          console.error('Paste send image error:', err)
-        }
+      reader.onload = () => {
+        setPendingAttachment({
+          file: imageFile,
+          url: reader.result,
+          name: imageFile.name || `image_${Date.now()}.png`,
+          size: imageFile.size,
+          type: imageFile.type || 'image/png',
+          isImage: true,
+          isVideo: false,
+        })
       }
       reader.readAsDataURL(imageFile)
+    }
+  }
+
+  // Voice Note Recording handlers
+  const handleStartVoiceRecord = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Trình duyệt của bạn không hỗ trợ ghi âm trực tiếp!')
+      return
+    }
+    if (!activeChat?.is_group && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
+      showFloatingToast('Bạn cần kết bạn và được đối phương đồng ý trước khi gửi thoại!')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      voiceStreamRef.current = stream
+
+      let recorder
+      try {
+        recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+      } catch {
+        recorder = new MediaRecorder(stream)
+      }
+
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.start(200)
+      setIsRecordingVoice(true)
+      setIsVoicePaused(false)
+      setVoiceDuration(0)
+      setVoiceDurationMs(0)
+      voiceStartTimeRef.current = Date.now()
+      voicePausedDurationRef.current = 0
+
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current)
+      voiceTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - voiceStartTimeRef.current - voicePausedDurationRef.current
+        setVoiceDurationMs(elapsed)
+        setVoiceDuration(Math.round(elapsed / 1000))
+      }, 30)
+    } catch (err) {
+      console.error('Microphone access error:', err)
+      alert('Không thể truy cập Microphone. Vui lòng cấp quyền micro trong cài đặt trình duyệt!')
+    }
+  }
+
+  const handleTogglePauseVoice = () => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder) return
+    if (isVoicePaused) {
+      try {
+        if (recorder.state === 'paused') recorder.resume()
+      } catch (e) {
+        console.error('Recorder resume failed', e)
+      }
+      voicePausedDurationRef.current += Date.now() - voicePauseTimeRef.current
+      setIsVoicePaused(false)
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current)
+      voiceTimerRef.current = setInterval(() => {
+        const elapsed = Date.now() - voiceStartTimeRef.current - voicePausedDurationRef.current
+        setVoiceDurationMs(elapsed)
+        setVoiceDuration(Math.round(elapsed / 1000))
+      }, 30)
+    } else {
+      try {
+        if (recorder.state === 'recording') recorder.pause()
+      } catch (e) {
+        console.error('Recorder pause failed', e)
+      }
+      voicePauseTimeRef.current = Date.now()
+      setIsVoicePaused(true)
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current)
+    }
+  }
+
+  const handleCancelVoiceRecord = () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current)
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop() } catch { }
+    }
+    if (voiceStreamRef.current) {
+      voiceStreamRef.current.getTracks().forEach((track) => track.stop())
+    }
+    setIsRecordingVoice(false)
+    setIsVoicePaused(false)
+    setVoiceDuration(0)
+    setVoiceDurationMs(0)
+    audioChunksRef.current = []
+  }
+
+  const handleStopAndSendVoice = () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current)
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state === 'inactive') {
+      setIsRecordingVoice(false)
+      setIsVoicePaused(false)
+      return
+    }
+
+    recorder.onstop = () => {
+      if (voiceStreamRef.current) {
+        voiceStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+      const audioBlob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+      audioChunksRef.current = []
+      setIsRecordingVoice(false)
+      setIsVoicePaused(false)
+
+      const durationToSend = Math.max(1, Math.round(voiceDurationMs / 1000)) || 1
+      setVoiceDuration(0)
+      setVoiceDurationMs(0)
+
+      const reader = new FileReader()
+      reader.onloadend = async () => {
+        const base64Audio = reader.result
+        const content = JSON.stringify({
+          isVoice: true,
+          audioData: base64Audio,
+          duration: durationToSend,
+        })
+        sendVoicePayload(content)
+      }
+      reader.readAsDataURL(audioBlob)
+    }
+
+    try { recorder.stop() } catch { }
+  }
+
+  const formatVoiceCentiseconds = (ms) => {
+    const totalSeconds = Math.floor(ms / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    const centiseconds = Math.floor((ms % 1000) / 10)
+    return `${minutes}:${String(seconds).padStart(2, '0')},${String(centiseconds).padStart(2, '0')}`
+  }
+
+  const sendVoicePayload = async (content) => {
+    const replyId = replyingMessage?.id || null
+    const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+    const now = new Date().toISOString()
+
+    const optimisticMsg = {
+      id: tempId,
+      sender_id: currentUser.id,
+      receiver_id: activeChat.is_group ? null : activeChat.id,
+      group_id: activeChat.is_group ? activeChat.id : null,
+      content,
+      created_at: now,
+      sender_username: currentUser.username,
+      sender_name: currentUser.display_name || currentUser.username,
+      sender_avatar: currentUser.avatar_url || '',
+      is_optimistic: true,
+      reply_to_id: replyId ? Number(replyId) : null,
+    }
+
+    userSentMessageRef.current = true
+    setMessages((current) => [...current, optimisticMsg])
+    setReplyingMessage(null)
+
+    try {
+      const payload = {
+        sender_id: currentUser.id,
+        receiver_id: activeChat.is_group ? null : activeChat.id,
+        group_id: activeChat.is_group ? activeChat.id : null,
+        content,
+        reply_to_id: replyId ? Number(replyId) : null,
+        is_read: false,
+      }
+
+      const { data, error } = await supabase.from('messages').insert(payload).select().single()
+      if (error) throw error
+
+      if (data) {
+        setMessages((current) =>
+          current.map((m) =>
+            m.id === tempId
+              ? {
+                ...data,
+                sender_username: currentUser.username,
+                sender_name: currentUser.display_name || currentUser.username,
+                sender_avatar: currentUser.avatar_url || '',
+              }
+              : m
+          )
+        )
+        loadFriends()
+        loadGroups()
+      }
+    } catch (err) {
+      console.error('Send voice message error:', err)
+      setMessages((current) => current.filter((m) => m.id !== tempId))
+      showFloatingToast('Không thể gửi tin nhắn thoại')
     }
   }
 
@@ -2048,7 +4425,82 @@ function App() {
 
     const trimmed = content.trim()
 
-    // 1. Check if attachment (file, document, word, etc.)
+    // 0. Tin nhắn đã thu hồi
+    if (trimmed === '__REVOKED__' || trimmed === '[Tin nhắn đã được thu hồi]') {
+      return (
+        <div className="tg-msg-revoked-bubble">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 6, flexShrink: 0 }}>
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+          </svg>
+          <span>Tin nhắn đã được thu hồi</span>
+        </div>
+      )
+    }
+
+    // 1. JSON-encoded: Thoại, Ảnh có caption, Video có caption, Tin nhắn thu hồi
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const p = JSON.parse(trimmed)
+        if (p.isRevoked) {
+          return (
+            <div className="tg-msg-revoked-bubble">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 6, flexShrink: 0 }}>
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+              </svg>
+              <span>Tin nhắn đã được thu hồi</span>
+            </div>
+          )
+        }
+        if (p.isVoice) {
+          return <VoicePlayer audioUrl={p.audioData} duration={p.duration} />
+        }
+        if (p.isImage) {
+          if (!p.url) {
+            return (
+              <div className="tg-msg-image-wrap tg-msg-image-skeleton">
+                <span className="tg-skeleton-icon">🖼️</span>
+                <span>Không có ảnh</span>
+              </div>
+            )
+          }
+          return (
+            <div className="tg-msg-image-wrap">
+              <ChatImage
+                src={p.url}
+                alt="Ảnh gửi"
+                className="tg-msg-image"
+                onClick={() => setPreviewMediaUrl(p.url)}
+              />
+              {p.caption && (
+                <div className="tg-msg-caption">
+                  {renderHighlightedText(p.caption, highlightQuery)}
+                </div>
+              )}
+            </div>
+          )
+        }
+        if (p.isVideo) {
+          return (
+            <div className="tg-msg-video-wrap">
+              <video
+                controls
+                src={p.url}
+                style={{ maxWidth: '100%', borderRadius: 12, display: 'block' }}
+              />
+              {p.caption && (
+                <div className="tg-msg-caption">
+                  {renderHighlightedText(p.caption, highlightQuery)}
+                </div>
+              )}
+            </div>
+          )
+        }
+      } catch { }
+    }
+
+    // 2. Check if attachment (file, document, word, etc.)
     const attachment = parseAttachment(trimmed)
     if (attachment) {
       const badgeType = getFileBadgeType(attachment.fileName, attachment.fileType)
@@ -2081,16 +4533,17 @@ function App() {
       )
     }
 
-    // 2. Check if whole message is directly an image
+    // 3. Standalone image URL
     const isStandaloneImageUrl =
-      trimmed.startsWith('data:image/') ||
+      (trimmed.startsWith('data:image/') && !trimmed.includes('...')) ||
       /^https?:\/\/[^\s]+?\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s]*)?$/i.test(trimmed)
 
     if (isStandaloneImageUrl) {
       return (
-        <img
+        <ChatImage
           src={trimmed}
-          alt="attachment"
+          alt="Hình ảnh"
+          className="tg-msg-image"
           style={{
             maxWidth: '100%',
             maxHeight: 340,
@@ -2103,7 +4556,16 @@ function App() {
       )
     }
 
-    // 3. Check if whole message is directly a video
+    if (trimmed.includes('base64,...')) {
+      return (
+        <div className="tg-msg-image-skeleton">
+          <span className="tg-skeleton-icon">🖼️</span>
+          <span>Đang tải hình ảnh...</span>
+        </div>
+      )
+    }
+
+    // 4. Standalone video URL
     const isStandaloneVideoUrl =
       trimmed.startsWith('data:video/') ||
       /^https?:\/\/[^\s]+?\.(?:mp4|webm|mov|ogg)(?:\?[^\s]*)?$/i.test(trimmed)
@@ -2118,51 +4580,8 @@ function App() {
       )
     }
 
-    // 4. Tokenize content by URLs
-    const urlPattern = /(https?:\/\/[^\s]+)/g
-    const segments = content.split(urlPattern)
-    const q = (highlightQuery || '').trim()
-
-    return (
-      <span>
-        {segments.map((seg, segIdx) => {
-          if (/^https?:\/\/[^\s]+$/i.test(seg)) {
-            return (
-              <a
-                key={segIdx}
-                href={seg}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  color: '#93c5fd',
-                  textDecoration: 'underline',
-                  wordBreak: 'break-all',
-                }}
-              >
-                {seg}
-              </a>
-            )
-          }
-
-          if (q) {
-            const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            const qPattern = new RegExp(`(${escaped})`, 'gi')
-            const parts = seg.split(qPattern)
-            return parts.map((part, pIdx) =>
-              part.toLowerCase() === q.toLowerCase() ? (
-                <mark key={`${segIdx}-${pIdx}`} className="search-highlight">
-                  {part}
-                </mark>
-              ) : (
-                part
-              )
-            )
-          }
-
-          return seg
-        })}
-      </span>
-    )
+    // 5. Normal text message
+    return renderHighlightedText(content, highlightQuery)
   }
 
   // Close hamburger menu on click outside
@@ -2181,175 +4600,974 @@ function App() {
   }, [showMenu])
 
   const loadFriends = async () => {
-    const token = localStorage.getItem('cloudchat_token')
-
-    if (!token) return
+    if (!currentUser?.id) return
 
     try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/friends`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
+      const { data: rows, error } = await supabase
+        .from('friendships')
+        .select('id, user_id, friend_id, status, created_at')
+        .eq('status', 'accepted')
+        .or(`user_id.eq.${currentUser.id},friend_id.eq.${currentUser.id}`)
 
-      const data = await response.json()
+      if (error) throw error
 
-      if (!response.ok || !data.success) {
-        console.error('Load friends failed:', data)
+      if (!rows || rows.length === 0) {
+        setFriends([])
         return
       }
 
-      const nextFriends = data.friends || []
+      const otherUserIds = rows.map((r) => (r.user_id === currentUser.id ? r.friend_id : r.user_id))
+
+      const { data: profiles, error: profErr } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, bio, avatar_url, is_online, last_seen')
+        .in('id', otherUserIds)
+
+      if (profErr) throw profErr
+
+      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
+
+      // Lấy tin nhắn mới nhất giữa currentUser và các bạn bè
+      const { data: recentMsgs } = await supabase
+        .from('messages')
+        .select('id, sender_id, receiver_id, content, created_at, is_read')
+        .is('group_id', null)
+        .or(`and(sender_id.eq.${currentUser.id},receiver_id.in.(${otherUserIds.join(',')})),and(receiver_id.eq.${currentUser.id},sender_id.in.(${otherUserIds.join(',')}))`)
+        .order('created_at', { ascending: false })
+        .limit(100)
+
+      const lastMsgMap = new Map()
+      for (const m of (recentMsgs || [])) {
+        const partnerId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id
+        if (!lastMsgMap.has(partnerId)) {
+          lastMsgMap.set(partnerId, m)
+        }
+      }
+
+      const nextFriends = rows.map((r) => {
+        const friendId = r.user_id === currentUser.id ? r.friend_id : r.user_id
+        const p = profileMap.get(friendId) || { id: friendId, username: 'User', display_name: 'Người dùng', avatar_url: '' }
+        const lastMsg = lastMsgMap.get(friendId)
+        return {
+          id: friendId,
+          username: p.username,
+          display_name: p.display_name || p.username,
+          bio: p.bio || '',
+          avatar_url: p.avatar_url || '',
+          is_online: Boolean(p.is_online),
+          last_seen: p.last_seen,
+          friendship_id: r.id,
+          created_at: r.created_at,
+          last_message: lastMsg?.content || null,
+          last_message_time: lastMsg?.created_at || null,
+          last_message_sender_id: lastMsg?.sender_id || null,
+          last_message_is_read: lastMsg ? (lastMsg.is_read ? 1 : 0) : 1,
+          is_group: false,
+        }
+      })
+
+      nextFriends.sort((a, b) => {
+        const timeA = a.last_message_time ? new Date(a.last_message_time).getTime() : new Date(a.created_at).getTime()
+        const timeB = b.last_message_time ? new Date(b.last_message_time).getTime() : new Date(b.created_at).getTime()
+        return timeB - timeA
+      })
+
       setFriends(nextFriends)
 
-      if (nextFriends.length === 0) {
-        setActiveChat(null)
-        setMessages([])
-        return
-      }
+      try {
+        const cleanFriends = nextFriends.slice(0, 50).map((f) => {
+          let lm = f.last_message
+          if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
+          return { ...f, last_message: lm }
+        })
+        localStorage.setItem(`cloudchat_cached_friends`, JSON.stringify(cleanFriends))
+      } catch { }
 
       setActiveChat((current) => {
-        if (current) {
+        if (current && !current.is_group) {
           const updated = nextFriends.find((friend) => friend.id === current.id)
-          if (updated) {
-            return { ...current, ...updated }
-          }
+          if (updated) return { ...current, ...updated }
         }
-        return null
+        return current
       })
     } catch (error) {
       console.error('Load friends error:', error)
     }
   }
 
-  const loadMessages = async (friendId, silent = false) => {
-    const token = localStorage.getItem('cloudchat_token')
+  const loadMessages = async (chatId, silent = false) => {
+    if (!chatId || !currentUser?.id) return
 
-    if (!token || !friendId) return
+    // 1. Nếu là CloudChat Bot: Trả về ngay tin nhắn hệ thống, không query Supabase
+    if (chatId === CLOUDCHAT_BOT_ID) {
+      setMessages(cloudChatBotMessages)
+      setChatLoading(false)
+      return
+    }
 
-    if (!silent) {
+    // 2. High-speed Multi-Chat Cache (RAM + IndexedDB)
+    const clearKey = `cloudchat_cleared_at_${currentUser?.id}_${chatId}`
+    const clearedAtStr = localStorage.getItem(clearKey)
+    const clearedAtTime = clearedAtStr ? new Date(clearedAtStr).getTime() : 0
+    let hasLoadedCache = false
+
+    // Check RAM cache first (instant 0ms)
+    const memCached = getMemoryCachedMessages(chatId)
+    if (memCached && memCached.length > 0) {
+      const cleaned = memCached.filter((m) => {
+        if (hiddenMessageIds.includes(String(m.id))) return false
+        if (clearedAtTime && new Date(m.created_at).getTime() <= clearedAtTime) return false
+        return true
+      })
+      if (activeChatRef.current?.id === chatId) {
+        setMessages(cleaned)
+        setChatLoading(false)
+        hasLoadedCache = true
+      }
+    }
+
+    // Check persistent IndexedDB if not in RAM
+    if (!hasLoadedCache && !silent) {
+      getMessagesFromDb(chatId).then((dbMsgs) => {
+        if (dbMsgs && dbMsgs.length > 0 && activeChatRef.current?.id === chatId) {
+          const cleaned = dbMsgs.filter((m) => {
+            if (hiddenMessageIds.includes(String(m.id))) return false
+            if (clearedAtTime && new Date(m.created_at).getTime() <= clearedAtTime) return false
+            return true
+          })
+          setMessages(cleaned)
+          setChatLoading(false)
+        }
+      })
+    }
+
+    if (!silent && !hasLoadedCache) {
       setChatLoading(true)
     }
 
     try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/messages/${friendId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
+      const isGroup = activeChatRef.current?.is_group || false
 
-      const data = await response.json()
+      let query = supabase
+        .from('messages')
+        .select('id, sender_id, receiver_id, group_id, content, reply_to_id, is_read, created_at')
 
-      if (!response.ok || !data.success) {
-        if (!silent) {
-          console.error('Load messages failed:', data)
-          setMessages([])
-        }
-        return
+      if (isGroup) {
+        query = query.eq('group_id', chatId)
+      } else {
+        query = query
+          .is('group_id', null)
+          .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${chatId}),and(sender_id.eq.${chatId},receiver_id.eq.${currentUser.id})`)
       }
 
-      const incoming = data.messages || []
-      setMessages((prev) => {
-        const hasChange =
-          prev.length !== incoming.length ||
-          prev.some((m, idx) => m.is_read !== incoming[idx]?.is_read)
-        if (!hasChange) {
-          return prev
+      const { data: rawMessages, error } = await query.order('created_at', { ascending: true })
+
+      if (error) throw error
+
+      // Nếu trong lúc tải mạng người dùng đã chuyển sang chat khác -> BỎ QUA NGAY
+      if (activeChatRef.current?.id !== chatId) return
+
+      const msgList = rawMessages || []
+
+      // Lấy profile người gửi
+      const senderIds = [...new Set(msgList.map((m) => m.sender_id))]
+      let profileMap = new Map()
+      if (senderIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, username, display_name, avatar_url')
+          .in('id', senderIds)
+        profileMap = new Map((profiles || []).map((p) => [p.id, p]))
+      }
+
+      // Kiểm tra lại sau khi fetch profile
+      if (activeChatRef.current?.id !== chatId) return
+
+      const msgIdMap = new Map(msgList.map((m) => [m.id, m]))
+
+      const enriched = msgList.map((m) => {
+        const p = profileMap.get(m.sender_id) || {}
+        const replied = m.reply_to_id ? msgIdMap.get(m.reply_to_id) : null
+        const repliedSender = replied ? profileMap.get(replied.sender_id) : null
+
+        return {
+          ...m,
+          sender_username: p.username || 'User',
+          sender_name: p.display_name || p.username || 'User',
+          sender_avatar: p.avatar_url || '',
+          reply_content: replied?.content || null,
+          reply_sender_id: replied?.sender_id || null,
+          reply_sender_name: repliedSender?.display_name || repliedSender?.username || null,
+          reply_sender_username: repliedSender?.username || null,
         }
-        loadFriends()
-        return incoming
       })
+
+      const filteredMsgs = enriched.filter((m) => {
+        if (hiddenMessageIds.includes(String(m.id))) return false
+        if (clearedAtTime && new Date(m.created_at).getTime() <= clearedAtTime) return false
+        return true
+      })
+
+      if (activeChatRef.current?.id !== chatId) return
+
+      setMessages((prev) => {
+        if (activeChatRef.current?.id !== chatId) return prev
+        const hasChange =
+          prev.length !== filteredMsgs.length ||
+          prev.some((m, idx) => m.is_read !== filteredMsgs[idx]?.is_read || m.id !== filteredMsgs[idx]?.id || m.content !== filteredMsgs[idx]?.content)
+        if (!hasChange) return prev
+        return filteredMsgs
+      })
+
+      // 🚀 Caching Technology (Telegram / WhatsApp standard):
+      // 1. Preload and register images in browser memory so switching is instantaneous
+      filteredMsgs.forEach((m) => {
+        if (typeof m.content === 'string') {
+          if (m.content.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(m.content)
+              if (parsed.isImage && parsed.url) preloadImage(parsed.url)
+            } catch { }
+          } else if (m.content.startsWith('http') || m.content.startsWith('data:image/')) {
+            preloadImage(m.content)
+          }
+        }
+      })
+
+      // 2. Save full messages into RAM cache and IndexedDB (never strip images!)
+      setMemoryCachedMessages(chatId, filteredMsgs)
+      saveMessagesToDb(chatId, filteredMsgs)
+
+      // Đánh dấu đã đọc các tin nhắn nhận được
+      if (!isGroup) {
+        const unreadIds = msgList.filter((m) => m.sender_id === chatId && !m.is_read).map((m) => m.id)
+        if (unreadIds.length > 0) {
+          supabase.from('messages').update({ is_read: true }).in('id', unreadIds).then(() => { })
+        }
+      }
     } catch (error) {
       if (!silent) {
         console.error('Load messages error:', error)
-        setMessages([])
+        if (activeChatRef.current?.id === chatId) {
+          setMessages([])
+        }
       }
     } finally {
-      if (!silent) {
+      if (!silent && activeChatRef.current?.id === chatId) {
         setChatLoading(false)
       }
     }
   }
 
-  useEffect(() => {
-    const token = localStorage.getItem('cloudchat_token')
+  // Friend Requests & Friendship Actions (100% Supabase BaaS)
+  const loadFriendRequests = async () => {
+    if (!currentUser?.id) return
+    try {
+      const { data: rows, error } = await supabase
+        .from('friendships')
+        .select('id, user_id, friend_id, status, created_at')
+        .eq('status', 'pending')
+        .eq('friend_id', currentUser.id)
 
-    if (!token) {
-      setPage('login')
+      if (error) throw error
+      if (!rows || rows.length === 0) {
+        setFriendRequests([])
+        return
+      }
+
+      const senderIds = rows.map((r) => r.user_id)
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url, bio')
+        .in('id', senderIds)
+
+      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
+      const enriched = rows.map((r) => {
+        const p = profileMap.get(r.user_id) || {}
+        return {
+          id: r.id,
+          user_id: r.user_id,
+          friend_id: r.friend_id,
+          username: p.username || 'User',
+          display_name: p.display_name || p.username || 'Người dùng',
+          avatar_url: p.avatar_url || '',
+          bio: p.bio || '',
+          created_at: r.created_at,
+        }
+      })
+      setFriendRequests(enriched)
+    } catch (e) {
+      console.error('Load friend requests failed:', e)
+    }
+  }
+
+  const loadSentFriendRequests = async () => {
+    if (!currentUser?.id) return
+    try {
+      const { data: rows, error } = await supabase
+        .from('friendships')
+        .select('id, user_id, friend_id, status, created_at')
+        .eq('status', 'pending')
+        .eq('user_id', currentUser.id)
+
+      if (error) throw error
+      if (!rows || rows.length === 0) {
+        setSentFriendRequests([])
+        return
+      }
+
+      const receiverIds = rows.map((r) => r.friend_id)
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url, bio')
+        .in('id', receiverIds)
+
+      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
+      const enriched = rows.map((r) => {
+        const p = profileMap.get(r.friend_id) || {}
+        return {
+          id: r.id,
+          user_id: r.user_id,
+          friend_id: r.friend_id,
+          username: p.username || 'User',
+          display_name: p.display_name || p.username || 'Người dùng',
+          avatar_url: p.avatar_url || '',
+          bio: p.bio || '',
+          created_at: r.created_at,
+        }
+      })
+      setSentFriendRequests(enriched)
+    } catch (e) {
+      console.error('Load sent friend requests failed:', e)
+    }
+  }
+
+  const handleAcceptFriendRequest = async (friendshipId) => {
+    try {
+      const { error } = await supabase
+        .from('friendships')
+        .update({ status: 'accepted' })
+        .eq('id', friendshipId)
+
+      if (error) throw error
+      showFloatingToast('Đã chấp nhận lời mời kết bạn!')
+      await loadFriends()
+      await loadFriendRequests()
+    } catch (err) {
+      console.error('Accept friend error:', err)
+      showFloatingToast('Không thể chấp nhận lời mời: ' + err.message)
+    }
+  }
+
+  const handleRejectFriendRequest = async (friendshipId) => {
+    try {
+      const { error } = await supabase
+        .from('friendships')
+        .delete()
+        .eq('id', friendshipId)
+
+      if (error) throw error
+      showFloatingToast('Đã từ chối lời mời kết bạn')
+      await loadFriendRequests()
+    } catch (err) {
+      console.error('Reject friend error:', err)
+      showFloatingToast('Không thể từ chối lời mời: ' + err.message)
+    }
+  }
+
+  const handleCancelFriendRequest = async (friendshipId) => {
+    try {
+      const { error } = await supabase
+        .from('friendships')
+        .delete()
+        .eq('id', friendshipId)
+
+      if (error) throw error
+      showFloatingToast('Đã thu hồi lời mời kết bạn')
+      await loadSentFriendRequests()
+    } catch (err) {
+      console.error('Cancel request error:', err)
+      showFloatingToast('Không thể thu hồi lời mời: ' + err.message)
+    }
+  }
+
+  const handleSearchFriend = async (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    const query = (searchFriendInput || '').trim().toLowerCase()
+    if (!query) return
+    setSearchFriendLoading(true)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    setSearchFriendResult(null)
+
+    // 1. Kiểm tra nếu tìm kiếm chính tài khoản của mình
+    const myUsername = (currentUser?.username || '').toLowerCase()
+    const myDisplayName = (currentUser?.display_name || '').toLowerCase()
+    const myEmail = (currentUser?.email || '').toLowerCase()
+
+    if (
+      (myUsername && query === myUsername) ||
+      (myEmail && query === myEmail) ||
+      (myDisplayName && query === myDisplayName) ||
+      (myUsername && query.length >= 4 && myUsername.startsWith(query))
+    ) {
+      setSearchFriendError('💡 Đây là tài khoản của chính bạn! Hãy nhập tên hoặc email của bạn bè để kết nối.')
+      setSearchFriendLoading(false)
       return
     }
 
-    fetch(`${API_BASE}/api/protected/me`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error('Token không hợp lệ')
+    const sanitized = query.replace(/[,()]/g, '')
+    if (!sanitized) {
+      setSearchFriendError('Vui lòng nhập tên hoặc email hợp lệ để tìm kiếm')
+      setSearchFriendLoading(false)
+      return
+    }
+
+    try {
+      const { data: users, error } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url, bio')
+        .neq('id', currentUser?.id)
+        .or(`username.ilike.%${sanitized}%,display_name.ilike.%${sanitized}%`)
+        .limit(1)
+
+      if (error) throw error
+      if (!users || users.length === 0) {
+        setSearchFriendError('Không tìm thấy người dùng phù hợp. Hãy chắc chắn bạn bè đã đăng ký tài khoản trên hệ thống!')
+      } else {
+        setSearchFriendResult(users[0])
+      }
+    } catch (err) {
+      setSearchFriendError('Lỗi tìm kiếm: ' + err.message)
+    } finally {
+      setSearchFriendLoading(false)
+    }
+  }
+
+  const handleSendFriendRequest = async (targetId) => {
+    if (!currentUser?.id || !targetId) return
+    setSearchFriendLoading(true)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const currentUid = session?.user?.id || currentUser.id
+
+      const { data: existing } = await supabase
+        .from('friendships')
+        .select('id, status')
+        .or(`and(user_id.eq.${currentUid},friend_id.eq.${targetId}),and(user_id.eq.${targetId},friend_id.eq.${currentUid})`)
+        .maybeSingle()
+
+      if (existing) {
+        if (existing.status === 'accepted') {
+          setSearchFriendError('Hai bạn đã là bạn bè của nhau rồi!')
+          showFloatingToast('Hai bạn đã là bạn bè của nhau rồi!')
+        } else {
+          setSearchFriendError('Đã có lời mời kết bạn đang chờ phản hồi!')
+          showFloatingToast('Đã có lời mời kết bạn đang chờ phản hồi!')
+        }
+        return
+      }
+
+      const { error } = await supabase.from('friendships').insert({
+        user_id: currentUid,
+        friend_id: targetId,
+        status: 'pending',
+      })
+      if (error) {
+        console.error('Supabase friendship insert error:', error)
+        if (error.message && error.message.includes('row-level security policy')) {
+          setSearchFriendError('Lỗi RLS Supabase: Vui lòng chạy file fix_friendships_rls.sql trong Supabase SQL Editor để cấp quyền!')
+          showFloatingToast('Lỗi RLS: Hãy chạy file fix_friendships_rls.sql')
+        } else {
+          setSearchFriendError('Không thể gửi lời mời: ' + error.message)
+          showFloatingToast('Không thể gửi lời mời: ' + error.message)
+        }
+        return
+      }
+
+      setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công! ✨')
+      showFloatingToast('Đã gửi lời mời kết bạn!')
+      loadSentFriendRequests()
+    } catch (err) {
+      setSearchFriendError('Không thể gửi lời mời: ' + err.message)
+      showFloatingToast('Không thể gửi lời mời: ' + err.message)
+    } finally {
+      setSearchFriendLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      if (currentUser?.id) {
+        await supabase
+          .from('profiles')
+          .update({ is_online: false, last_seen: new Date().toISOString() })
+          .eq('id', currentUser.id)
+      }
+      await supabase.auth.signOut()
+    } catch (e) {
+      console.warn('SignOut error:', e)
+    }
+    localStorage.removeItem('cloudchat_token')
+    try {
+      localStorage.removeItem('cloudchat_current_user')
+    } catch { }
+    setCurrentUser(null)
+    setFriends([])
+    setActiveChat(null)
+    setMessages([])
+    setMessage('')
+    setPage('login')
+    setUsername('')
+    setPassword('')
+    setError('')
+    setAuthSuccess('')
+    setShowPassword(false)
+    setFriendRequests([])
+    setSentFriendRequests([])
+  }
+
+  const handleSecurityChangePassword = async (e) => {
+    if (e && e.preventDefault) e.preventDefault()
+    if (!newPassword || newPassword.length < 6) {
+      setSecurityError('Mật khẩu mới phải có ít nhất 6 ký tự')
+      return
+    }
+    if (newPassword !== confirmNewPassword) {
+      setSecurityError('Mật khẩu xác nhận không khớp')
+      return
+    }
+
+    setSecurityLoading(true)
+    setSecurityError('')
+    setSecuritySuccess('')
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      })
+      if (error) throw error
+
+      setSecuritySuccess('Đổi mật khẩu thành công!')
+      showFloatingToast('Đã đổi mật khẩu thành công!')
+      setNewPassword('')
+      setConfirmNewPassword('')
+      setCurrentPassword('')
+    } catch (err) {
+      setSecurityError('Đổi mật khẩu thất bại: ' + err.message)
+    } finally {
+      setSecurityLoading(false)
+    }
+  }
+
+  // Modals & QR Safe Handlers
+  const handleOpenAddFriendModal = () => {
+    setShowAddFriendModal(true)
+    setSearchFriendResult(null)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+    setSearchFriendInput('')
+    if (currentUser?.id) {
+      const email = (currentUser.email || currentUser.username || '').toLowerCase()
+      const displayName = currentUser.display_name || (email ? email.split('@')[0] : 'User')
+      supabase.from('profiles').upsert({
+        id: currentUser.id,
+        username: email,
+        display_name: displayName,
+        avatar_url: currentUser.avatar_url || getDefaultAvatar(displayName),
+        bio: currentUser.bio || '',
+        is_online: true,
+        last_seen: new Date().toISOString()
+      }, { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.warn('Sync profile error:', error.message)
+      })
+    }
+  }
+  const handleCloseAddFriendModal = () => {
+    setShowAddFriendModal(false)
+    setSearchFriendResult(null)
+    setSearchFriendError('')
+    setSearchFriendSuccess('')
+  }
+  const handleOpenMyQrModal = () => { setShowMyQrModal(true) }
+  const handleCloseMyQrModal = () => { setShowMyQrModal(false) }
+  const handleGenerateMyQr = async () => { }
+  const handleRevokeMyQr = async () => { }
+  const handleDownloadQrCard = () => { }
+  const handleCopyQrCode = () => { }
+  const handleStartQrCamera = () => { }
+  const handleStopQrCamera = () => { }
+  const handleScanQrFromFile = () => { }
+  const handleResolveQrCode = () => { }
+  const handleAddFriendViaQr = () => { }
+
+  // Kiểm tra session Supabase Auth & Đăng ký listener
+  useEffect(() => {
+    // 1. Kiểm tra nếu trên URL có chứa lỗi OAuth trả về từ Google / Supabase
+    const hash = window.location.hash || ''
+    const search = window.location.search || ''
+    if (hash.includes('error=') || search.includes('error=')) {
+      const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : search)
+      const errDesc = params.get('error_description') || params.get('error')
+      if (errDesc) {
+        console.error('OAuth error from URL:', errDesc)
+        setError('Lỗi xác thực Google: ' + decodeURIComponent(errDesc.replace(/\+/g, ' ')))
+      }
+    }
+
+    const resolveUserProfile = async (user) => {
+      if (!user) return null
+      const rawEmail = (user.email || '').toLowerCase()
+      const rawUser = rawEmail || user.user_metadata?.username || user.id
+      const rawName = user.user_metadata?.full_name || user.user_metadata?.name || user.user_metadata?.display_name || (rawEmail ? rawEmail.split('@')[0] : 'User')
+      const rawAvatar = user.user_metadata?.avatar_url || user.user_metadata?.picture || getDefaultAvatar(rawName || rawEmail)
+
+      let profile = null
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .maybeSingle()
+        profile = data
+      } catch (err) {
+        console.warn('Failed to fetch profile:', err)
+      }
+
+      if (!profile) {
+        const newProfile = {
+          id: user.id,
+          username: rawUser,
+          display_name: rawName,
+          avatar_url: rawAvatar,
+          bio: '',
+          is_online: true,
+          last_seen: new Date().toISOString(),
+        }
+        try {
+          const { data: createdProfile } = await supabase
+            .from('profiles')
+            .upsert(newProfile)
+            .select()
+            .maybeSingle()
+          profile = createdProfile || newProfile
+        } catch (err) {
+          console.warn('Failed to upsert profile, using fallback:', err)
+          profile = newProfile
+        }
+      } else {
+        try {
+          await supabase.from('profiles').update({ is_online: true, last_seen: new Date().toISOString() }).eq('id', user.id)
+        } catch {
+          // ignore error
+        }
+      }
+
+      const provider = user.app_metadata?.provider || (user.identities && user.identities[0]?.provider)
+      const isOAuth = Boolean(
+        (provider && provider !== 'email') ||
+        (user.identities && user.identities.some((i) => i.provider !== 'email'))
+      )
+
+      const base = profile || {
+        id: user.id,
+        username: rawUser,
+        display_name: rawName,
+        avatar_url: rawAvatar,
+        bio: '',
+        is_online: true,
+      }
+
+      return {
+        ...base,
+        email: rawEmail || base.email,
+        is_oauth: isOAuth,
+        provider: provider || 'email',
+        app_metadata: user.app_metadata,
+      }
+    }
+
+    const initSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession()
+        if (error) {
+          console.error('getSession error:', error)
+          setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
+          return
         }
 
-        return response.json()
-      })
-      .then((data) => {
-        setCurrentUser(data.user)
-        setPage('chat')
-      })
-      .catch(() => {
-        localStorage.removeItem('cloudchat_token')
+        if (session?.user) {
+          const userProfile = await resolveUserProfile(session.user)
+          if (userProfile) {
+            setCurrentUser(userProfile)
+            try {
+              localStorage.setItem('cloudchat_current_user', JSON.stringify(userProfile))
+            } catch { }
+            setPage('chat')
+          }
+          setLoading(false)
+          if (window.location.hash && window.location.hash.includes('access_token')) {
+            window.history.replaceState(null, '', window.location.pathname)
+          }
+          return
+        }
+
+        if (window.location.hash.includes('access_token') || window.location.search.includes('code=')) {
+          return
+        }
+
+        setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
+      } catch (err) {
+        console.error('Session init error:', err)
+        setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    initSession()
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Supabase Auth Event:', event, session?.user?.email)
+
+      if (event === 'SIGNED_OUT') {
         setCurrentUser(null)
+        try {
+          localStorage.removeItem('cloudchat_current_user')
+        } catch { }
+        setActiveChat(null)
+        setMessages([])
         setPage('login')
-      })
+        setLoading(false)
+        return
+      }
+
+      if (session?.user) {
+        try {
+          const userProfile = await resolveUserProfile(session.user)
+          if (userProfile) {
+            setCurrentUser(userProfile)
+            try {
+              localStorage.setItem('cloudchat_current_user', JSON.stringify(userProfile))
+            } catch { }
+            setPage('chat')
+          }
+        } catch (err) {
+          console.error('resolveUserProfile on auth state change error:', err)
+        } finally {
+          setLoading(false)
+        }
+        if (window.location.hash && window.location.hash.includes('access_token')) {
+          window.history.replaceState(null, '', window.location.pathname)
+        }
+      }
+    })
+
+    return () => {
+      subscription.unsubscribe()
+    }
   }, [])
 
+  // Supabase Realtime WebSocket Subscription (Tin nhắn & Bạn bè)
   useEffect(() => {
-    if (!currentUser) return
+    if (!currentUser?.id) return
 
     loadFriends()
     loadGroups()
     loadFriendRequests()
     loadSentFriendRequests()
+    loadGroupInvitations()
 
-    const interval = setInterval(() => {
-      loadFriends()
-      loadGroups()
-      loadFriendRequests()
-      loadSentFriendRequests()
-    }, 10000)
+    const messageChannel = supabase
+      .channel('cloudchat-messages-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          const newMsg = payload.new
+          const currentActive = activeChatRef.current
 
-    return () => clearInterval(interval)
-  }, [currentUser])
+          const isForActiveChat = currentActive && (
+            (currentActive.is_group && Number(newMsg.group_id) === Number(currentActive.id)) ||
+            (!currentActive.is_group && !newMsg.group_id && (
+              (newMsg.sender_id === currentActive.id && newMsg.receiver_id === currentUser.id) ||
+              (newMsg.sender_id === currentUser.id && newMsg.receiver_id === currentActive.id)
+            ))
+          )
+
+          let senderInfo = {
+            username: currentUser.username,
+            display_name: currentUser.display_name,
+            avatar_url: currentUser.avatar_url,
+          }
+          if (newMsg.sender_id !== currentUser.id) {
+            const { data: p } = await supabase
+              .from('profiles')
+              .select('username, display_name, avatar_url')
+              .eq('id', newMsg.sender_id)
+              .maybeSingle()
+            if (p) senderInfo = p
+          }
+
+          const enrichedMsg = {
+            ...newMsg,
+            sender_username: senderInfo.username,
+            sender_name: senderInfo.display_name || senderInfo.username,
+            sender_avatar: senderInfo.avatar_url || '',
+          }
+
+          if (typeof enrichedMsg.content === 'string') {
+            if (enrichedMsg.content.startsWith('{')) {
+              try {
+                const parsed = JSON.parse(enrichedMsg.content)
+                if (parsed.isImage && parsed.url) preloadImage(parsed.url)
+              } catch { }
+            } else if (enrichedMsg.content.startsWith('http') || enrichedMsg.content.startsWith('data:image/')) {
+              preloadImage(enrichedMsg.content)
+            }
+          }
+
+          if (isForActiveChat) {
+            setMessages((prev) => {
+              const filtered = prev.filter((m) => !m.is_optimistic || m.content !== newMsg.content)
+              if (filtered.some((m) => Number(m.id) === Number(newMsg.id))) return filtered
+              const updated = [...filtered, enrichedMsg]
+              if (currentActive?.id) {
+                setMemoryCachedMessages(currentActive.id, updated)
+                saveMessagesToDb(currentActive.id, updated)
+              }
+              return updated
+            })
+
+            if (newMsg.receiver_id === currentUser.id && !newMsg.is_read) {
+              supabase.from('messages').update({ is_read: true }).eq('id', newMsg.id).then(() => { })
+            }
+          } else {
+            const chatTargetId = newMsg.group_id || (newMsg.sender_id === currentUser.id ? newMsg.receiver_id : newMsg.sender_id)
+            if (chatTargetId) {
+              const cached = getMemoryCachedMessages(chatTargetId)
+              if (cached && Array.isArray(cached)) {
+                const filtered = cached.filter((m) => !m.is_optimistic || m.content !== newMsg.content)
+                if (!filtered.some((m) => Number(m.id) === Number(newMsg.id))) {
+                  const updated = [...filtered, enrichedMsg]
+                  setMemoryCachedMessages(chatTargetId, updated)
+                  saveMessagesToDb(chatTargetId, updated)
+                }
+              }
+            }
+          }
+
+          loadFriends()
+          loadGroups()
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'messages' },
+        (payload) => {
+          const deletedId = payload.old?.id
+          if (deletedId) {
+            setMessages((prev) => prev.filter((m) => Number(m.id) !== Number(deletedId)))
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        (payload) => {
+          const updatedMsg = payload.new
+          if (updatedMsg?.id) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                Number(m.id) === Number(updatedMsg.id)
+                  ? { ...m, ...updatedMsg }
+                  : m
+              )
+            )
+          }
+        }
+      )
+      .subscribe()
+
+    const friendshipChannel = supabase
+      .channel('cloudchat-friendships-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'friendships' },
+        () => {
+          loadFriends()
+          loadFriendRequests()
+          loadSentFriendRequests()
+        }
+      )
+      .subscribe()
+
+    const groupMemberChannel = supabase
+      .channel('cloudchat-groupmembers-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'group_members' },
+        () => {
+          loadGroups()
+          loadGroupInvitations()
+          if (activeChatRef.current?.is_group) {
+            loadGroupDetail(activeChatRef.current.id)
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(messageChannel)
+      supabase.removeChannel(friendshipChannel)
+      supabase.removeChannel(groupMemberChannel)
+    }
+  }, [currentUser?.id])
 
   useEffect(() => {
     if (!activeChat?.id) {
       setMessages([])
       setGroupDetailData(null)
+      prevChatIdRef.current = null
       return
     }
 
+    if (prevChatIdRef.current !== activeChat.id) {
+      prevChatIdRef.current = activeChat.id
+      isJustSwitchedChatRef.current = true
+    }
+
     setVisibleCount(20) // Reset về 20 tin nhắn mỗi khi đổi chat
-    loadMessages(activeChat.id, false)
+
+    // ⚡ 0ms Multi-Chat Switch (Telegram standard):
+    const cached = getMemoryCachedMessages(activeChat.id)
+    if (cached && cached.length > 0) {
+      setMessages(cached)
+      setChatLoading(false)
+      loadMessages(activeChat.id, true) // Silent background check for updates
+    } else {
+      loadMessages(activeChat.id, false)
+    }
     if (activeChat.is_group) {
       loadGroupDetail(activeChat.id)
     }
 
     const interval = setInterval(() => {
-      loadMessages(activeChat.id, true)
-      if (activeChat.is_group) {
-        loadGroupDetail(activeChat.id)
+      if (activeChat?.id && activeChat.id !== CLOUDCHAT_BOT_ID) {
+        loadMessages(activeChat.id, true)
+        if (activeChat.is_group) {
+          loadGroupDetail(activeChat.id)
+        }
       }
-    }, 2000)
+    }, 30000)
 
     const handleFocus = () => {
-      loadMessages(activeChat.id, true)
-      if (activeChat.is_group) {
-        loadGroupDetail(activeChat.id)
+      if (activeChat?.id && activeChat.id !== CLOUDCHAT_BOT_ID) {
+        loadMessages(activeChat.id, true)
+        if (activeChat.is_group) {
+          loadGroupDetail(activeChat.id)
+        }
       }
     }
     window.addEventListener('focus', handleFocus)
@@ -2360,17 +5578,68 @@ function App() {
     }
   }, [activeChat?.id])
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length])
+  useLayoutEffect(() => {
+    if (!activeChat?.id || messages.length === 0) return
+
+    const container = messagesContainerRef.current
+    if (!container) return
+
+    // 1. Khi vừa bấm chuyển sang đoạn chat: Đứng yên ngay tại tin nhắn hiện tại (dưới đáy), không chạy animation từ trên xuống
+    if (isJustSwitchedChatRef.current) {
+      isJustSwitchedChatRef.current = false
+      container.scrollTop = container.scrollHeight
+      requestAnimationFrame(() => {
+        if (container) container.scrollTop = container.scrollHeight
+      })
+      return
+    }
+
+    // 2. Khi chính bạn vừa gửi tin nhắn: Cuộn mượt nhẹ nhàng xuống tin nhắn vừa gửi
+    if (userSentMessageRef.current) {
+      userSentMessageRef.current = false
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      return
+    }
+
+    // 3. Khi đang ở gần đáy (trong vòng 150px) và có tin nhắn mới tới: Tự động ghim đáy tức thì
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150
+    if (isNearBottom) {
+      container.scrollTop = container.scrollHeight
+    }
+  }, [messages, activeChat?.id])
 
   // Gửi tin nhắn tối ưu: 0ms delay (Optimistic UI update)
   const handleSend = async () => {
     const text = message.trim()
-    if (!text || !activeChat) return
+    if ((!text && !pendingAttachment) || !activeChat || !currentUser?.id) return
 
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
+    // Xử lý nội dung nếu có pendingAttachment
+    let finalContent = text
+    if (pendingAttachment) {
+      if (pendingAttachment.isImage) {
+        finalContent = JSON.stringify({
+          isImage: true,
+          url: pendingAttachment.url,
+          caption: text,
+        })
+      } else if (pendingAttachment.isVideo) {
+        finalContent = JSON.stringify({
+          isVideo: true,
+          url: pendingAttachment.url,
+          caption: text,
+          fileName: pendingAttachment.name,
+        })
+      } else {
+        finalContent = JSON.stringify({
+          isAttachment: true,
+          fileName: pendingAttachment.name,
+          fileSize: pendingAttachment.size,
+          fileType: pendingAttachment.type,
+          data: pendingAttachment.url,
+          caption: text,
+        })
+      }
+    }
 
     const replyId = replyingMessage?.id || null
     const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
@@ -2380,8 +5649,9 @@ function App() {
     const optimisticMsg = {
       id: tempId,
       sender_id: currentUser.id,
-      receiver_id: activeChat.id,
-      content: text,
+      receiver_id: activeChat.is_group ? null : activeChat.id,
+      group_id: activeChat.is_group ? activeChat.id : null,
+      content: finalContent,
       created_at: now,
       sender_username: currentUser.username,
       sender_name: currentUser.display_name || currentUser.username,
@@ -2390,56 +5660,73 @@ function App() {
       reply_to_id: replyId,
     }
 
-    setMessages((current) => [...current, optimisticMsg])
+    userSentMessageRef.current = true
+    if (pendingAttachment?.isImage && pendingAttachment?.url) {
+      preloadImage(pendingAttachment.url)
+    }
+    setMessages((current) => {
+      const updated = [...current, optimisticMsg]
+      setMemoryCachedMessages(activeChat.id, updated)
+      return updated
+    })
     setMessage('')
+    setPendingAttachment(null)
     setReplyingMessage(null)
     msgInputRef.current?.focus()
 
     try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/messages/${activeChat.id}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            content: text,
-            reply_to_id: replyId,
-          }),
-        }
-      )
-
-      const data = await response.json()
-
-      if (!response.ok || !data.success) {
-        console.error('Send message failed:', data)
-        // Nếu lỗi, loại bỏ optimisticMsg khỏi danh sách
-        setMessages((current) => current.filter((m) => m.id !== tempId))
-        showFloatingToast('Không thể gửi tin nhắn. Vui lòng thử lại!')
-        return
+      const payload = {
+        sender_id: currentUser.id,
+        receiver_id: activeChat.is_group ? null : activeChat.id,
+        group_id: activeChat.is_group ? activeChat.id : null,
+        content: finalContent,
+        reply_to_id: replyId ? Number(replyId) : null,
+        is_read: false,
       }
 
-      if (data.message) {
-        // Thay thế temp message bằng tin nhắn chính thức từ DB
-        setMessages((current) =>
-          current.map((m) => (m.id === tempId ? data.message : m))
+      const { data: inserted, error } = await supabase
+        .from('messages')
+        .insert(payload)
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setMessages((current) => {
+        const updated = current.map((m) =>
+          m.id === tempId
+            ? {
+              ...m,
+              id: inserted.id,
+              is_optimistic: false,
+              created_at: inserted.created_at,
+            }
+            : m
         )
-        loadFriends()
-        loadGroups()
-      }
-    } catch (error) {
-      console.error('Send message error:', error)
-      setMessages((current) => current.filter((m) => m.id !== tempId))
-      showFloatingToast('Lỗi mạng khi gửi tin nhắn')
+        setMemoryCachedMessages(activeChat.id, updated)
+        saveMessagesToDb(activeChat.id, updated)
+        return updated
+      })
+
+      loadFriends()
+      loadGroups()
+    } catch (err) {
+      console.error('Send message failed:', err)
+      setMessages((current) => {
+        const reverted = current.filter((m) => m.id !== tempId)
+        setMemoryCachedMessages(activeChat.id, reverted)
+        return reverted
+      })
+      showFloatingToast('Không thể gửi tin nhắn. Vui lòng thử lại!')
     }
   }
 
+  // Đăng nhập qua Supabase Auth
   const handleLogin = async (event) => {
     event.preventDefault()
 
-    if (!username.trim() || !password.trim()) {
+    const cleanUser = username.trim()
+    if (!cleanUser || !password.trim()) {
       setError('Vui lòng nhập username và mật khẩu')
       return
     }
@@ -2449,43 +5736,94 @@ function App() {
     setAuthSuccess('')
 
     try {
-      const response = await fetch(`${API_BASE}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username: username.trim(),
-          password,
-        }),
+      const email = cleanUser.includes('@')
+        ? cleanUser
+        : `${cleanUser.toLowerCase().replace(/[^a-z0-9_]/g, '')}@cloudchat.top`
+
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       })
 
-      const data = await response.json()
-
-      if (!response.ok || !data.success) {
-        setError(data.message || 'Đăng nhập thất bại')
+      if (error) {
+        if (error.message?.includes('Email not confirmed')) {
+          setError('Tài khoản chưa xác nhận email. Hãy tắt "Confirm email" trong Supabase Auth!')
+        } else if (error.message?.includes('Invalid login credentials')) {
+          setError('Username hoặc mật khẩu không chính xác')
+        } else {
+          setError(error.message || 'Đăng nhập thất bại')
+        }
         return
       }
 
-      localStorage.setItem('cloudchat_token', data.token)
-      setCurrentUser(data.user)
-      setPage('chat')
-    } catch {
-      setError('Không thể kết nối đến CloudChat Backend')
+      if (data?.user) {
+        let { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .maybeSingle()
+
+        if (!profile) {
+          const rawUser = data.user.user_metadata?.username || cleanUser
+          const rawName = data.user.user_metadata?.display_name || rawUser
+          const { data: newProfile } = await supabase
+            .from('profiles')
+            .upsert({
+              id: data.user.id,
+              username: rawUser,
+              display_name: rawName,
+              avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(rawUser)}`,
+              bio: '',
+              is_online: true,
+              last_seen: new Date().toISOString(),
+            })
+            .select()
+            .single()
+          profile = newProfile
+        }
+
+        setCurrentUser(profile)
+        try {
+          localStorage.setItem('cloudchat_current_user', JSON.stringify(profile))
+        } catch { }
+        setPage('chat')
+      }
+    } catch (err) {
+      setError('Lỗi kết nối Supabase: ' + err.message)
     } finally {
       setLoading(false)
     }
   }
 
+  // Đăng nhập Google qua Supabase OAuth
+  const handleGoogleLogin = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      })
+      if (error) throw error
+    } catch (err) {
+      setError('Lỗi đăng nhập Google: ' + err.message)
+      setLoading(false)
+    }
+  }
+
+  // Đăng ký qua Supabase Auth
   const handleRegister = async (event) => {
     event.preventDefault()
 
-    if (!username.trim() || !password.trim()) {
+    const cleanUser = username.trim()
+    if (!cleanUser || !password.trim()) {
       setError('Vui lòng nhập username và mật khẩu')
       return
     }
 
-    if (username.length < 3 || username.length > 30) {
+    if (cleanUser.length < 3 || cleanUser.length > 30) {
       setError('Username phải từ 3 đến 30 ký tự')
       return
     }
@@ -2505,1119 +5843,127 @@ function App() {
     setAuthSuccess('')
 
     try {
-      const response = await fetch(`${API_BASE}/api/auth/register`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const { data: existingUser } = await supabase
+        .from('profiles')
+        .select('id')
+        .ilike('username', cleanUser)
+        .maybeSingle()
+
+      if (existingUser) {
+        setError('Username này đã được sử dụng. Vui lòng chọn username khác.')
+        return
+      }
+
+      const email = cleanUser.includes('@')
+        ? cleanUser
+        : `${cleanUser.toLowerCase().replace(/[^a-z0-9_]/g, '')}@cloudchat.top`
+
+      const displayName = registerDisplayName.trim() || cleanUser
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username: cleanUser,
+            display_name: displayName,
+          },
         },
-        body: JSON.stringify({
-          username: username.trim(),
-          password,
-          display_name: registerDisplayName.trim() || undefined,
-        }),
       })
 
-      const data = await response.json()
-
-      if (!response.ok || !data.success) {
-        setError(data.message || 'Đăng ký thất bại')
+      if (error) {
+        setError(error.message || 'Đăng ký thất bại')
         return
+      }
+
+      if (data?.user) {
+        await supabase
+          .from('profiles')
+          .upsert({
+            id: data.user.id,
+            username: cleanUser,
+            display_name: displayName,
+            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanUser)}`,
+            bio: '',
+            is_online: true,
+            last_seen: new Date().toISOString(),
+          })
+          .catch(() => { })
       }
 
       setUsername('')
       setPassword('')
       setConfirmPassword('')
       setRegisterDisplayName('')
-      setPage('login')
-      setError('')
-      setAuthSuccess('Đăng ký tài khoản thành công! Vui lòng đăng nhập.')
-    } catch {
-      setError('Không thể kết nối đến CloudChat Backend')
+
+      if (data?.session) {
+        setCurrentUser({
+          id: data.user.id,
+          username: cleanUser,
+          display_name: displayName,
+          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanUser)}`,
+        })
+        setPage('chat')
+      } else {
+        setPage('login')
+        setAuthSuccess('Đăng ký tài khoản thành công! Vui lòng đăng nhập.')
+      }
+    } catch (err) {
+      setError('Lỗi kết nối Supabase: ' + err.message)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleOpenProfileModal = () => {
-    setProfileDisplayName(currentUser?.display_name || '')
-    setProfileBio(currentUser?.bio || '')
-    const curAvatar = currentUser?.avatar_url || ''
-    setProfileAvatarUrl(curAvatar)
-    setAvatarUrlInput(curAvatar.startsWith('http') ? curAvatar : '')
-    setAvatarUrlStatus(curAvatar.startsWith('http') ? 'valid' : null)
-    setAvatarFileMeta(curAvatar.startsWith('data:image/') ? { name: 'Ảnh tải lên từ thiết bị', size: '', status: 'ready' } : null)
-    setAvatarMethodTab(curAvatar.startsWith('http') ? 'url' : 'upload')
-    setAvatarDragOver(false)
-    setProfileTab('info')
-    setProfileError('')
-    setProfileSuccess('')
-    setCurrentPassword('')
-    setNewPassword('')
-    setConfirmNewPassword('')
-    setShowProfileModal(true)
-  }
-
-  const handleProcessAvatarFile = async (file) => {
-    if (!file || !file.type.startsWith('image/')) {
-      setProfileError('Vui lòng chọn tệp hình ảnh hợp lệ (JPG, PNG, GIF, WebP, SVG)')
-      return
+  // Apply Theme Mode (Sáng / Tối / Hệ Thống)
+  useEffect(() => {
+    const updateTheme = () => {
+      let active = themeMode
+      if (themeMode === 'system') {
+        const isLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+        active = isLight ? 'light' : 'dark'
+      }
+      document.documentElement.setAttribute('data-theme', active)
+      document.body.setAttribute('data-theme', active)
     }
-    setProfileError('')
-    setProfileSuccess('')
-    setAvatarFileMeta({ name: file.name, status: 'loading' })
+
+    updateTheme()
     try {
-      const result = await processAvatarFile(file)
-      setProfileAvatarUrl(result.dataUrl)
-      setAvatarFileMeta({ name: result.name, size: result.sizeText, status: 'ready' })
-      setProfileSuccess(`Đã tải ảnh lên thành công: ${result.name} (${result.sizeText}). Nhấn "Lưu thay đổi" để áp dụng!`)
-    } catch (err) {
-      setProfileError(err.message || 'Lỗi khi xử lý hình ảnh')
-      setAvatarFileMeta(null)
+      localStorage.setItem('cloudchat_theme', themeMode)
+    } catch { }
+
+    if (themeMode === 'system' && window.matchMedia) {
+      const mq = window.matchMedia('(prefers-color-scheme: light)')
+      const handler = () => updateTheme()
+      mq.addEventListener('change', handler)
+      return () => mq.removeEventListener('change', handler)
     }
+  }, [themeMode])
+
+  const handleThemeChange = (mode) => {
+    setThemeMode(mode)
   }
 
-  const handleAvatarFileSelect = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    await handleProcessAvatarFile(file)
-    e.target.value = ''
-  }
 
-  const handleAvatarDragOver = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setAvatarDragOver(true)
-  }
-
-  const handleAvatarDragLeave = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setAvatarDragOver(false)
-  }
-
-  const handleAvatarDrop = async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setAvatarDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) {
-      setAvatarMethodTab('upload')
-      await handleProcessAvatarFile(file)
-    }
-  }
-
-  const handleProfilePaste = async (e) => {
-    if (profileTab !== 'info') return
-    const items = e.clipboardData?.items
-    if (!items) return
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile()
-        if (file) {
-          e.preventDefault()
-          setAvatarMethodTab('upload')
-          await handleProcessAvatarFile(file)
-          break
-        }
-      }
-    }
-  }
-
-  const handleApplyAvatarUrl = () => {
-    const raw = (avatarUrlInput || '').trim()
-    if (!raw) {
-      setProfileError('Vui lòng nhập đường dẫn (URL) ảnh')
-      return
-    }
-    if (!/^https?:\/\//i.test(raw) && !raw.startsWith('data:image/')) {
-      setProfileError('Đường dẫn ảnh phải bắt đầu bằng https:// hoặc http://')
-      return
-    }
-
-    setProfileError('')
-    setProfileSuccess('')
-    setAvatarCheckingUrl(true)
-    setAvatarUrlStatus(null)
-
-    const img = new Image()
-    img.onload = () => {
-      setAvatarCheckingUrl(false)
-      setAvatarUrlStatus('valid')
-      setProfileAvatarUrl(raw)
-      setAvatarFileMeta(null)
-      setProfileSuccess('Link ảnh hoạt động tốt! Nhấn "Lưu thay đổi" để áp dụng.')
-    }
-    img.onerror = () => {
-      setAvatarCheckingUrl(false)
-      setAvatarUrlStatus('invalid')
-      setProfileError('Không thể tải ảnh từ URL này (trang web nguồn có thể chặn hoặc link không tồn tại). Bạn có thể tải ảnh về máy rồi dùng nút "Tải ảnh từ máy" nhé!')
-    }
-    img.src = raw
-  }
-
-  const handleSaveUrlAsBase64 = async () => {
-    if (!profileAvatarUrl || profileAvatarUrl.startsWith('data:image/')) return
-    setAvatarConvertingBase64(true)
-    setProfileError('')
-    try {
-      const base64 = await convertImageUrlToBase64(profileAvatarUrl)
-      setProfileAvatarUrl(base64)
-      setProfileSuccess('Đã chuyển ảnh thành dữ liệu an toàn vĩnh viễn (không lo link bị chết)! Nhấn "Lưu thay đổi" để áp dụng.')
-    } catch {
-      setProfileError('Trang web gốc chặn tải dữ liệu trực tiếp (CORS). Link ảnh vẫn sẽ được lưu và hiển thị bình thường.')
-    } finally {
-      setAvatarConvertingBase64(false)
-    }
-  }
-
-  const handleRemoveAvatar = () => {
-    setProfileAvatarUrl('')
-    setAvatarUrlInput('')
-    setAvatarFileMeta(null)
-    setAvatarUrlStatus(null)
-    setProfileSuccess('Đã gỡ ảnh đại diện (quay về chữ cái mặc định). Nhấn "Lưu thay đổi" để áp dụng.')
-  }
-
-  const handleSelectPreset = (url) => {
-    setProfileAvatarUrl(url)
-    setAvatarUrlInput(url)
-    setAvatarFileMeta(null)
-    setAvatarUrlStatus('valid')
-    setProfileSuccess('Đã chọn ảnh mẫu! Nhấn "Lưu thay đổi" để áp dụng.')
-  }
-
-  const handleUpdateProfile = async (event) => {
-    event.preventDefault()
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    setProfileLoading(true)
-    setProfileError('')
-    setProfileSuccess('')
-
-    try {
-      const response = await fetch(`${API_BASE}/api/protected/profile`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          display_name: profileDisplayName.trim(),
-          bio: profileBio.trim(),
-          avatar_url: profileAvatarUrl.trim(),
-        }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok || !data.success) {
-        setProfileError(data.message || 'Cập nhật thất bại')
-        return
-      }
-
-      setCurrentUser(data.user)
-      setProfileSuccess('Cập nhật thông tin cá nhân thành công!')
-    } catch {
-      setProfileError('Không thể kết nối đến CloudChat Backend')
-    } finally {
-      setProfileLoading(false)
-    }
-  }
-
-  const handleChangePassword = async (event) => {
-    event.preventDefault()
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    if (!currentPassword || !newPassword) {
-      setProfileError('Vui lòng nhập mật khẩu hiện tại và mật khẩu mới')
-      return
-    }
-
-    if (newPassword.length < 6) {
-      setProfileError('Mật khẩu mới phải có ít nhất 6 ký tự')
-      return
-    }
-
-    if (newPassword !== confirmNewPassword) {
-      setProfileError('Mật khẩu mới xác nhận không khớp')
-      return
-    }
-
-    setProfileLoading(true)
-    setProfileError('')
-    setProfileSuccess('')
-
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/profile/change-password`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            current_password: currentPassword,
-            new_password: newPassword,
-          }),
-        }
-      )
-
-      const data = await response.json()
-
-      if (!response.ok || !data.success) {
-        setProfileError(data.message || 'Đổi mật khẩu thất bại')
-        return
-      }
-
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmNewPassword('')
-      setProfileSuccess('Đổi mật khẩu thành công!')
-    } catch {
-      setProfileError('Không thể kết nối đến CloudChat Backend')
-    } finally {
-      setProfileLoading(false)
-    }
-  }
-
-  const handleLogout = () => {
-    localStorage.removeItem('cloudchat_token')
-    setCurrentUser(null)
-    setFriends([])
-    setActiveChat(null)
-    setMessages([])
-    setMessage('')
-    setPage('login')
-    setUsername('')
-    setPassword('')
-    setError('')
-    setAuthSuccess('')
-    setShowPassword(false)
-    setFriendRequests([])
-    setSentFriendRequests([])
-  }
-
-  const loadFriendRequests = async () => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    try {
-      const response = await fetch(`${API_BASE}/api/protected/friends/requests`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (data.success) {
-        setFriendRequests(data.requests || [])
-      }
-    } catch (e) {
-      console.error('Load friend requests failed', e)
-    }
-  }
-
-  const loadSentFriendRequests = async () => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    try {
-      const response = await fetch(`${API_BASE}/api/protected/friends/requests/sent`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (data.success) {
-        setSentFriendRequests(data.requests || [])
-      }
-    } catch (e) {
-      console.error('Load sent friend requests failed', e)
-    }
-  }
-
-  const handleAcceptFriendRequest = async (friendshipId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/friends/${friendshipId}/accept`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
-      const data = await response.json()
-      if (data.success) {
-        await loadFriends()
-        await loadFriendRequests()
-      } else {
-        alert(data.message || 'Không thể chấp nhận lời mời')
-      }
-    } catch {
-      alert('Không thể kết nối đến CloudChat Backend')
-    }
-  }
-
-  const handleRejectFriendRequest = async (friendshipId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/friends/${friendshipId}/reject`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
-      const data = await response.json()
-      if (data.success) {
-        await loadFriendRequests()
-      } else {
-        alert(data.message || 'Không thể từ chối lời mời')
-      }
-    } catch {
-      alert('Không thể kết nối đến CloudChat Backend')
-    }
-  }
-
-  const handleCancelFriendRequest = async (friendshipId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/friends/${friendshipId}/cancel`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
-      const data = await response.json()
-      if (data.success) {
-        await loadSentFriendRequests()
-      } else {
-        alert(data.message || 'Không thể thu hồi lời mời')
-      }
-    } catch {
-      alert('Không thể kết nối đến CloudChat Backend')
-    }
-  }
-
-  const handleSearchFriend = async (e) => {
-    e.preventDefault()
-    if (!searchFriendInput.trim()) return
-    setSearchFriendLoading(true)
-    setSearchFriendError('')
-    setSearchFriendSuccess('')
-    setSearchFriendResult(null)
-    const token = localStorage.getItem('cloudchat_token')
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/users/search?username=${encodeURIComponent(
-          searchFriendInput.trim()
-        )}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        setSearchFriendError(data.message || 'Không tìm thấy người dùng')
-      } else {
-        setSearchFriendResult(data.user)
-      }
-    } catch {
-      setSearchFriendError('Không thể kết nối đến CloudChat Backend')
-    } finally {
-      setSearchFriendLoading(false)
-    }
-  }
-
-  const handleSendFriendRequest = async (targetId) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    setSearchFriendLoading(true)
-    setSearchFriendError('')
-    setSearchFriendSuccess('')
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/protected/friends/request/${targetId}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      )
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        setSearchFriendError(data.message || 'Không thể gửi lời mời')
-      } else {
-        setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công!')
-        loadFriendRequests()
-        loadSentFriendRequests()
-      }
-    } catch {
-      setSearchFriendError('Không thể kết nối đến CloudChat Backend')
-    } finally {
-      setSearchFriendLoading(false)
-    }
-  }
-
-  const handleCloseAddFriendModal = () => {
-    handleStopQrCamera()
-    setShowAddFriendModal(false)
-    setSearchFriendResult(null)
-    setSearchFriendError('')
-    setSearchFriendSuccess('')
-    setQrScanError('')
-    setQrScanSuccess('')
-    setQrScanResult(null)
-  }
-
-  const handleCloseMyQrModal = () => {
-    setShowMyQrModal(false)
-    if (myQrCountdownRef.current) {
-      clearInterval(myQrCountdownRef.current)
-      myQrCountdownRef.current = null
-    }
-  }
-
-  // --- QR CODE METHODS ---
-  const handleOpenMyQrModal = async () => {
-    setShowMyQrModal(true)
-    setMyQrError('')
-    setMyQrSuccess('')
-
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    setMyQrLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/protected/qr/active`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      if (data.success && data.qr) {
-        setMyQrData(data.qr)
-        setMyQrRemainingSeconds(data.qr.remaining_seconds)
-        startMyQrCountdown(data.qr.expires_at)
-        const qrUrl = await createQrCodeWithAvatar(
-          `cloudchat:friend:${data.qr.code}`,
-          currentUser?.avatar_url,
-          currentUser?.username
-        )
-        setMyQrImageUrl(qrUrl)
-      } else {
-        // Tự động spawn mã QR mới ngay lập tức
-        await handleGenerateMyQr(myQrTtl)
-      }
-    } catch {
-      setMyQrError('Không thể tải mã QR')
-    } finally {
-      setMyQrLoading(false)
-    }
-  }
-
-  const startMyQrCountdown = (expiresAt) => {
-    if (myQrCountdownRef.current) {
-      clearInterval(myQrCountdownRef.current)
-    }
-    const updateCountdown = () => {
-      const diff = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000))
-      setMyQrRemainingSeconds(diff)
-      if (diff <= 0) {
-        if (myQrCountdownRef.current) {
-          clearInterval(myQrCountdownRef.current)
-          myQrCountdownRef.current = null
-        }
-      }
-    }
-    updateCountdown()
-    myQrCountdownRef.current = setInterval(updateCountdown, 1000)
-  }
-
-  const handleGenerateMyQr = async (ttl) => {
-    const ttlToUse = ttl || myQrTtl || 300
-    setMyQrLoading(true)
-    setMyQrError('')
-    setMyQrSuccess('')
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    try {
-      const res = await fetch(`${API_BASE}/api/protected/qr/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ ttl_seconds: ttlToUse }),
-      })
-      const data = await res.json()
-      if (!res.ok || !data.success) {
-        setMyQrError(data.message || 'Không thể tạo mã QR')
-        return
-      }
-
-      setMyQrData(data.qr)
-      setMyQrTtl(data.qr.ttl_seconds)
-      setMyQrRemainingSeconds(data.qr.ttl_seconds)
-      startMyQrCountdown(data.qr.expires_at)
-
-      const qrUrl = await createQrCodeWithAvatar(
-        `cloudchat:friend:${data.qr.code}`,
-        currentUser?.avatar_url,
-        currentUser?.username
-      )
-      setMyQrImageUrl(qrUrl)
-      setMyQrSuccess(`Đã tạo mã QR mới! Tự hủy sau ${formatCountdown(data.qr.ttl_seconds)}.`)
-    } catch {
-      setMyQrError('Không thể kết nối đến máy chủ CloudChat')
-    } finally {
-      setMyQrLoading(false)
-    }
-  }
-
-  const handleRevokeMyQr = async () => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-    setMyQrRevoking(true)
-    try {
-      await fetch(`${API_BASE}/api/protected/qr/revoke`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (myQrCountdownRef.current) {
-        clearInterval(myQrCountdownRef.current)
-        myQrCountdownRef.current = null
-      }
-      setMyQrRemainingSeconds(0)
-      setMyQrSuccess('Mã QR đã được hủy thành công!')
-    } catch {
-      setMyQrError('Không thể hủy mã QR')
-    } finally {
-      setMyQrRevoking(false)
-    }
-  }
-
-  const handleDownloadQrCard = async () => {
-    if (!myQrImageUrl) return
-    const remainingText =
-      myQrRemainingSeconds > 0
-        ? `Còn hạn: ${formatCountdown(myQrRemainingSeconds)}`
-        : 'Mã đã hết hạn'
-    await downloadQrCardImage(myQrImageUrl, currentUser, remainingText)
-  }
-
-  const handleCopyQrCode = () => {
-    if (!myQrData?.code) return
-    const inviteLink = `${window.location.origin}/#friend_qr=${myQrData.code}`
-    navigator.clipboard.writeText(inviteLink)
-    setMyQrSuccess('Đã sao chép liên kết kết bạn vào bộ nhớ tạm!')
-  }
-
-  // --- QR SCANNER METHODS ---
-  const handleStartQrCamera = async () => {
-    setQrScanError('')
-    setQrScanSuccess('')
-    setQrScanResult(null)
-    setQrCameraActive(true)
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
-      })
-      qrStreamRef.current = stream
-      if (qrVideoRef.current) {
-        qrVideoRef.current.srcObject = stream
-        qrVideoRef.current.play()
-        qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
-      }
-    } catch {
-      setQrCameraActive(false)
-      setQrScanError('Không thể mở Camera / Webcam (chưa cấp quyền hoặc thiết bị không có camera). Bạn có thể tải ảnh mã QR lên để quét!')
-    }
-  }
-
-  const handleStopQrCamera = () => {
-    if (qrScanAnimFrameRef.current) {
-      cancelAnimationFrame(qrScanAnimFrameRef.current)
-      qrScanAnimFrameRef.current = null
-    }
-    if (qrStreamRef.current) {
-      qrStreamRef.current.getTracks().forEach((track) => track.stop())
-      qrStreamRef.current = null
-    }
-    setQrCameraActive(false)
-  }
-
-  const tickQrScanVideo = () => {
-    if (!qrVideoRef.current || qrVideoRef.current.readyState !== qrVideoRef.current.HAVE_ENOUGH_DATA) {
-      qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
-      return
-    }
-
-    const video = qrVideoRef.current
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: 'dontInvert',
-    })
-
-    if (code && code.data) {
-      handleStopQrCamera()
-      handleResolveQrCode(code.data)
-      return
-    }
-
-    qrScanAnimFrameRef.current = requestAnimationFrame(tickQrScanVideo)
-  }
-
-  const handleScanQrFromFile = (file) => {
-    if (!file || !file.type.startsWith('image/')) {
-      setQrScanError('Vui lòng chọn tệp hình ảnh (JPG, PNG, WebP...)')
-      return
-    }
-    setQrScanError('')
-    setQrScanSuccess('')
-    setQrScanResult(null)
-    setQrScanning(true)
-
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const img = new Image()
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas')
-          canvas.width = img.width
-          canvas.height = img.height
-          const ctx = canvas.getContext('2d')
-          ctx.drawImage(img, 0, 0)
-          const imageData = ctx.getImageData(0, 0, img.width, img.height)
-          let code = jsQR(imageData.data, imageData.width, imageData.height, {
-            inversionAttempts: 'dontInvert',
-          })
-          if (!code) {
-            code = jsQR(imageData.data, imageData.width, imageData.height, {
-              inversionAttempts: 'attemptBoth',
-            })
-          }
-
-          setQrScanning(false)
-          if (code && code.data) {
-            handleResolveQrCode(code.data)
-          } else {
-            setQrScanError('Không tìm thấy mã QR trong ảnh này. Vui lòng kiểm tra lại ảnh hoặc thử ảnh khác!')
-          }
-        } catch {
-          setQrScanning(false)
-          setQrScanError('Lỗi khi phân tích hình ảnh mã QR')
-        }
-      }
-      img.onerror = () => {
-        setQrScanning(false)
-        setQrScanError('Không thể mở tệp hình ảnh này')
-      }
-      img.src = e.target.result
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const handleResolveQrCode = async (rawString) => {
-    if (!rawString) return
-    let cleanCode = String(rawString).trim()
-    if (cleanCode.includes('cloudchat:friend:')) {
-      cleanCode = cleanCode.replace('cloudchat:friend:', '')
-    } else if (cleanCode.includes('code=')) {
-      const match = cleanCode.match(/code=([a-zA-Z0-9_-]+)/)
-      if (match) cleanCode = match[1]
-    } else if (cleanCode.includes('/add/')) {
-      cleanCode = cleanCode.split('/add/').pop().split('?')[0]
-    } else if (cleanCode.includes('#friend_qr=')) {
-      cleanCode = cleanCode.split('#friend_qr=').pop().split('&')[0]
-    }
-
-    setQrScanning(true)
-    setQrScanError('')
-    setQrScanSuccess('')
-    setQrScanResult(null)
-
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token) return
-
-    try {
-      const res = await fetch(`${API_BASE}/api/protected/qr/resolve/${encodeURIComponent(cleanCode)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      if (!res.ok || !data.success) {
-        setQrScanError(data.message || 'Mã QR không hợp lệ hoặc đã hết hạn')
-        return
-      }
-
-      setQrScanResult({
-        ...data,
-        resolvedCode: cleanCode,
-      })
-      setQrScanSuccess(`Đã tìm thấy tài khoản: ${data.user?.display_name || data.user?.username}`)
-    } catch {
-      setQrScanError('Không thể kết nối đến máy chủ CloudChat để kiểm tra mã')
-    } finally {
-      setQrScanning(false)
-    }
-  }
-
-  const handleAddFriendViaQr = async (code) => {
-    const token = localStorage.getItem('cloudchat_token')
-    if (!token || !code) return
-
-    setQrActionLoading(true)
-    setQrScanError('')
-    try {
-      const res = await fetch(`${API_BASE}/api/protected/qr/add-friend/${encodeURIComponent(code)}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = await res.json()
-      if (!res.ok || !data.success) {
-        setQrScanError(data.message || 'Kết bạn thất bại')
-        return
-      }
-
-      setQrScanSuccess(data.message || 'Kết bạn thành công!')
-      await loadFriends()
-      if (qrScanResult?.user) {
-        setActiveChat({
-          id: qrScanResult.user.id,
-          username: qrScanResult.user.username,
-          display_name: qrScanResult.user.display_name,
-          avatar_url: qrScanResult.user.avatar_url,
-          bio: qrScanResult.user.bio,
-        })
-        setShowAddFriendModal(false)
-      }
-    } catch {
-      setQrScanError('Không thể kết nối đến máy chủ CloudChat')
-    } finally {
-      setQrActionLoading(false)
-    }
-  }
-
-  // --- CHAT WALLPAPER METHODS ---
-  const handleOpenWallpaperModal = (scope = null) => {
-    const targetScope = scope || (activeChat ? 'chat' : 'global')
-    setWallpaperScope(targetScope)
-
-    // Seed tempWallpaper from current chat or global
-    let currentConfig = null
-    if (targetScope === 'chat' && activeChat && chatWallpapers[activeChat.id]) {
-      currentConfig = chatWallpapers[activeChat.id]
-    } else {
-      currentConfig = globalWallpaper
-    }
-
-    if (currentConfig && currentConfig.type !== 'default' && currentConfig.value) {
-      setTempWallpaper({ ...currentConfig })
-      setCustomColorInput(currentConfig.value)
-      setColorInputStatus('valid')
-      if (currentConfig.type === 'color' && currentConfig.value.startsWith('#') && currentConfig.value.length === 7) {
-        setCustomColorHex(currentConfig.value)
-      }
-      if (currentConfig.type === 'custom') {
-        setWallpaperModalTab('upload')
-      } else {
-        setWallpaperModalTab('colors')
-      }
-    } else {
-      setTempWallpaper({
-        type: 'color',
-        value: '#0e1621',
-        name: 'Telegram Dark Cổ Điển',
-      })
-      setCustomColorHex('#0e1621')
-      setCustomColorInput('#0e1621')
-      setColorInputStatus('valid')
-      setWallpaperModalTab('colors')
-    }
-
-    setWallpaperFileMeta(null)
-    setWallpaperUrlStatus(null)
-    setShowWallpaperModal(true)
-  }
-
-  // Tự động nhận diện và đổi màu tức thì khi người dùng gõ mã màu (không giới hạn màu)
-  const handleColorInputChange = (rawVal) => {
-    setCustomColorInput(rawVal)
-    const parsed = parseAndValidateColor(rawVal)
-    if (parsed) {
-      setTempWallpaper({
-        type: parsed.type,
-        value: parsed.value,
-        name: `Mã màu: ${parsed.formatted}`,
-      })
-      if (parsed.type === 'color' && parsed.value.startsWith('#') && parsed.value.length === 7) {
-        setCustomColorHex(parsed.value)
-      }
-      setColorInputStatus('valid')
-    } else {
-      setColorInputStatus(rawVal.trim() ? 'invalid' : 'empty')
-    }
-  }
-
-  const handleSaveWallpaper = () => {
-    if (!currentUser?.id) return
-
-    if (wallpaperScope === 'global') {
-      setGlobalWallpaper(tempWallpaper)
-      try {
-        localStorage.setItem(
-          `cloudchat_global_wallpaper_${currentUser.id}`,
-          JSON.stringify(tempWallpaper)
-        )
-      } catch (e) {
-        console.error('Failed to save global wallpaper', e)
-      }
-    } else if (activeChat) {
-      const updated = {
-        ...chatWallpapers,
-        [activeChat.id]: tempWallpaper,
-      }
-      setChatWallpapers(updated)
-      try {
-        localStorage.setItem(
-          `cloudchat_chat_wallpapers_${currentUser.id}`,
-          JSON.stringify(updated)
-        )
-      } catch (e) {
-        console.error('Failed to save chat wallpaper', e)
-      }
-    }
-
-    setShowWallpaperModal(false)
-    showFloatingToast('🎨 Đã áp dụng hình nền thành công!')
-  }
-
-  const handleResetWallpaper = () => {
-    if (!currentUser?.id) return
-
-    if (wallpaperScope === 'global') {
-      const resetConfig = { type: 'default', value: '', dim: 0.2, blur: 0 }
-      setGlobalWallpaper(resetConfig)
-      try {
-        localStorage.removeItem(`cloudchat_global_wallpaper_${currentUser.id}`)
-      } catch {}
-      setTempWallpaper(resetConfig)
-    } else if (activeChat) {
-      const updated = { ...chatWallpapers }
-      delete updated[activeChat.id]
-      setChatWallpapers(updated)
-      try {
-        localStorage.setItem(
-          `cloudchat_chat_wallpapers_${currentUser.id}`,
-          JSON.stringify(updated)
-        )
-      } catch {}
-      setTempWallpaper(globalWallpaper || { type: 'default', value: '', dim: 0.2, blur: 0 })
-    }
-
-    setShowWallpaperModal(false)
-    showFloatingToast('↺ Đã đặt lại hình nền mặc định!')
-  }
-
-  const handleWallpaperFileSelect = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    try {
-      const res = await processWallpaperFile(file)
-      setTempWallpaper((prev) => ({
-        ...prev,
-        type: 'custom',
-        value: res.dataUrl,
-      }))
-      setWallpaperFileMeta({ name: res.name, size: res.sizeText })
-    } catch (err) {
-      alert(err.message || 'Lỗi khi tải ảnh')
-    }
-    e.target.value = ''
-  }
-
-  const handleWallpaperDrop = async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setWallpaperDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (!file) return
-    try {
-      const res = await processWallpaperFile(file)
-      setTempWallpaper((prev) => ({
-        ...prev,
-        type: 'custom',
-        value: res.dataUrl,
-      }))
-      setWallpaperFileMeta({ name: res.name, size: res.sizeText })
-    } catch (err) {
-      alert(err.message || 'Lỗi khi tải ảnh')
-    }
-  }
-
-  const handleWallpaperPaste = async (e) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile()
-        if (file) {
-          e.preventDefault()
-          try {
-            const res = await processWallpaperFile(file)
-            setTempWallpaper((prev) => ({
-              ...prev,
-              type: 'custom',
-              value: res.dataUrl,
-            }))
-            setWallpaperFileMeta({ name: 'Ảnh đã dán (Clipboard)', size: res.sizeText })
-          } catch (err) {
-            alert(err.message || 'Lỗi khi dán ảnh')
-          }
-          break
-        }
-      }
-    }
-  }
-
-  const handleApplyWallpaperUrl = () => {
-    const url = wallpaperUrlInput.trim()
-    if (!url) return
-    const img = new Image()
-    img.onload = () => {
-      setWallpaperUrlStatus('valid')
-      setTempWallpaper((prev) => ({
-        ...prev,
-        type: 'url',
-        value: url,
-      }))
-    }
-    img.onerror = () => {
-      setWallpaperUrlStatus('invalid')
-    }
-    img.src = url
-  }
-
-  // Chuyển đổi cử chỉ nhấp đúp nền chat (Đổi theme tức thì hoặc mở bảng cài đặt)
-  const handleSetDoubleClickAction = (mode) => {
-    setDoubleClickAction(mode)
-    try {
-      localStorage.setItem('cloudchat_dblclick_action', mode)
-    } catch {}
-    showFloatingToast(
-      mode === 'next'
-        ? `⚡ Nhấp đúp: Tự động đổi màu nền kế tiếp (${CHAT_COLOR_PRESETS.length} màu)`
-        : '⚙️ Nhấp đúp: Mở bảng chọn màu nền'
-    )
-  }
-
-  // Tự động xoay vòng sang màu/gradient tiếp theo trong danh sách bảng màu
-  const handleCycleNextWallpaper = () => {
-    if (CHAT_COLOR_PRESETS.length === 0) return
-
-    const currentVal = currentChatWallpaper?.value || ''
-    const currentIndex = CHAT_COLOR_PRESETS.findIndex((p) => p.value === currentVal)
-    const nextIndex = (currentIndex + 1) % CHAT_COLOR_PRESETS.length
-    const nextTheme = CHAT_COLOR_PRESETS[nextIndex]
-
-    const nextConfig = {
-      type: nextTheme.type,
-      value: nextTheme.value,
-      name: nextTheme.name,
-    }
-
-    if (activeChat) {
-      const updated = {
-        ...chatWallpapers,
-        [activeChat.id]: nextConfig,
-      }
-      setChatWallpapers(updated)
-      if (currentUser?.id) {
-        try {
-          localStorage.setItem(
-            `cloudchat_chat_wallpapers_${currentUser.id}`,
-            JSON.stringify(updated)
-          )
-        } catch {}
-      }
-    } else {
-      setGlobalWallpaper(nextConfig)
-      if (currentUser?.id) {
-        try {
-          localStorage.setItem(
-            `cloudchat_global_wallpaper_${currentUser.id}`,
-            JSON.stringify(nextConfig)
-          )
-        } catch {}
-      }
-    }
-
-    showFloatingToast(`🎨 Đã đổi màu nền: ${nextTheme.name} (${nextTheme.num}/${CHAT_COLOR_PRESETS.length})`)
-  }
-
-  // Bắt sự kiện nhấp đúp (Double-Click) vào khoảng trống hình nền chat
-  const handleChatBackgroundDoubleClick = (e) => {
-    // Bỏ qua nếu người dùng click trúng bong bóng tin nhắn, nút thao tác, avatar, input, link, media
-    const interactiveTarget = e.target.closest(
-      '.tg-msg-bubble, .tg-msg-row, .tg-msg-actions, .tg-msg-act-btn, ' +
-      '.tg-avatar, .tg-inchat-search-bar, .tg-chat-input-area, .tg-header, ' +
-      '.tg-info-panel, button, input, textarea, a, img, video, [role="button"]'
-    )
-    if (interactiveTarget) return
-
-    // Xóa bôi đen văn bản tự nhiên khi click 2 lần trên nền trống
-    if (window.getSelection) {
-      window.getSelection().removeAllRanges()
-    }
-
-    e.preventDefault()
-    e.stopPropagation()
-
-    if (doubleClickAction === 'modal') {
-      handleOpenWallpaperModal('chat')
-    } else {
-      handleCycleNextWallpaper()
-    }
-  }
-
-  const filteredFriends = friends.filter((friend) => {
-    const query = search.toLowerCase()
-    const nameMatch = getFriendName(friend).toLowerCase().includes(query)
-    const usernameMatch = friend.username.toLowerCase().includes(query)
-    return nameMatch || usernameMatch
-  })
 
   if (page === 'loading') {
     return (
-      <div className="auth-page">
-        <div className="auth-card loading-card">
-          <div className="auth-brand-badge pulse-logo">
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+      <div className="fpt-auth-page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--tg-bg, #0f172a)' }}>
+        <div style={{ textAlign: 'center', padding: '32px' }}>
+          <div className="cloudchat-brand-icon" style={{ margin: '0 auto 16px auto', display: 'flex', justifyContent: 'center' }}>
+            <svg width="56" height="56" viewBox="0 0 32 32" fill="none">
+              <defs>
+                <linearGradient id="ccGradLoading" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#38bdf8" />
+                  <stop offset="50%" stopColor="#6366f1" />
+                  <stop offset="100%" stopColor="#8b5cf6" />
+                </linearGradient>
+              </defs>
+              <rect width="32" height="32" rx="10" fill="url(#ccGradLoading)" />
+              <path d="M19.5 21.5C21.9853 21.5 24 19.4853 24 17C24 14.6548 22.2039 12.7291 19.9079 12.5226C19.4674 9.94823 17.2273 8 14.5 8C11.6669 8 9.34969 10.1065 9.04167 12.836C6.75704 13.203 5 15.1952 5 17.5C5 20.0274 7.04263 22.074 9.57 22.074H19.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
-          <h1 className="auth-title">CloudChat</h1>
-          <p className="auth-subtitle">Đang khởi tạo kết nối bảo mật...</p>
-          <div className="tg-spinner" style={{ marginTop: 24 }}></div>
+          <div style={{ color: '#94a3b8', fontSize: '15px', fontWeight: 500, letterSpacing: '0.3px' }}>Đang khởi tạo CloudChat...</div>
         </div>
       </div>
     )
@@ -3625,146 +5971,343 @@ function App() {
 
   if (page === 'login') {
     return (
-      <div className="auth-page">
-        <div className="auth-card">
-          <div className="auth-header">
-            <div className="auth-brand-badge">
-              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+      <div className="fpt-auth-page">
+        {/* CỘT TRÁI: SHOWCASE ĐIỆN THOẠI & THƯƠNG HIỆU CLOUDCHAT */}
+        <div className="fpt-showcase-col">
+          {/* Logo Thương hiệu CloudChat */}
+          <div className="fpt-brand-header">
+            <div className="fpt-logo-group">
+              <div className="cloudchat-brand-icon">
+                <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
+                  <defs>
+                    <linearGradient id="ccGradL" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#38bdf8" />
+                      <stop offset="50%" stopColor="#6366f1" />
+                      <stop offset="100%" stopColor="#8b5cf6" />
+                    </linearGradient>
+                  </defs>
+                  <path d="M9.5 21a6.5 6.5 0 0 1-.5-13 8 8 0 0 1 15 2.5 5.5 5.5 0 0 1 1 10.5H9.5z" fill="url(#ccGradL)" />
+                  <circle cx="12" cy="15" r="1.5" fill="#ffffff" />
+                  <circle cx="16" cy="15" r="1.5" fill="#ffffff" />
+                  <circle cx="20" cy="15" r="1.5" fill="#ffffff" />
+                </svg>
+              </div>
+              <span className="fpt-brand-name">CloudChat</span>
+              <span className="cloudchat-pro-badge">CLOUD</span>
+            </div>
+          </div>
+
+          {/* Slogan */}
+          <div className="fpt-slogan-wrap">
+            <h1 className="fpt-main-heading">
+              {authT.sloganMain}
+            </h1>
+            <p className="fpt-sub-heading">
+              {authT.sloganSub}
+            </p>
+          </div>
+
+          {/* Mockup iPhone & Các huy hiệu bay xung quanh */}
+          <div className="fpt-mockup-area">
+            {/* Đốm sáng tím mờ phía sau */}
+            <div className="fpt-mockup-glow" />
+
+            {/* Vòng elip quỹ đạo nét đứt & mũi tên 3D */}
+            <div className="fpt-orbit-ring">
+              <div className="fpt-orbit-pointer">
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 22L12 18L22 22L12 2Z" fill="url(#orbitArrowGrad)" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                  <defs>
+                    <linearGradient id="orbitArrowGrad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#38bdf8" />
+                      <stop offset="0.5" stopColor="#6366f1" />
+                      <stop offset="1" stopColor="#a855f7" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+            </div>
+
+            {/* Huy hiệu bảo mật xanh lá (🛡) */}
+            <div className="fpt-float-badge badge-shield">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <polyline points="9 12 11 14 15 10"></polyline>
               </svg>
             </div>
-            <h1 className="auth-title">CloudChat</h1>
-            <p className="auth-subtitle">Nền tảng nhắn tin bảo mật & kết nối đám mây</p>
-          </div>
 
-          {/* Pill Tabs Switcher */}
-          <div className="auth-tabs">
-            <button
-              type="button"
-              className="auth-tab active"
-            >
-              Đăng nhập
-            </button>
-            <button
-              type="button"
-              className="auth-tab"
-              onClick={() => {
-                setError('')
-                setAuthSuccess('')
-                setPassword('')
-                setConfirmPassword('')
-                setPage('register')
-              }}
-            >
-              Đăng ký
-            </button>
-          </div>
+            {/* Huy hiệu gọi điện cam (📞) */}
+            <div className="fpt-float-badge badge-phone">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+              </svg>
+            </div>
 
-          <form onSubmit={handleLogin} className="auth-form">
-            <div className="auth-input-group">
-              <label className="auth-label">Tài khoản (Username)</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
+            {/* Huy hiệu tin nhắn xanh cyan (💬) */}
+            <div className="fpt-float-badge badge-chat">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+
+            {/* Thiết bị iPhone hiển thị màn hình Chats */}
+            <div className="fpt-phone-device">
+              {/* Dynamic Island */}
+              <div className="fpt-phone-island" />
+
+              {/* Status bar */}
+              <div className="fpt-phone-status-bar">
+                <span>9:41</span>
+                <div className="fpt-phone-status-icons">
+                  <span style={{ fontSize: 11 }}>●●●●</span>
+                  <span style={{ fontSize: 11 }}>📶</span>
+                  <span style={{ fontSize: 11 }}>🔋</span>
+                </div>
+              </div>
+
+              {/* App Header */}
+              <div className="fpt-phone-app-header">
+                <div className="fpt-phone-avatar-circle">
+                  <img src="https://cdn.auth0.com/avatars/cc.png" alt="Avatar" />
+                  <span className="online-dot" />
+                </div>
+                <div className="fpt-phone-app-title">CloudChat</div>
+                <div className="fpt-phone-edit-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
                   </svg>
-                </span>
+                </div>
+              </div>
+
+              {/* Search box */}
+              <div className="fpt-phone-search-box">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>{authT.mockSearch}</span>
+              </div>
+
+              {/* Filter tabs */}
+              <div className="fpt-phone-tabs">
+                <span className="phone-tab active">{authT.mockTabAll}</span>
+                <span className="phone-tab">{authT.mockTabGroup}</span>
+                <span className="phone-tab">{authT.mockTabDirect}</span>
+                <span className="phone-tab">{authT.mockTabUnread}</span>
+                <span className="phone-tab">{authT.mockTabMention}</span>
+              </div>
+
+              {/* Danh sách tin nhắn mẫu trong điện thoại */}
+              <div className="fpt-phone-chat-list">
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Lê Nguyễn Quỳnh Chi</span>
+                      <span className="mock-chat-time">vài giây</span>
+                    </div>
+                    <div className="mock-chat-sub">{authT.mockMsg1}</div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://play-lh.googleusercontent.com/KB2nVpIl14Wcg4rLapktzKqr-O6TzyYItFivTcE-vsH_0o-ACpn2VrNWpILBnsKyZNeovTJ29aicwvcDm3nd" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Nguyễn Trung Đạt</span>
+                      <span className="mock-chat-time">2 phút</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-typing">{authT.mockTyping}</span>
+                      <span className="mock-chat-badge">99+</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS_FdV46NrjhSMaAZy7FkNGMhMhf1ZJ2Xtb2vcWu5s_Y0cv526mULCuA7Cp&s=10" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Phạm Văn Hùng</span>
+                      <span className="mock-chat-time">30 phút</span>
+                    </div>
+                    <div className="mock-chat-sub">🌄 {authT.mockMsg3}</div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <div className="mock-chat-avatar group-avatar">CC</div>
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">CloudChat Global</span>
+                      <span className="mock-chat-time">2 ngày</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-typing">{authT.mockMsg2}</span>
+                      <span className="mock-chat-badge">12</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Vũ Thị Hương</span>
+                      <span className="mock-chat-time">5 ngày</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-sub">{authT.mockMsg1}</span>
+                      <span className="mock-chat-badge">2</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* CỘT PHẢI: TRẮNG TINH KHÔI VỚI FORM ĐĂNG NHẬP EMAIL + PASSWORD + GOOGLE */}
+        <div className="fpt-auth-col">
+          {/* Nút chọn ngôn ngữ góc trên phải */}
+          <div className="fpt-top-bar">
+            <div className="fpt-lang-selector">
+              <button
+                type="button"
+                className={`fpt-lang-btn ${loginLang === 'en' ? 'active' : ''}`}
+                onClick={() => handleSetLang('en')}
+              >
+                Tiếng Anh
+              </button>
+              <span className="fpt-lang-sep">|</span>
+              <button
+                type="button"
+                className={`fpt-lang-btn ${loginLang === 'vi' ? 'active' : ''}`}
+                onClick={() => handleSetLang('vi')}
+              >
+                Tiếng Việt
+              </button>
+            </div>
+          </div>
+
+          {/* Vùng trung tâm: Form đăng nhập trực tiếp */}
+          <div className="fpt-auth-center">
+            <div className="fpt-form-card">
+              <h2 className="fpt-form-title">
+                {authT.loginTitle}
+              </h2>
+              <p className="fpt-form-desc">{authT.loginSubtitle}</p>
+
+              <form onSubmit={handleLogin} className="fpt-login-form">
+                {/* Honeypot field - ẩn hoàn toàn để phát hiện bot tự động điền form */}
                 <input
                   type="text"
-                  placeholder="Nhập username"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  autoComplete="username"
-                  required
+                  name="user_organization_hp"
+                  value={honeypotVal}
+                  onChange={(e) => setHoneypotVal(e.target.value)}
+                  style={{ display: 'none', opacity: 0, position: 'absolute', left: '-9999px', height: 0, width: 0 }}
+                  tabIndex={-1}
+                  autoComplete="off"
                 />
-              </div>
-            </div>
 
-            <div className="auth-input-group">
-              <label className="auth-label">Mật khẩu</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                </span>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Nhập mật khẩu"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
+                {/* Math challenge nếu thử đăng nhập sai >= 2 lần */}
+                {authAttempts >= 2 && mathChallenge.q && (
+                  <div className="fpt-input-group" style={{ background: 'rgba(99, 102, 241, 0.08)', padding: '12px', borderRadius: 10, border: '1px solid rgba(99, 102, 241, 0.25)', marginBottom: 12 }}>
+                    <label className="fpt-input-label" style={{ color: '#818cf8', fontWeight: 600 }}>
+                      🛡️ Xác minh chống bot: {mathChallenge.q} = ?
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="Nhập kết quả số..."
+                      value={userMathAnswer}
+                      onChange={(e) => setUserMathAnswer(e.target.value)}
+                      className="fpt-text-input"
+                      required
+                      style={{ marginTop: 6 }}
+                    />
+                  </div>
+                )}
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.emailLabel}</label>
+                  <input
+                    type="email"
+                    placeholder={authT.emailPlaceholder}
+                    value={loginEmail || username}
+                    onChange={(e) => {
+                      setLoginEmail(e.target.value)
+                      setUsername(e.target.value)
+                    }}
+                    className="fpt-text-input"
+                    required
+                    autoFocus
+                  />
+                </div>
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.passwordLabel}</label>
+                  <div className="fpt-pwd-wrapper">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder={authT.passwordPlaceholder}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="fpt-text-input"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="fpt-pwd-toggle"
+                      onClick={() => setShowPassword(!showPassword)}
+                    >
+                      {showPassword ? authT.hidePwd : authT.showPwd}
+                    </button>
+                  </div>
+                </div>
+
+                {error && <div className="fpt-alert error">{error}</div>}
+                {authSuccess && <div className="fpt-alert success">{authSuccess}</div>}
+
+                <button type="submit" className="fpt-submit-primary" disabled={loading}>
+                  {loading ? authT.signingInBtn : authT.signInBtn}
+                </button>
+
+                <div className="fpt-or-divider">
+                  <span>{authT.orDivider}</span>
+                </div>
+
                 <button
                   type="button"
-                  className="auth-input-toggle-btn"
-                  title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                  onClick={() => setShowPassword(!showPassword)}
+                  className="fpt-google-btn"
+                  onClick={handleGoogleLogin}
+                  disabled={loading}
                 >
-                  {showPassword ? (
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                      <line x1="1" y1="1" x2="23" y2="23"></line>
-                    </svg>
-                  ) : (
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                      <circle cx="12" cy="12" r="3"></circle>
-                    </svg>
-                  )}
+                  <svg className="auth-google-icon" viewBox="0 0 24 24" width="18" height="18">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                  </svg>
+                  <span>{authT.googleBtn}</span>
                 </button>
-              </div>
+
+                <div className="fpt-register-switch">
+                  <span>{authT.noAccount} </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError('')
+                      setAuthSuccess('')
+                      setPage('register')
+                    }}
+                  >
+                    {authT.signUpNow}
+                  </button>
+                </div>
+              </form>
             </div>
-
-            {authSuccess && (
-              <div className="auth-alert-box success">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>{authSuccess}</span>
-              </div>
-            )}
-
-            {error && (
-              <div className="auth-alert-box error">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                <span>{error}</span>
-              </div>
-            )}
-
-            <button className="auth-submit-btn" type="submit" disabled={loading}>
-              {loading ? (
-                <span className="auth-btn-loading">
-                  <span className="tg-spinner sm"></span>
-                  <span>Đang đăng nhập...</span>
-                </span>
-              ) : (
-                'Đăng nhập'
-              )}
-            </button>
-          </form>
-
-          <div className="auth-footer">
-            <span>Chưa có tài khoản?</span>
-            <button
-              type="button"
-              onClick={() => {
-                setError('')
-                setAuthSuccess('')
-                setPassword('')
-                setConfirmPassword('')
-                setPage('register')
-              }}
-            >
-              Đăng ký ngay
-            </button>
           </div>
         </div>
       </div>
@@ -3773,175 +6316,337 @@ function App() {
 
   if (page === 'register') {
     return (
-      <div className="auth-page">
-        <div className="auth-card">
-          <div className="auth-header">
-            <div className="auth-brand-badge">
-              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+      <div className="fpt-auth-page">
+        {/* Cột trái showcase tương tự */}
+        <div className="fpt-showcase-col">
+          <div className="fpt-brand-header">
+            <div className="fpt-logo-group">
+              <div className="cloudchat-brand-icon">
+                <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
+                  <defs>
+                    <linearGradient id="ccGradR" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#38bdf8" />
+                      <stop offset="50%" stopColor="#6366f1" />
+                      <stop offset="100%" stopColor="#8b5cf6" />
+                    </linearGradient>
+                  </defs>
+                  <path d="M9.5 21a6.5 6.5 0 0 1-.5-13 8 8 0 0 1 15 2.5 5.5 5.5 0 0 1 1 10.5H9.5z" fill="url(#ccGradR)" />
+                  <circle cx="12" cy="15" r="1.5" fill="#ffffff" />
+                  <circle cx="16" cy="15" r="1.5" fill="#ffffff" />
+                  <circle cx="20" cy="15" r="1.5" fill="#ffffff" />
+                </svg>
+              </div>
+              <span className="fpt-brand-name">CloudChat</span>
+              <span className="cloudchat-pro-badge">CLOUD</span>
+            </div>
+          </div>
+
+          <div className="fpt-slogan-wrap">
+            <h1 className="fpt-main-heading">
+              {authT.registerSloganMain}
+            </h1>
+            <p className="fpt-sub-heading">
+              {authT.registerSloganSub}
+            </p>
+          </div>
+
+          {/* Mockup iPhone & Các huy hiệu bay xung quanh */}
+          <div className="fpt-mockup-area">
+            {/* Đốm sáng tím mờ phía sau */}
+            <div className="fpt-mockup-glow" />
+
+            {/* Vòng elip quỹ đạo nét đứt & mũi tên 3D */}
+            <div className="fpt-orbit-ring">
+              <div className="fpt-orbit-pointer">
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 22L12 18L22 22L12 2Z" fill="url(#orbitArrowGradR)" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                  <defs>
+                    <linearGradient id="orbitArrowGradR" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#38bdf8" />
+                      <stop offset="0.5" stopColor="#6366f1" />
+                      <stop offset="1" stopColor="#a855f7" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+            </div>
+
+            {/* Huy hiệu bảo mật xanh lá (🛡) */}
+            <div className="fpt-float-badge badge-shield">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <polyline points="9 12 11 14 15 10"></polyline>
               </svg>
             </div>
-            <h1 className="auth-title">Tạo tài khoản mới</h1>
-            <p className="auth-subtitle">Trở thành thành viên của cộng đồng CloudChat</p>
-          </div>
 
-          {/* Pill Tabs Switcher */}
-          <div className="auth-tabs">
-            <button
-              type="button"
-              className="auth-tab"
-              onClick={() => {
-                setError('')
-                setAuthSuccess('')
-                setPassword('')
-                setConfirmPassword('')
-                setPage('login')
-              }}
-            >
-              Đăng nhập
-            </button>
-            <button
-              type="button"
-              className="auth-tab active"
-            >
-              Đăng ký
-            </button>
-          </div>
-
-          <form onSubmit={handleRegister} className="auth-form">
-            <div className="auth-input-group">
-              <label className="auth-label">Tên hiển thị (Tùy chọn)</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
-                  </svg>
-                </span>
-                <input
-                  type="text"
-                  placeholder="Ví dụ: Duy Khang"
-                  value={registerDisplayName}
-                  onChange={(event) => setRegisterDisplayName(event.target.value)}
-                />
-              </div>
+            {/* Huy hiệu gọi điện cam (📞) */}
+            <div className="fpt-float-badge badge-phone">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+              </svg>
             </div>
 
-            <div className="auth-input-group">
-              <label className="auth-label">Username</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="4"></circle>
-                    <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"></path>
-                  </svg>
-                </span>
-                <input
-                  type="text"
-                  placeholder="Nhập username (3-30 ký tự)"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  autoComplete="username"
-                  required
-                />
-              </div>
+            {/* Huy hiệu tin nhắn xanh cyan (💬) */}
+            <div className="fpt-float-badge badge-chat">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
             </div>
 
-            <div className="auth-input-group">
-              <label className="auth-label">Mật khẩu</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                </span>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Ít nhất 6 ký tự"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="new-password"
-                  required
-                />
-                <button
-                  type="button"
-                  className="auth-input-toggle-btn"
-                  title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                  onClick={() => setShowPassword(!showPassword)}
-                >
-                  {showPassword ? (
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                      <line x1="1" y1="1" x2="23" y2="23"></line>
-                    </svg>
-                  ) : (
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                      <circle cx="12" cy="12" r="3"></circle>
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
+            {/* Thiết bị iPhone hiển thị màn hình Chats */}
+            <div className="fpt-phone-device">
+              {/* Dynamic Island */}
+              <div className="fpt-phone-island" />
 
-            <div className="auth-input-group">
-              <label className="auth-label">Xác nhận mật khẩu</label>
-              <div className="auth-input-wrapper">
-                <span className="auth-input-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                  </svg>
-                </span>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Nhập lại mật khẩu"
-                  value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  autoComplete="new-password"
-                  required
-                />
+              {/* Status bar */}
+              <div className="fpt-phone-status-bar">
+                <span>9:41</span>
+                <div className="fpt-phone-status-icons">
+                  <span style={{ fontSize: 11 }}>●●●●</span>
+                  <span style={{ fontSize: 11 }}>📶</span>
+                  <span style={{ fontSize: 11 }}>🔋</span>
+                </div>
               </div>
-            </div>
 
-            {error && (
-              <div className="auth-alert-box error">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              {/* App Header */}
+              <div className="fpt-phone-app-header">
+                <div className="fpt-phone-avatar-circle">
+                  <img src="https://cdn.auth0.com/avatars/cc.png" alt="Avatar" />
+                  <span className="online-dot" />
+                </div>
+                <div className="fpt-phone-app-title">CloudChat</div>
+                <div className="fpt-phone-edit-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                  </svg>
+                </div>
+              </div>
+
+              {/* Search box */}
+              <div className="fpt-phone-search-box">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <span>{error}</span>
+                <span>{authT.mockSearch}</span>
               </div>
-            )}
 
-            <button className="auth-submit-btn" type="submit" disabled={loading}>
-              {loading ? (
-                <span className="auth-btn-loading">
-                  <span className="tg-spinner sm"></span>
-                  <span>Đang tạo tài khoản...</span>
-                </span>
-              ) : (
-                'Tạo tài khoản'
-              )}
-            </button>
-          </form>
+              {/* Filter tabs */}
+              <div className="fpt-phone-tabs">
+                <span className="phone-tab active">{authT.mockTabAll}</span>
+                <span className="phone-tab">{authT.mockTabGroup}</span>
+                <span className="phone-tab">{authT.mockTabDirect}</span>
+                <span className="phone-tab">{authT.mockTabUnread}</span>
+                <span className="phone-tab">{authT.mockTabMention}</span>
+              </div>
 
-          <div className="auth-footer">
-            <span>Đã có tài khoản?</span>
+              {/* Danh sách tin nhắn mẫu trong điện thoại */}
+              <div className="fpt-phone-chat-list">
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Lê Nguyễn Quỳnh Chi</span>
+                      <span className="mock-chat-time">08:30</span>
+                    </div>
+                    <div className="mock-chat-sub">{authT.mockMsg1}</div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1517841905240-472988babdf9?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Bùi Thuý Trinh ⚡</span>
+                      <span className="mock-chat-time">08:06</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-typing">{authT.mockTyping}</span>
+                      <span className="mock-chat-badge">90</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Trịnh Hoài Ngọc 🔒</span>
+                      <span className="mock-chat-time">08:30</span>
+                    </div>
+                    <div className="mock-chat-sub">🌄 {authT.mockMsg3}</div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <div className="mock-chat-avatar group-avatar">CC</div>
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">CloudChat Global 📣</span>
+                      <span className="mock-chat-time">08:06</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-typing">{authT.mockMsg2}</span>
+                      <span className="mock-chat-badge">12</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="fpt-mock-chat-item">
+                  <img src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&auto=format&fit=crop&q=80" alt="" className="mock-chat-avatar" />
+                  <div className="mock-chat-details">
+                    <div className="mock-chat-row">
+                      <span className="mock-chat-name">Vũ Thị Hương</span>
+                      <span className="mock-chat-time">08:06</span>
+                    </div>
+                    <div className="mock-chat-row-sub">
+                      <span className="mock-chat-sub">{authT.mockMsg1}</span>
+                      <span className="mock-chat-badge">2</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Cột phải Form đăng ký */}
+        <div className="fpt-auth-col">
+          <div className="fpt-top-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <button
               type="button"
-              onClick={() => {
-                setError('')
-                setAuthSuccess('')
-                setPassword('')
-                setConfirmPassword('')
-                setRegisterDisplayName('')
-                setPage('login')
-              }}
+              className="fpt-back-to-qr-btn"
+              onClick={() => setPage('login')}
+              style={{ margin: 0 }}
             >
-              Đăng nhập ngay
+              {authT.backToLogin}
             </button>
+
+            <div className="fpt-lang-selector">
+              <button
+                type="button"
+                className={`fpt-lang-btn ${loginLang === 'en' ? 'active' : ''}`}
+                onClick={() => handleSetLang('en')}
+              >
+                Tiếng Anh
+              </button>
+              <span className="fpt-lang-sep">|</span>
+              <button
+                type="button"
+                className={`fpt-lang-btn ${loginLang === 'vi' ? 'active' : ''}`}
+                onClick={() => handleSetLang('vi')}
+              >
+                Tiếng Việt
+              </button>
+            </div>
+          </div>
+
+          <div className="fpt-auth-center">
+            <div className="fpt-form-card">
+              <h2 className="fpt-form-title">{authT.registerTitle}</h2>
+              <p className="fpt-form-desc">{authT.registerSubtitle}</p>
+
+              <form onSubmit={handleRegister} className="fpt-login-form">
+                {/* Honeypot field - ẩn hoàn toàn để phát hiện bot tự động điền form */}
+                <input
+                  type="text"
+                  name="user_organization_hp"
+                  value={honeypotVal}
+                  onChange={(e) => setHoneypotVal(e.target.value)}
+                  style={{ display: 'none', opacity: 0, position: 'absolute', left: '-9999px', height: 0, width: 0 }}
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+
+                {/* Math challenge nếu thử thao tác quá nhiều lần */}
+                {authAttempts >= 2 && mathChallenge.q && (
+                  <div className="fpt-input-group" style={{ background: 'rgba(99, 102, 241, 0.08)', padding: '12px', borderRadius: 10, border: '1px solid rgba(99, 102, 241, 0.25)', marginBottom: 12 }}>
+                    <label className="fpt-input-label" style={{ color: '#818cf8', fontWeight: 600 }}>
+                      🛡️ Xác minh chống bot: {mathChallenge.q} = ?
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="Nhập kết quả số..."
+                      value={userMathAnswer}
+                      onChange={(e) => setUserMathAnswer(e.target.value)}
+                      className="fpt-text-input"
+                      required
+                      style={{ marginTop: 6 }}
+                    />
+                  </div>
+                )}
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.displayNameLabel}</label>
+                  <input
+                    type="text"
+                    placeholder={authT.displayNamePlaceholder}
+                    value={registerDisplayName}
+                    onChange={(e) => setRegisterDisplayName(e.target.value)}
+                    className="fpt-text-input"
+                    required
+                  />
+                </div>
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.registerEmailLabel}</label>
+                  <input
+                    type="email"
+                    placeholder={authT.emailPlaceholder}
+                    value={registerEmail}
+                    onChange={(e) => setRegisterEmail(e.target.value)}
+                    className="fpt-text-input"
+                    required
+                  />
+                </div>
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.passwordLabel}</label>
+                  <input
+                    type="password"
+                    placeholder={authT.passwordPlaceholder}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="fpt-text-input"
+                    required
+                  />
+                </div>
+
+                <div className="fpt-input-group">
+                  <label className="fpt-input-label">{authT.confirmPasswordLabel}</label>
+                  <input
+                    type="password"
+                    placeholder={authT.confirmPasswordPlaceholder}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="fpt-text-input"
+                    required
+                  />
+                </div>
+
+                {error && <div className="fpt-alert error">{error}</div>}
+                {authSuccess && <div className="fpt-alert success">{authSuccess}</div>}
+
+                <button type="submit" className="fpt-submit-primary" disabled={loading}>
+                  {loading ? authT.registeringBtn : authT.registerBtn}
+                </button>
+
+                <div className="fpt-register-switch">
+                  <span>{authT.hasAccount} </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError('')
+                      setAuthSuccess('')
+                      setPage('login')
+                    }}
+                  >
+                    {authT.signInBtn}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       </div>
@@ -3979,26 +6684,21 @@ function App() {
                     setShowMenu(false)
                     handleOpenProfileModal()
                   }}
-                  title="Xem hồ sơ & Đổi ảnh đại diện"
+                  title="Thông tin tài khoản"
                 >
                   <div className="tg-avatar sm tg-menu-avatar-wrap">
-                    {currentUser?.avatar_url ? (
-                      <img
-                        src={currentUser.avatar_url}
-                        alt=""
-                        className="avatar-img"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none'
-                        }}
-                      />
-                    ) : (
-                      (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
-                    )}
-                    <span className="tg-menu-avatar-badge" title="Đổi ảnh đại diện">📷</span>
+                    <img
+                      src={currentUser?.avatar_url || getDefaultAvatar(currentUser?.display_name || currentUser?.username)}
+                      alt=""
+                      className="avatar-img"
+                      onError={(e) => {
+                        e.currentTarget.src = getDefaultAvatar(currentUser?.display_name || currentUser?.username)
+                      }}
+                    />
                   </div>
                   <div className="tg-menu-user-info">
-                    <strong>{currentUser?.display_name || currentUser?.username || 'DuyKhang'}</strong>
-                    <span>@{currentUser?.username || 'user'}</span>
+                    <strong>{currentUser?.display_name || currentUser?.username || 'Người dùng'}</strong>
+                    <span>{currentUser?.email || currentUser?.username || 'user'}</span>
                   </div>
                 </div>
 
@@ -4022,141 +6722,40 @@ function App() {
                   </button>
                 )}
 
-                {/* ➕ Thêm bạn bè */}
+                {/* 🔒 Bảo mật: Chỉ hiển thị cho tài khoản đăng ký Email/Mật khẩu (Ẩn nếu đăng nhập bằng OAuth/Google) */}
+                {!isOAuthUser && (
+                  <button
+                    className="tg-menu-item"
+                    onClick={() => {
+                      setShowMenu(false)
+                      setNewPassword('')
+                      setConfirmNewPassword('')
+                      setSecurityError('')
+                      setSecuritySuccess('')
+                      setShowSecurityModal(true)
+                    }}
+                  >
+                    <span className="tg-menu-icon">
+                      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                      </svg>
+                    </span>
+                    <span>Bảo mật</span>
+                  </button>
+                )}
+
+
+                {/* ⚙ Cài đặt */}
                 <button
                   className="tg-menu-item"
                   onClick={() => {
                     setShowMenu(false)
-                    setShowAddFriendModal(true)
+                    setShowSettingsModal(true)
                   }}
                 >
                   <span className="tg-menu-icon">
                     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="8.5" cy="7" r="4"></circle>
-                      <line x1="20" y1="8" x2="20" y2="14"></line>
-                      <line x1="23" y1="11" x2="17" y2="11"></line>
-                    </svg>
-                  </span>
-                  <span>Thêm bạn bè</span>
-                </button>
-
-                {/* 📷 Mã QR của tôi */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    handleOpenMyQrModal()
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="7" height="7"></rect>
-                      <rect x="14" y="3" width="7" height="7"></rect>
-                      <rect x="14" y="14" width="7" height="7"></rect>
-                      <rect x="3" y="14" width="7" height="7"></rect>
-                    </svg>
-                  </span>
-                  <span>Mã QR của tôi</span>
-                  <span className="tg-menu-badge" style={{ background: 'rgba(99, 102, 241, 0.25)', color: '#818cf8', fontSize: 10 }}>Mới</span>
-                </button>
-
-                {/* 🎨 Hình nền trò chuyện */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    handleOpenWallpaperModal(activeChat ? 'chat' : 'global')
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.21-.64-1.67-.4-.45-.64-1.04-.64-1.66 0-1.38 1.12-2.5 2.5-2.5H18c3.31 0 6-2.69 6-6 0-4.96-5.37-7.67-12-7.67z"></path>
-                      <circle cx="6.5" cy="11.5" r="1.5"></circle>
-                      <circle cx="9.5" cy="7.5" r="1.5"></circle>
-                      <circle cx="14.5" cy="7.5" r="1.5"></circle>
-                      <circle cx="17.5" cy="11.5" r="1.5"></circle>
-                    </svg>
-                  </span>
-                  <span>Hình nền trò chuyện</span>
-                  <span className="tg-menu-badge" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: 10 }}>10 Theme</span>
-                </button>
-
-                {/* 👤 My Profile */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    handleOpenProfileModal()
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="12" cy="7" r="4"></circle>
-                    </svg>
-                  </span>
-                  <span>Hồ sơ</span>
-                </button>
-
-                {/* 👥 Bạn bè */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    setFolderTab('friends')
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="9" cy="7" r="4"></circle>
-                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                    </svg>
-                  </span>
-                  <span>Bạn bè</span>
-                  <span className="tg-menu-badge">{friends.length}</span>
-                </button>
-
-                {/* ✉️ Lời mời kết bạn */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    loadFriendRequests()
-                    loadSentFriendRequests()
-                    setFriendRequestsModalTab(friendRequests.length > 0 ? 'received' : 'sent')
-                    setShowFriendRequestsModal(true)
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                      <circle cx="8.5" cy="7" r="4"></circle>
-                      <polyline points="17 11 19 13 23 9"></polyline>
-                    </svg>
-                  </span>
-                  <span>Lời mời kết bạn</span>
-                  {friendRequests.length > 0 ? (
-                    <span className="tg-menu-badge tg-badge-highlight">{friendRequests.length}</span>
-                  ) : sentFriendRequests.length > 0 ? (
-                    <span className="tg-menu-badge">{sentFriendRequests.length}</span>
-                  ) : (
-                    <span className="tg-menu-badge">0</span>
-                  )}
-                </button>
-
-                {/* ⚙ Settings */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    handleOpenProfileModal()
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="3"></circle>
                       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                     </svg>
@@ -4188,7 +6787,7 @@ function App() {
           </div>
 
           {/* Telegram Search Bar */}
-          <div className="tg-search-bar">
+          <div className="tg-search-bar" style={{ flex: 1 }}>
             <svg className="tg-search-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8"></circle>
               <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
@@ -4199,23 +6798,52 @@ function App() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            {search && (
-              <button
-                className="tg-search-clear"
-                onClick={() => setSearch('')}
-                title="Xóa tìm kiếm"
-              >
-                ✕
-              </button>
-            )}
           </div>
+
+          {/* Nút bên phải thanh search: Khi đang search thì thay bằng dấu X (xóa tìm kiếm), khi bình thường hiện icon Thêm bạn bè */}
+          {search ? (
+            <button
+              type="button"
+              className="tg-add-friend-header-btn"
+              onClick={() => setSearch('')}
+              title="Xóa tìm kiếm"
+              aria-label="Xóa tìm kiếm"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="tg-add-friend-header-btn"
+              onClick={() => handleOpenAddFriendModal()}
+              title="Thêm bạn bè mới"
+              aria-label="Thêm bạn bè mới"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="8.5" cy="7" r="4"></circle>
+                <line x1="20" y1="8" x2="20" y2="14"></line>
+                <line x1="23" y1="11" x2="17" y2="11"></line>
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Global Search Results OR Telegram Folders & Chat List */}
         {search.trim() ? (
           <>
             {/* Thanh Tab phân loại tìm kiếm: Tất cả, Mọi người, Tin nhắn */}
-            <div className="tg-search-category-bar">
+            <div
+              className="tg-search-category-bar"
+              onWheel={(e) => {
+                if (e.deltaY !== 0) {
+                  e.currentTarget.scrollLeft += e.deltaY
+                }
+              }}
+            >
               <button
                 type="button"
                 className={`tg-search-pill-category ${searchCategoryTab === 'all' ? 'active' : ''}`}
@@ -4280,7 +6908,7 @@ function App() {
                     (searchUsersResults.length > 0 || searchGroupsResults.length > 0) && (
                       <div className="tg-search-section">
                         <div className="tg-search-section-title">
-                          👤 Mọi người & Nhóm ({searchUsersResults.length + searchGroupsResults.length})
+                          Mọi người & Nhóm ({searchUsersResults.length + searchGroupsResults.length})
                         </div>
 
                         {/* Render Nhóm khớp tên */}
@@ -4398,7 +7026,7 @@ function App() {
                     <div className="tg-search-section">
                       {(searchCategoryTab === 'all' && (searchUsersResults.length > 0 || searchGroupsResults.length > 0)) && (
                         <div className="tg-search-section-title">
-                          💬 Tin nhắn ({globalSearchResults.length})
+                          Tin nhắn ({globalSearchResults.length})
                         </div>
                       )}
 
@@ -4507,123 +7135,238 @@ function App() {
               >
                 <span>Bạn bè</span>
               </button>
-              {friendRequests.length > 0 && (
+              {(friendRequests.length > 0 || groupInvitations.length > 0) && (
                 <button
                   className={`tg-folder-tab ${folderTab === 'requests' ? 'active' : ''}`}
                   onClick={() => setFolderTab('requests')}
                 >
                   <span>Lời mời</span>
-                  <span className="tg-tab-badge">{friendRequests.length}</span>
+                  <span className="tg-tab-badge">{friendRequests.length + groupInvitations.length}</span>
                 </button>
               )}
             </div>
 
             {/* Chat / Friends / Requests List */}
             <div className="tg-chat-list">
-              {folderTab === 'requests' ? (
-                friendRequests.length > 0 ? (
-                  <div className="tg-friend-requests-list">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 6px' }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: '#8b96a7', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                        Lời mời đã nhận ({friendRequests.length})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          loadSentFriendRequests()
-                          setFriendRequestsModalTab('sent')
-                          setShowFriendRequestsModal(true)
-                        }}
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: '#8774e1',
-                          fontSize: 12,
-                          cursor: 'pointer',
-                          fontWeight: 600,
-                          padding: '2px 4px',
-                        }}
-                        title="Xem và thu hồi lời mời bạn đã gửi"
-                      >
-                        Đã gửi ({sentFriendRequests.length}) ↗
-                      </button>
+              {/* Lời mời tham gia nhóm đang chờ người dùng xác nhận */}
+              {groupInvitations.length > 0 && folderTab !== 'requests' && (
+                <div className="tg-group-invitation-banner">
+                  <div className="tg-group-invitation-title">
+                    <span>📨 Lời mời vào nhóm ({groupInvitations.length})</span>
+                  </div>
+                  {groupInvitations.map((inv) => (
+                    <div key={inv.group_id} className="tg-group-invitation-item">
+                      <div className="tg-group-invitation-avatar">
+                        {inv.avatar_url ? (
+                          <img src={inv.avatar_url} alt="" />
+                        ) : (
+                          (inv.name || 'G').charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div className="tg-group-invitation-info">
+                        <div className="tg-group-invitation-name">{inv.name}</div>
+                        <div className="tg-group-invitation-desc">Mời bởi {inv.creator_name}</div>
+                      </div>
+                      <div className="tg-group-invitation-actions">
+                        <button
+                          type="button"
+                          className="tg-group-invitation-accept"
+                          onClick={() => handleAcceptGroupInvitation(inv)}
+                        >
+                          Đồng ý
+                        </button>
+                        <button
+                          type="button"
+                          className="tg-group-invitation-decline"
+                          onClick={() => handleDeclineGroupInvitation(inv)}
+                        >
+                          Từ chối
+                        </button>
+                      </div>
                     </div>
-                    {friendRequests.map((req) => {
-                      const reqName = req.display_name || req.username
-                      return (
-                        <div className="tg-friend-req-card" key={req.id}>
-                          <div className="tg-friend-req-user">
-                            <div
-                              className="tg-avatar sm"
-                              style={{
-                                background: !req.avatar_url
-                                  ? getAvatarGradient(req.user_id || req.username)
-                                  : undefined,
-                              }}
-                            >
-                              {req.avatar_url ? (
-                                <img
-                                  src={req.avatar_url}
-                                  alt=""
-                                  className="avatar-img"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none'
-                                  }}
-                                />
-                              ) : (
-                                getFriendInitials(reqName)
-                              )}
-                            </div>
-                            <div className="tg-friend-req-info">
-                              <div className="tg-friend-req-top">
-                                <span className="tg-friend-req-name" title={reqName}>
-                                  {reqName}
-                                </span>
-                                <span className="tg-friend-req-time">
-                                  {formatChatListTime(req.created_at)}
-                                </span>
-                              </div>
-                              <span className="tg-friend-req-uname">@{req.username}</span>
-                              {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
-                            </div>
-                          </div>
+                  ))}
+                </div>
+              )}
 
-                          <div className="tg-friend-req-actions">
-                            <button
-                              className="tg-req-accept-btn"
-                              onClick={() => handleAcceptFriendRequest(req.id)}
-                            >
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                              </svg>
-                              Đồng ý
-                            </button>
-                            <button
-                              className="tg-req-reject-btn"
-                              onClick={() => handleRejectFriendRequest(req.id)}
-                            >
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                              </svg>
-                              Từ chối
-                            </button>
-                          </div>
+              {folderTab === 'requests' ? (
+                friendRequests.length > 0 || groupInvitations.length > 0 ? (
+                  <div className="tg-friend-requests-list">
+                    {/* Danh sách lời mời vào nhóm trong tab Lời mời */}
+                    {groupInvitations.length > 0 && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 8px' }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tg-primary, #8774e1)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                            👥 Lời mời vào nhóm ({groupInvitations.length})
+                          </span>
                         </div>
-                      )
-                    })}
+                        {groupInvitations.map((inv) => (
+                          <div className="tg-friend-req-card" key={`tab-group-inv-${inv.group_id}`} style={{ marginBottom: 8 }}>
+                            <div className="tg-friend-req-user">
+                              <div
+                                className="tg-avatar sm"
+                                style={{
+                                  background: !inv.avatar_url
+                                    ? getAvatarGradient(inv.group_id || inv.name)
+                                    : undefined,
+                                }}
+                              >
+                                {inv.avatar_url ? (
+                                  <img
+                                    src={inv.avatar_url}
+                                    alt=""
+                                    className="avatar-img"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none'
+                                    }}
+                                  />
+                                ) : (
+                                  getFriendInitials(inv.name)
+                                )}
+                              </div>
+                              <div className="tg-friend-req-info">
+                                <div className="tg-friend-req-top">
+                                  <span className="tg-friend-req-name" title={inv.name}>
+                                    {inv.name}
+                                  </span>
+                                  <span className="tg-friend-req-time">
+                                    {formatChatListTime(inv.created_at)}
+                                  </span>
+                                </div>
+                                <span className="tg-friend-req-uname">Mời bởi {inv.creator_name}</span>
+                              </div>
+                            </div>
+                            <div className="tg-friend-req-actions">
+                              <button
+                                className="tg-req-accept-btn"
+                                onClick={() => handleAcceptGroupInvitation(inv)}
+                              >
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                                Đồng ý
+                              </button>
+                              <button
+                                className="tg-req-reject-btn"
+                                onClick={() => handleDeclineGroupInvitation(inv)}
+                              >
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                                Từ chối
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Danh sách lời mời kết bạn */}
+                    {friendRequests.length > 0 && (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 6px' }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#8b96a7', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                            📥 Lời mời kết bạn ({friendRequests.length})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              loadSentFriendRequests()
+                              setFriendRequestsModalTab('sent')
+                              setShowFriendRequestsModal(true)
+                            }}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#8774e1',
+                              fontSize: 12,
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                              padding: '2px 4px',
+                            }}
+                            title="Xem và thu hồi lời mời bạn đã gửi"
+                          >
+                            Đã gửi ({sentFriendRequests.length}) ↗
+                          </button>
+                        </div>
+                        {friendRequests.map((req) => {
+                          const reqName = req.display_name || req.username
+                          return (
+                            <div className="tg-friend-req-card" key={req.id}>
+                              <div className="tg-friend-req-user">
+                                <div
+                                  className="tg-avatar sm"
+                                  style={{
+                                    background: !req.avatar_url
+                                      ? getAvatarGradient(req.user_id || req.username)
+                                      : undefined,
+                                  }}
+                                >
+                                  {req.avatar_url ? (
+                                    <img
+                                      src={req.avatar_url}
+                                      alt=""
+                                      className="avatar-img"
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none'
+                                      }}
+                                    />
+                                  ) : (
+                                    getFriendInitials(reqName)
+                                  )}
+                                </div>
+                                <div className="tg-friend-req-info">
+                                  <div className="tg-friend-req-top">
+                                    <span className="tg-friend-req-name" title={reqName}>
+                                      {reqName}
+                                    </span>
+                                    <span className="tg-friend-req-time">
+                                      {formatChatListTime(req.created_at)}
+                                    </span>
+                                  </div>
+                                  <span className="tg-friend-req-uname">@{req.username}</span>
+                                  {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
+                                </div>
+                              </div>
+
+                              <div className="tg-friend-req-actions">
+                                <button
+                                  className="tg-req-accept-btn"
+                                  onClick={() => handleAcceptFriendRequest(req.id)}
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                  </svg>
+                                  Đồng ý
+                                </button>
+                                <button
+                                  className="tg-req-reject-btn"
+                                  onClick={() => handleRejectFriendRequest(req.id)}
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                  </svg>
+                                  Từ chối
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </>
+                    )}
                   </div>
                 ) : (
                   <div className="tg-empty-list">
                     <div style={{ fontSize: 32, marginBottom: 8 }}>📬</div>
-                    <p>Không có lời mời kết bạn nào</p>
+                    <p>Không có lời mời nào</p>
                     <span style={{ fontSize: 12, color: '#727e90', display: 'block', maxWidth: 220, margin: '4px auto 0' }}>
                       Khi có người gửi lời mời, bạn có thể đồng ý hoặc từ chối tại đây.
                     </span>
                     <button
                       className="secondary-button"
                       style={{ marginTop: 14, fontSize: 12, padding: '7px 14px' }}
-                      onClick={() => setShowAddFriendModal(true)}
+                      onClick={() => handleOpenAddFriendModal()}
                     >
                       + Thêm bạn bè mới
                     </button>
@@ -4631,117 +7374,138 @@ function App() {
                 )
               ) : folderTab === 'groups' ? (
                 groupsSorted.length > 0 ? (
-                  groupsSorted.map((group) => {
-                    const isPinned = pinnedChats.includes(group.id)
-                    const isHidden = hiddenChats.includes(group.id)
-                    const isMenuOpen = activeChatMenuId === group.id
-                    return (
-                      <div
-                        className={`tg-chat-item-wrapper ${activeChat?.id === group.id ? 'active' : ''}`}
-                        key={group.id}
+                  <>
+                    <div className="tg-create-group-bar">
+                      <button
+                        type="button"
+                        className="tg-create-group-btn"
+                        onClick={() => {
+                          setSelectedGroupMemberIds([])
+                          setGroupNameInput('')
+                          setGroupAvatarInput('')
+                          setCreateGroupError('')
+                          setShowCreateGroupModal(true)
+                        }}
                       >
-                        <button
-                          className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
-                          onClick={() => setActiveChat(group)}
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19"></line>
+                          <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                        <span>Tạo nhóm chat mới</span>
+                      </button>
+                    </div>
+                    {groupsSorted.map((group) => {
+                      const isPinned = pinnedChats.includes(group.id)
+                      const isHidden = hiddenChats.includes(group.id)
+                      const isMenuOpen = activeChatMenuId === group.id
+                      return (
+                        <div
+                          className={`tg-chat-item-wrapper ${activeChat?.id === group.id ? 'active' : ''}`}
+                          key={group.id}
                         >
-                          <div
-                            className="tg-avatar"
-                            style={{
-                              background: !group.avatar_url
-                                ? getAvatarGradient(group.id || group.name)
-                                : undefined,
-                            }}
-                          >
-                            {group.avatar_url ? (
-                              <img
-                                src={group.avatar_url}
-                                alt={group.name}
-                                className="avatar-img"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none'
-                                }}
-                              />
-                            ) : (
-                              getFriendInitials(group.name)
-                            )}
-                          </div>
-
-                          <div className="tg-chat-info">
-                            <div className="tg-chat-top">
-                              <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
-                                {group.name}
-                                {group.is_community ? (
-                                  <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
-                                    CỘNG ĐỒNG
-                                  </span>
-                                ) : (
-                                  <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
-                                    {group.member_count} tv
-                                  </span>
-                                )}
-                              </span>
-                              <span className="tg-chat-time">
-                                {formatChatListTime(group.last_message_time || group.created_at)}
-                              </span>
-                            </div>
-                            <div className="tg-chat-bottom">
-                              <span className="tg-chat-preview">
-                                {group.last_message || 'Chưa có tin nhắn trong nhóm'}
-                              </span>
-                            </div>
-                          </div>
-                        </button>
-
-                        {/* Nút 3 chấm trên từng nhóm */}
-                        <div className="tg-chat-item-actions">
                           <button
-                            type="button"
-                            className="tg-chat-more-btn"
-                            title="Tùy chọn cuộc trò chuyện"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setActiveChatMenuId(isMenuOpen ? null : group.id)
-                            }}
+                            className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
+                            onClick={() => setActiveChat(group)}
                           >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                              <circle cx="12" cy="5" r="2.2"></circle>
-                              <circle cx="12" cy="12" r="2.2"></circle>
-                              <circle cx="12" cy="19" r="2.2"></circle>
-                            </svg>
+                            <div
+                              className="tg-avatar"
+                              style={{
+                                background: !group.avatar_url
+                                  ? getAvatarGradient(group.id || group.name)
+                                  : undefined,
+                              }}
+                            >
+                              {group.avatar_url ? (
+                                <img
+                                  src={group.avatar_url}
+                                  alt={group.name}
+                                  className="avatar-img"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none'
+                                  }}
+                                />
+                              ) : (
+                                getFriendInitials(group.name)
+                              )}
+                            </div>
+
+                            <div className="tg-chat-info">
+                              <div className="tg-chat-top">
+                                <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
+                                  {group.name}
+                                  {group.is_community ? (
+                                    <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
+                                      CỘNG ĐỒNG
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
+                                      {group.member_count} tv
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="tg-chat-time">
+                                  {formatChatListTime(group.last_message_time || group.created_at)}
+                                </span>
+                              </div>
+                              <div className="tg-chat-bottom">
+                                <span className="tg-chat-preview">
+                                  {group.last_message || 'Chưa có tin nhắn trong nhóm'}
+                                </span>
+                              </div>
+                            </div>
                           </button>
 
-                          {/* Context Menu Dropdown */}
-                          {isMenuOpen && (
-                            <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                className="tg-chat-menu-action"
-                                onClick={(e) => handleTogglePinChat(group.id, e)}
-                              >
-                                <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="tg-chat-menu-action"
-                                onClick={(e) => handleToggleHideChat(group.id, e)}
-                              >
-                                <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
-                              </button>
-                            </div>
-                          )}
+                          {/* Nút 3 chấm trên từng nhóm */}
+                          <div className="tg-chat-item-actions">
+                            <button
+                              type="button"
+                              className="tg-chat-more-btn"
+                              title="Tùy chọn cuộc trò chuyện"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setActiveChatMenuId(isMenuOpen ? null : group.id)
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="5" r="2.2"></circle>
+                                <circle cx="12" cy="12" r="2.2"></circle>
+                                <circle cx="12" cy="19" r="2.2"></circle>
+                              </svg>
+                            </button>
+
+                            {/* Context Menu Dropdown */}
+                            {isMenuOpen && (
+                              <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  className="tg-chat-menu-action"
+                                  onClick={(e) => handleTogglePinChat(group.id, e)}
+                                >
+                                  <span>{isPinned ? 'Bỏ ghim chat' : 'Ghim đoạn chat'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="tg-chat-menu-action"
+                                  onClick={(e) => handleToggleHideChat(group.id, e)}
+                                >
+                                  <span>{isHidden ? 'Hiện lại chat' : 'Ẩn trò chuyện'}</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })
+                      )
+                    })}
+                  </>
                 ) : (
                   <div className="tg-empty-list">
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
-                    <p>{showHiddenSection ? 'Không có nhóm nào bị ẩn' : 'Chưa tham gia nhóm chat nào'}</p>
+                    <p>{showHiddenSection ? 'Không có nhóm nào bị ẩn.' : 'Chưa tham gia nhóm chat nào.'}</p>
                     {!showHiddenSection && (
                       <button
-                        className="primary-button"
-                        style={{ marginTop: 12, fontSize: 13, padding: '8px 16px' }}
+                        type="button"
+                        className="secondary-button"
+                        style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
                         onClick={() => {
                           setSelectedGroupMemberIds([])
                           setGroupNameInput('')
@@ -4766,7 +7530,7 @@ function App() {
 
                       return (
                         <div
-                          className={`tg-chat-item-wrapper ${activeChat?.id === item.id ? 'active' : ''}`}
+                          className={`tg-chat-item-wrapper ${activeChat?.id === item.id ? 'active' : ''} ${isMenuOpen ? 'has-open-menu' : ''}`}
                           key={item.id}
                         >
                           <button
@@ -4781,7 +7545,13 @@ function App() {
                                   : undefined,
                               }}
                             >
-                              {item.avatar_url ? (
+                              {item.id === CLOUDCHAT_BOT_ID || item.username === 'cloudchat' ? (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', background: 'linear-gradient(135deg, #2563eb, #3b82f6)', borderRadius: '50%' }}>
+                                  <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff">
+                                    <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
+                                  </svg>
+                                </div>
+                              ) : item.avatar_url ? (
                                 <img
                                   src={item.avatar_url}
                                   alt={isGroup ? item.name : item.username}
@@ -4793,7 +7563,7 @@ function App() {
                               ) : (
                                 getFriendInitials(isGroup ? item.name : getFriendName(item))
                               )}
-                              {!isGroup && (
+                              {!isGroup && item.id !== CLOUDCHAT_BOT_ID && (
                                 <div className={`tg-online-dot ${item.is_online ? 'online' : 'offline'}`} />
                               )}
                             </div>
@@ -4803,6 +7573,7 @@ function App() {
                                 <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                   {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
                                   {isGroup ? item.name : getFriendName(item)}
+                                  {(item.is_verified || item.username === 'cloudchat') && <VerifiedBadge size={15} />}
                                   {isGroup && item.is_community && (
                                     <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
                                       CỘNG ĐỒNG
@@ -4855,7 +7626,7 @@ function App() {
                                     className="tg-chat-menu-action highlight"
                                     onClick={(e) => handleStartGroupWithFriend(item, e)}
                                   >
-                                    <span>👥 Thêm nhóm mới (+)</span>
+                                    <span>Thêm nhóm mới (+)</span>
                                   </button>
                                 )}
                                 <button
@@ -4863,15 +7634,41 @@ function App() {
                                   className="tg-chat-menu-action"
                                   onClick={(e) => handleTogglePinChat(item.id, e)}
                                 >
-                                  <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
+                                  <span>{isPinned ? 'Bỏ ghim chat' : 'Ghim đoạn chat'}</span>
                                 </button>
                                 <button
                                   type="button"
                                   className="tg-chat-menu-action"
                                   onClick={(e) => handleToggleHideChat(item.id, e)}
                                 >
-                                  <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
+                                  <span>{isHidden ? 'Hiện lại chat' : 'Ẩn trò chuyện'}</span>
                                 </button>
+                                {!isGroup && item.id !== CLOUDCHAT_BOT_ID && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="tg-chat-menu-action danger"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setActiveChatMenuId(null)
+                                        handleClearChatHistory(item)
+                                      }}
+                                    >
+                                      <span>Xoá lịch sử trò chuyện</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`tg-chat-menu-action ${blockedUserIds.includes(String(item.id)) ? '' : 'danger'}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setActiveChatMenuId(null)
+                                        handleToggleBlockUser(item)
+                                      }}
+                                    >
+                                      <span>{blockedUserIds.includes(String(item.id)) ? 'Bỏ chặn' : 'Chặn người dùng'}</span>
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             )}
                           </div>
@@ -4886,7 +7683,7 @@ function App() {
                       <button
                         className="secondary-button"
                         style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
-                        onClick={() => setShowAddFriendModal(true)}
+                        onClick={() => handleOpenAddFriendModal()}
                       >
                         + Thêm bạn bè để bắt đầu
                       </button>
@@ -4906,7 +7703,7 @@ function App() {
 
                         return (
                           <div
-                            className={`tg-chat-item-wrapper ${activeChat?.id === friend.id ? 'active' : ''}`}
+                            className={`tg-chat-item-wrapper ${activeChat?.id === friend.id ? 'active' : ''} ${isMenuOpen ? 'has-open-menu' : ''}`}
                             key={friend.id}
                           >
                             <button
@@ -4958,9 +7755,9 @@ function App() {
                                 }}
                               >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                <circle cx="12" cy="5" r="2.2"></circle>
-                                <circle cx="12" cy="12" r="2.2"></circle>
-                                <circle cx="12" cy="19" r="2.2"></circle>
+                                  <circle cx="12" cy="5" r="2.2"></circle>
+                                  <circle cx="12" cy="12" r="2.2"></circle>
+                                  <circle cx="12" cy="19" r="2.2"></circle>
                                 </svg>
                               </button>
 
@@ -4972,21 +7769,43 @@ function App() {
                                     className="tg-chat-menu-action highlight"
                                     onClick={(e) => handleStartGroupWithFriend(friend, e)}
                                   >
-                                    <span>👥 Thêm nhóm mới (+)</span>
+                                    <span>Thêm nhóm mới (+)</span>
                                   </button>
                                   <button
                                     type="button"
                                     className="tg-chat-menu-action"
                                     onClick={(e) => handleTogglePinChat(friend.id, e)}
                                   >
-                                    <span>{isPinned ? '📌 Bỏ ghim chat' : '📌 Ghim đoạn chat'}</span>
+                                    <span>{isPinned ? 'Bỏ ghim chat' : 'Ghim đoạn chat'}</span>
                                   </button>
                                   <button
                                     type="button"
                                     className="tg-chat-menu-action"
                                     onClick={(e) => handleToggleHideChat(friend.id, e)}
                                   >
-                                    <span>{isHidden ? '👁️ Hiện lại chat' : '👁️‍🗨️ Ẩn trò chuyện'}</span>
+                                    <span>{isHidden ? 'Hiện lại chat' : 'Ẩn trò chuyện'}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="tg-chat-menu-action danger"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setActiveChatMenuId(null)
+                                      handleClearChatHistory(friend)
+                                    }}
+                                  >
+                                    <span>Xoá lịch sử trò chuyện</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`tg-chat-menu-action ${blockedUserIds.includes(String(friend.id)) ? '' : 'danger'}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setActiveChatMenuId(null)
+                                      handleToggleBlockUser(friend)
+                                    }}
+                                  >
+                                    <span>{blockedUserIds.includes(String(friend.id)) ? 'Bỏ chặn' : 'Chặn người dùng'}</span>
                                   </button>
                                 </div>
                               )}
@@ -5002,7 +7821,7 @@ function App() {
                     <button
                       className="secondary-button"
                       style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
-                      onClick={() => setShowAddFriendModal(true)}
+                      onClick={() => handleOpenAddFriendModal()}
                     >
                       + Thêm bạn bè để bắt đầu
                     </button>
@@ -5016,692 +7835,975 @@ function App() {
 
       {/* Telegram Right Main Area: When no chat is clicked, shows wallpaper with centered pill */}
       <main className="tg-main-area">
-        {/* Dynamic Chat Color / Background Layer (Màu nền thuần túy sắc nét 100%, không mờ) */}
-        {currentChatWallpaper && currentChatWallpaper.value && (
-          <div
-            className="tg-wallpaper-layer"
-            style={{
-              background:
-                currentChatWallpaper.type === 'custom' || currentChatWallpaper.type === 'url'
-                  ? `url("${currentChatWallpaper.value}") center/cover no-repeat`
-                  : currentChatWallpaper.value,
-            }}
-          />
-        )}
-
-        {activeChat ? (
-          <div className="tg-chat-window">
-            {/* Chat Header */}
-            <header className="tg-chat-header">
-              <div
-                className="tg-chat-header-left"
-                style={{ cursor: 'pointer' }}
-                onClick={() => setShowChatInfo((prev) => !prev)}
-                title="Bấm để xem thông tin hội thoại"
-              >
-                <button
-                  className="tg-icon-btn tg-back-btn"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setActiveChat(null)
-                  }}
-                  title="Quay lại danh sách chat"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="19" y1="12" x2="5" y2="12"></line>
-                    <polyline points="12 19 5 12 12 5"></polyline>
-                  </svg>
-                </button>
-                <div className="tg-avatar sm">
-                  {activeChat.avatar_url ? (
-                    <img
-                      src={activeChat.avatar_url}
-                      alt={activeChat.username || activeChat.name}
-                      className="avatar-img"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none'
-                      }}
-                    />
-                  ) : activeChat.is_group ? (
-                    getFriendInitials(activeChat.name)
-                  ) : (
-                    getFriendName(activeChat).charAt(0).toUpperCase()
-                  )}
-                  {!activeChat.is_group && (
-                    <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
-                  )}
-                </div>
-                <div className="tg-header-details">
-                  <strong>
-                    {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
-                  </strong>
-                  <span className={`tg-header-status ${activeChat.is_group ? 'online' : (activeChat.is_online ? 'online' : 'offline')}`}>
-                    {activeChat.is_group
-                      ? activeChat.is_community
-                        ? `🚀 Cộng đồng • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên`
-                        : `👥 Nhóm chat • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên (tối đa 50)`
-                      : formatUserStatus(activeChat)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="tg-header-actions">
-                {/* Nút Đổi hình nền cuộc trò chuyện */}
-                <button
-                  className="tg-icon-btn"
-                  title="Đổi hình nền cuộc trò chuyện (10 Theme 3D hoặc tải ảnh từ máy)"
-                  onClick={() => handleOpenWallpaperModal('chat')}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.21-.64-1.67-.4-.45-.64-1.04-.64-1.66 0-1.38 1.12-2.5 2.5-2.5H18c3.31 0 6-2.69 6-6 0-4.96-5.37-7.67-12-7.67z"></path>
-                    <circle cx="6.5" cy="11.5" r="1.5"></circle>
-                    <circle cx="9.5" cy="7.5" r="1.5"></circle>
-                    <circle cx="14.5" cy="7.5" r="1.5"></circle>
-                    <circle cx="17.5" cy="11.5" r="1.5"></circle>
-                  </svg>
-                </button>
-
-                {/* Nút tìm kiếm trong đoạn chat */}
-                <button
-                  className={`tg-icon-btn ${showChatSearch ? 'active' : ''}`}
-                  title="Tìm kiếm trong đoạn chat"
-                  onClick={() => setShowChatSearch((prev) => !prev)}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                </button>
-
-                {/* Nút i để xem Thông tin hội thoại */}
-                <button
-                  className={`tg-icon-btn ${showChatInfo ? 'active' : ''}`}
-                  title="Thông tin hội thoại"
+        <ErrorBoundary key={activeChat ? String(activeChat.id) : 'empty'}>
+          {activeChat ? (
+            <div className="tg-chat-window">
+              {/* Chat Header */}
+              <header className="tg-chat-header">
+                <div
+                  className="tg-chat-header-left"
+                  style={{ cursor: 'pointer' }}
                   onClick={() => setShowChatInfo((prev) => !prev)}
+                  title="Bấm để xem thông tin hội thoại"
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="16" x2="12" y2="12"></line>
-                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                  </svg>
-                </button>
-              </div>
-            </header>
-
-            {/* In-chat Search Bar (Thanh tìm kiếm trong đoạn chat) */}
-            {showChatSearch && (
-              <div className="tg-inchat-search-bar">
-                <div className="tg-inchat-search-input-wrap">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#727e90' }}>
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                  <input
-                    type="text"
-                    placeholder="Tìm kiếm tin nhắn trong đoạn chat..."
-                    value={chatSearchQuery}
-                    onChange={(e) => setChatSearchQuery(e.target.value)}
-                    autoFocus
-                  />
-                  {chatSearchQuery && (
-                    <span className="tg-search-count-badge">
-                      {matchingMessageIds.length > 0
-                        ? `${chatSearchIndex + 1} / ${matchingMessageIds.length}`
-                        : '0 kết quả'}
+                  <button
+                    className="tg-icon-btn tg-back-btn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setActiveChat(null)
+                    }}
+                    title="Quay lại danh sách chat"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="19" y1="12" x2="5" y2="12"></line>
+                      <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                  </button>
+                  <div className="tg-avatar sm">
+                    {activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat' ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', background: 'linear-gradient(135deg, #2563eb, #3b82f6)', borderRadius: '50%' }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#ffffff">
+                          <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
+                        </svg>
+                      </div>
+                    ) : activeChat.avatar_url ? (
+                      <img
+                        src={activeChat.avatar_url}
+                        alt={activeChat.username || activeChat.name}
+                        className="avatar-img"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none'
+                        }}
+                      />
+                    ) : activeChat.is_group ? (
+                      getFriendInitials(activeChat.name)
+                    ) : (
+                      <img
+                        src={getDefaultAvatar(getFriendName(activeChat))}
+                        alt=""
+                        className="avatar-img"
+                      />
+                    )}
+                    {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && (
+                      <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
+                    )}
+                  </div>
+                  <div className="tg-header-details">
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
+                      {(activeChat.is_verified || activeChat.username === 'cloudchat') && <VerifiedBadge size={16} />}
+                    </strong>
+                    <span className={`tg-header-status ${activeChat.is_group ? 'online' : (activeChat.is_online ? 'online' : 'offline')}`}>
+                      {activeChat.is_system_bot || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat'
+                        ? 'Kênh thông báo'
+                        : activeChat.is_group
+                          ? `👥 Nhóm chat • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên`
+                          : formatUserStatus(activeChat)}
                     </span>
-                  )}
+                  </div>
                 </div>
 
-                <div className="tg-inchat-search-actions">
+                <div className="tg-header-actions">
+
+                  {/* Nút tìm kiếm trong đoạn chat */}
                   <button
-                    className="tg-search-nav-btn"
-                    title="Tin nhắn trước"
-                    onClick={handlePrevSearchMatch}
-                    disabled={matchingMessageIds.length === 0}
+                    className={`tg-icon-btn ${showChatSearch ? 'active' : ''}`}
+                    title="Tìm kiếm trong đoạn chat"
+                    onClick={() => setShowChatSearch((prev) => !prev)}
                   >
-                    ▲
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"></circle>
+                      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
                   </button>
+
+                  {/* Nút i để xem Thông tin hội thoại */}
                   <button
-                    className="tg-search-nav-btn"
-                    title="Tin nhắn tiếp theo"
-                    onClick={handleNextSearchMatch}
-                    disabled={matchingMessageIds.length === 0}
+                    className={`tg-icon-btn ${showChatInfo ? 'active' : ''}`}
+                    title="Thông tin hội thoại"
+                    onClick={() => setShowChatInfo((prev) => !prev)}
                   >
-                    ▼
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="12" y1="16" x2="12" y2="12"></line>
+                      <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
                   </button>
+                </div>
+              </header>
+
+              {/* In-chat Search Bar (Thanh tìm kiếm trong đoạn chat) */}
+              {showChatSearch && (
+                <div className="tg-inchat-search-bar">
+                  <div className="tg-inchat-search-input-wrap">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#727e90' }}>
+                      <circle cx="11" cy="11" r="8"></circle>
+                      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input
+                      type="text"
+                      placeholder="Tìm kiếm tin nhắn trong đoạn chat..."
+                      value={chatSearchQuery}
+                      onChange={(e) => setChatSearchQuery(e.target.value)}
+                      autoFocus
+                    />
+                    {chatSearchQuery && (
+                      <span className="tg-search-count-badge">
+                        {matchingMessageIds.length > 0
+                          ? `${chatSearchIndex + 1} / ${matchingMessageIds.length}`
+                          : '0 kết quả'}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="tg-inchat-search-actions">
+                    <button
+                      className="tg-search-nav-btn"
+                      title="Tin nhắn trước"
+                      onClick={handlePrevSearchMatch}
+                      disabled={matchingMessageIds.length === 0}
+                    >
+                      ▲
+                    </button>
+                    <button
+                      className="tg-search-nav-btn"
+                      title="Tin nhắn tiếp theo"
+                      onClick={handleNextSearchMatch}
+                      disabled={matchingMessageIds.length === 0}
+                    >
+                      ▼
+                    </button>
+                    <button
+                      className="tg-search-nav-btn"
+                      title="Đóng tìm kiếm"
+                      onClick={() => {
+                        setShowChatSearch(false)
+                        setChatSearchQuery('')
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Telegram Messages Scroll */}
+              <div className="tg-messages-scroll" ref={messagesContainerRef}>
+                {chatLoading ? (
+                  <div className="tg-messages-loading">
+                    <div className="tg-spinner" />
+                    <span>Đang tải tin nhắn...</span>
+                  </div>
+                ) : messages.length === 0 ? (
+                  <div className="tg-empty-chat-state">
+                    <div className="tg-avatar lg">
+                      {activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat' ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', background: 'linear-gradient(135deg, #2563eb, #3b82f6)', borderRadius: '50%' }}>
+                          <svg width="42" height="42" viewBox="0 0 24 24" fill="#ffffff">
+                            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
+                          </svg>
+                        </div>
+                      ) : activeChat.avatar_url ? (
+                        <img src={activeChat.avatar_url} alt="" className="avatar-img" />
+                      ) : (
+                        (getFriendName(activeChat) || 'U').charAt(0).toUpperCase()
+                      )}
+                    </div>
+                    <h3 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                      {getFriendName(activeChat)}
+                      {(activeChat.is_verified || activeChat.username === 'cloudchat') && <VerifiedBadge size={20} />}
+                    </h3>
+                    <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
+
+                    {/* Nút Kết Bạn hiển thị trực tiếp khi search và bấm vào người bạn chưa kết bạn (Ảnh 3) */}
+                    {!activeChat.is_group && !activeChat.is_system_bot && !friends.some((f) => String(f.id) === String(activeChat.id)) && (
+                      <div className="tg-chat-empty-friend-prompt">
+                        <p className="tg-empty-friend-subtext">
+                          Để nhắn tin, bạn cần gửi lời kết bạn với người này!
+                        </p>
+                        {friendRequests.some((r) => String(r.user_id) === String(activeChat.id) || String(r.id) === String(activeChat.id)) ? (
+                          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              onClick={() => {
+                                const req = friendRequests.find((r) => String(r.user_id) === String(activeChat.id) || String(r.id) === String(activeChat.id))
+                                if (req) handleAcceptFriendRequest(req.id)
+                              }}
+                            >
+                              ✓ Đồng ý kết bạn
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => {
+                                const req = friendRequests.find((r) => String(r.user_id) === String(activeChat.id) || String(r.id) === String(activeChat.id))
+                                if (req) handleRejectFriendRequest(req.id)
+                              }}
+                            >
+                              ✕ Từ chối
+                            </button>
+                          </div>
+                        ) : sentFriendRequests.some((r) => String(r.friend_id) === String(activeChat.id) || String(r.id) === String(activeChat.id)) ? (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled
+                            style={{ opacity: 0.85, cursor: 'default' }}
+                          >
+                            ⏳ Đã gửi lời mời (Đang chờ đồng ý)
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="primary-button tg-empty-add-friend-btn"
+                            onClick={() => handleSendFriendRequest(activeChat.id)}
+                            disabled={searchFriendLoading}
+                          >
+                            {searchFriendLoading ? 'Đang gửi...' : '+ Gửi lời mời kết bạn'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  (() => {
+                    const latestMineMsg = [...messages].reverse().find(
+                      (m) => currentUser?.id != null && String(m.sender_id) === String(currentUser.id)
+                    )
+                    const latestMineId = latestMineMsg ? latestMineMsg.id : null
+
+                    // QUY TẮC HIỆU NĂNG: Chỉ hiển thị visibleCount (mặc định 20) tin nhắn gần nhất để mượt mà, không lag
+                    const displayedMessages = messages.slice(-visibleCount)
+                    const hiddenCount = Math.max(0, messages.length - visibleCount)
+
+                    return (
+                      <>
+                        {/* Nút Tải Thêm Tin Nhắn Cũ (Giảm Lag) */}
+                        {hiddenCount > 0 && (
+                          <div className="tg-load-more-container">
+                            <button
+                              type="button"
+                              className="tg-load-more-btn"
+                              onClick={() => setVisibleCount((prev) => prev + 20)}
+                            >
+                              <span>Tải thêm tin nhắn</span>
+                              <span className="tg-load-more-badge">
+                                Còn {hiddenCount} tin
+                              </span>
+                            </button>
+                          </div>
+                        )}
+
+                        {displayedMessages.map((item, idx) => {
+                          const isMine = Boolean(
+                            currentUser?.id != null &&
+                            String(item.sender_id) === String(currentUser.id)
+                          )
+                          const isRevoked = isRevokedMessage(item.content)
+                          const isLatestMine = isMine && item.id === latestMineId
+                          const isCurrentMatch =
+                            matchingMessageIds.length > 0 &&
+                            matchingMessageIds[chatSearchIndex] === item.id
+
+                          const currentDateStr = formatDate(item.created_at)
+                          const prevDateStr = idx > 0 ? formatDate(displayedMessages[idx - 1].created_at) : null
+                          const showDateBubble = idx === 0 || (currentDateStr && currentDateStr !== prevDateStr)
+
+                          const prevItem = idx > 0 ? displayedMessages[idx - 1] : null
+                          const isFirstInSequence =
+                            idx === 0 ||
+                            showDateBubble ||
+                            String(prevItem?.sender_id) !== String(item.sender_id)
+
+                          const isActionMenuOpen = activeActionMsgId === item.id
+
+                          return (
+                            <div key={item.id}>
+                              {showDateBubble && currentDateStr && (
+                                <div className="tg-bubble-date">{currentDateStr}</div>
+                              )}
+                              <div
+                                className={`tg-msg-row ${isMine ? 'mine' : 'theirs'} ${isFirstInSequence ? 'first-in-sequence' : 'consecutive'}`}
+                                id={`msg-${item.id}`}
+                                style={{ position: 'relative' }}
+                              >
+                                {!isMine && (
+                                  <div className="tg-msg-avatar-col theirs">
+                                    {isFirstInSequence ? (
+                                      <div
+                                        className="tg-msg-avatar theirs"
+                                        title={item.sender_name || item.sender_username || getFriendName(activeChat)}
+                                      >
+                                        {item.sender_avatar || activeChat.avatar_url ? (
+                                          <img
+                                            src={item.sender_avatar || activeChat.avatar_url}
+                                            alt=""
+                                            onError={(e) => {
+                                              e.currentTarget.style.display = 'none'
+                                            }}
+                                          />
+                                        ) : (
+                                          (item.sender_name || item.sender_username || getFriendName(activeChat) || 'U').charAt(0).toUpperCase()
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="tg-msg-avatar-placeholder" />
+                                    )}
+                                    <div
+                                      className="tg-msg-hover-time"
+                                      title={formatFullDateTime(item.created_at)}
+                                    >
+                                      {formatTime(item.created_at)}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* If mine: action buttons sit to the left of the bubble -> (3 chấm, Share, Reply) [Bubble] */}
+                                {isMine && (
+                                  <div className="tg-msg-actions" style={{ position: 'relative' }}>
+                                    <button
+                                      className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
+                                      title="Tùy chọn tin nhắn (...)"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
+                                      }}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                        <circle cx="5" cy="12" r="2.2"></circle>
+                                        <circle cx="12" cy="12" r="2.2"></circle>
+                                        <circle cx="19" cy="12" r="2.2"></circle>
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className="tg-msg-act-btn"
+                                      title="Chia sẻ (Share / Forward)"
+                                      onClick={() => handleStartShare(item)}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="15 14 20 9 15 4"></polyline>
+                                        <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className="tg-msg-act-btn"
+                                      title="Trả lời (Reply)"
+                                      onClick={() => handleStartReply(item)}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                      </svg>
+                                    </button>
+
+                                    {/* Popover Menu khi ấn nút ... (Tin nhắn của tôi) */}
+                                    {isActionMenuOpen && (
+                                      <div
+                                        className="tg-msg-popover-menu left-aligned"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <button
+                                          type="button"
+                                          className="tg-popover-item"
+                                          onClick={() => {
+                                            setActiveActionMsgId(null)
+                                            handleCopyMessage(item.content)
+                                          }}
+                                        >
+                                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                          </svg>
+                                          <span>Sao chép</span>
+                                        </button>
+                                        {!isRevoked && (
+                                          <button
+                                            type="button"
+                                            className="tg-popover-item danger"
+                                            onClick={() => handleRecallMessage(item.id)}
+                                          >
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                              <circle cx="12" cy="12" r="10"></circle>
+                                              <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                                            </svg>
+                                            <span>Thu hồi</span>
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          className="tg-popover-item danger"
+                                          onClick={() => handleDeleteForMe(item.id)}
+                                        >
+                                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                          </svg>
+                                          <span>Xoá chỉ ở phía tôi</span>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {(() => {
+                                  const emojiList = getEmojiOnlyList(item.content)
+                                  const isEmojiOnly = Boolean(emojiList && emojiList.length > 0 && !item.reply_to_id)
+                                  return (
+                                    <div
+                                      className={`tg-msg-bubble ${isRevoked ? 'revoked-bubble' : ''} ${isCurrentMatch ? 'search-active-bubble' : ''} ${isImageMessage(item.content) && !item.reply_to_id ? 'image-only-bubble' : ''} ${isEmojiOnly ? 'single-emoji-bubble emoji-only-bubble' : ''}`}
+                                      style={isEmojiOnly ? { background: 'transparent', backgroundColor: 'transparent', boxShadow: 'none', border: 'none', padding: 0, minWidth: 0 } : undefined}
+                                      title={formatFullDateTime(item.created_at)}
+                                    >
+                                      {/* Nếu là trong nhóm và là tin nhắn của người khác, hiển thị tên người gửi */}
+                                      {activeChat.is_group && !isMine && isFirstInSequence && (
+                                        <div
+                                          style={{
+                                            fontSize: 12,
+                                            fontWeight: 700,
+                                            color: '#a78bfa',
+                                            marginBottom: 4,
+                                          }}
+                                        >
+                                          {item.sender_name || item.sender_username || 'Thành viên'}
+                                        </div>
+                                      )}
+
+                                      {/* Replied Message Quote */}
+                                      {item.reply_to_id && (
+                                        <div
+                                          className="tg-reply-quote"
+                                          onClick={() => scrollToMessage(item.reply_to_id)}
+                                          title="Bấm để chuyển tới tin nhắn gốc"
+                                        >
+                                          <div className="tg-reply-bar" />
+                                          <div className="tg-reply-quote-content">
+                                            <span className="tg-reply-author">
+                                              {getReplyAuthorName(item)}
+                                            </span>
+                                            <span className="tg-reply-snippet">
+                                              {getMessageSnippet(getReplyContent(item))}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      <div className="tg-msg-text">
+                                        {isEmojiOnly ? (
+                                          <div className="tg-single-apple-emoji-wrap tg-multiple-emojis-wrap">
+                                            {emojiList.map((emoji, eIdx) => (
+                                              <span key={eIdx} className="tg-emoji-standalone-item">
+                                                {getAppleEmojiUrl(emoji) ? (
+                                                  <img
+                                                    src={getAppleEmojiUrl(emoji)}
+                                                    alt={emoji}
+                                                    className="tg-single-apple-emoji-img"
+                                                    draggable={false}
+                                                    onError={(e) => {
+                                                      e.currentTarget.style.display = 'none'
+                                                      const fallback = e.currentTarget.nextElementSibling
+                                                      if (fallback) fallback.style.display = 'inline'
+                                                    }}
+                                                  />
+                                                ) : null}
+                                                <span className="tg-single-emoji-fallback" style={getAppleEmojiUrl(emoji) ? { display: 'none' } : undefined}>
+                                                  {emoji}
+                                                </span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          renderMessageContent(item.content, chatSearchQuery)
+                                        )}
+                                        {(item.content?.includes('Terminate session') || item.is_login_notice) && (
+                                          <div style={{ marginTop: 8 }}>
+                                            <button
+                                              type="button"
+                                              className="tg-terminate-session-btn"
+                                              onClick={handleLogout}
+                                            >
+                                              Đăng xuất phiên
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                      {isLatestMine && !isEmojiOnly && (
+                                        <div className="tg-msg-meta status-only">
+                                          <span className={`tg-msg-receipt ${item.is_read ? 'read' : 'sent'}`}>
+                                            {item.is_read ? 'Đã xem' : 'Đã gửi'}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })()}
+
+                                {/* If theirs: action buttons sit to the right of the bubble -> [Bubble] (Reply, Share, 3 chấm) */}
+                                {!isMine && (
+                                  <div className="tg-msg-actions" style={{ position: 'relative' }}>
+                                    <button
+                                      className="tg-msg-act-btn"
+                                      title="Trả lời (Reply)"
+                                      onClick={() => handleStartReply(item)}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className="tg-msg-act-btn"
+                                      title="Chia sẻ (Share / Forward)"
+                                      onClick={() => handleStartShare(item)}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="15 14 20 9 15 4"></polyline>
+                                        <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
+                                      title="Tùy chọn tin nhắn (...)"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
+                                      }}
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                        <circle cx="5" cy="12" r="2.2"></circle>
+                                        <circle cx="12" cy="12" r="2.2"></circle>
+                                        <circle cx="19" cy="12" r="2.2"></circle>
+                                      </svg>
+                                    </button>
+
+                                    {/* Popover Menu khi ấn nút ... (Tin nhắn người khác) */}
+                                    {isActionMenuOpen && (
+                                      <div
+                                        className="tg-msg-popover-menu left-aligned"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <button
+                                          type="button"
+                                          className="tg-popover-item"
+                                          onClick={() => {
+                                            setActiveActionMsgId(null)
+                                            handleCopyMessage(item.content)
+                                          }}
+                                        >
+                                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                          </svg>
+                                          <span>Sao chép</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="tg-popover-item danger"
+                                          onClick={() => handleDeleteForMe(item.id)}
+                                        >
+                                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                          </svg>
+                                          <span>Xoá chỉ ở phía tôi</span>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {isMine && (
+                                  <div className="tg-msg-avatar-col mine">
+                                    {isFirstInSequence ? (
+                                      <div className="tg-msg-avatar mine" title="Bạn">
+                                        {currentUser?.avatar_url ? (
+                                          <img
+                                            src={currentUser.avatar_url}
+                                            alt={currentUser.username}
+                                            onError={(e) => {
+                                              e.currentTarget.style.display = 'none'
+                                            }}
+                                          />
+                                        ) : (
+                                          (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="tg-msg-avatar-placeholder" />
+                                    )}
+                                    <div
+                                      className="tg-msg-hover-time"
+                                      title={formatFullDateTime(item.created_at)}
+                                    >
+                                      {formatTime(item.created_at)}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </>
+                    )
+                  })()
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Hidden File Picker Inputs (Hỗ trợ Camera, Photos, Tệp) */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleAttachmentFileSelected}
+                accept="*/*"
+                style={{ display: 'none' }}
+              />
+              <input
+                type="file"
+                ref={cameraInputRef}
+                onChange={handleAttachmentFileSelected}
+                accept="image/*,video/*"
+                capture="environment"
+                style={{ display: 'none' }}
+              />
+              <input
+                type="file"
+                ref={photoInputRef}
+                onChange={handleAttachmentFileSelected}
+                accept="image/*,video/*"
+                style={{ display: 'none' }}
+              />
+              <input
+                type="file"
+                ref={documentInputRef}
+                onChange={handleAttachmentFileSelected}
+                accept="*/*"
+                style={{ display: 'none' }}
+              />
+
+              {/* Telegram Reply Banner above Input */}
+              {replyingMessage && (
+                <div className="tg-reply-bar-container">
+                  <div className="tg-reply-bar-accent" />
+                  <div className="tg-reply-bar-body">
+                    <div className="tg-reply-bar-title">
+                      Trả lời{' '}
+                      {replyingMessage.sender_id === currentUser?.id
+                        ? 'chính bạn'
+                        : getFriendName(activeChat)}
+                    </div>
+                    <div className="tg-reply-bar-text">
+                      {getMessageSnippet(replyingMessage.content)}
+                    </div>
+                  </div>
                   <button
-                    className="tg-search-nav-btn"
-                    title="Đóng tìm kiếm"
-                    onClick={() => {
-                      setShowChatSearch(false)
-                      setChatSearchQuery('')
-                    }}
+                    className="tg-reply-bar-close"
+                    onClick={() => setReplyingMessage(null)}
+                    title="Hủy trả lời"
                   >
                     ✕
                   </button>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Telegram Messages Scroll */}
-            <div
-              className="tg-messages-scroll"
-              onDoubleClick={handleChatBackgroundDoubleClick}
-              title="Nhấp đúp chuột 2 lần vào nền để đổi giao diện"
-            >
-              {chatLoading ? (
-                <div className="tg-messages-loading">
-                  <div className="tg-spinner" />
-                  <span>Đang tải tin nhắn...</span>
-                </div>
-              ) : messages.length === 0 ? (
-                <div className="tg-empty-chat-state">
-                  <div className="tg-avatar lg">
-                    {activeChat.avatar_url ? (
-                      <img src={activeChat.avatar_url} alt="" className="avatar-img" />
-                    ) : (
-                      getFriendName(activeChat).charAt(0).toUpperCase()
-                    )}
+              {/* Thanh xem trước tệp/ảnh đính kèm trước khi gửi */}
+              {pendingAttachment && (
+                <div className="tg-attach-preview-bar">
+                  {pendingAttachment.isImage ? (
+                    <img
+                      src={pendingAttachment.url}
+                      alt="Xem trước ảnh"
+                      className="tg-attach-thumb"
+                      onClick={() => setPreviewMediaUrl(pendingAttachment.url)}
+                    />
+                  ) : (
+                    <div className="tg-attach-file-icon">📄</div>
+                  )}
+                  <div className="tg-attach-preview-info">
+                    <span className="tg-attach-preview-name">{pendingAttachment.name}</span>
+                    <span className="tg-attach-preview-size">{formatFileSize(pendingAttachment.size)}</span>
                   </div>
-                  <h3>{getFriendName(activeChat)}</h3>
-                  <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
+                  <button
+                    type="button"
+                    className="tg-attach-preview-close"
+                    title="Hủy tệp đính kèm"
+                    onClick={() => setPendingAttachment(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* Giao diện ghi âm tin nhắn thoại (Voice Note) Khớp chuẩn 100% Ảnh 2 */}
+              {isRecordingVoice ? (
+                <div className="tg-voice-recording-container">
+                  <button
+                    type="button"
+                    className="tg-voice-trash-btn"
+                    onClick={handleCancelVoiceRecord}
+                    title="Hủy ghi âm"
+                  >
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      <line x1="10" y1="11" x2="10" y2="17"></line>
+                      <line x1="14" y1="11" x2="14" y2="17"></line>
+                    </svg>
+                  </button>
+
+                  <div className="tg-voice-recording-pill">
+                    <div className="tg-voice-recording-dot" />
+
+                    {/* Dải sóng chấm tím animated giống Ảnh 2 */}
+                    <div className="tg-voice-waveform-dots">
+                      {Array.from({ length: 44 }).map((_, i) => (
+                        <span
+                          key={i}
+                          className="tg-waveform-dot"
+                          style={{
+                            animationDelay: `${(i % 12) * 0.11}s`,
+                            opacity: isVoicePaused ? 0.35 : undefined,
+                          }}
+                        />
+                      ))}
+                    </div>
+
+                    {/* Đồng hồ số vàng hổ phách dạng 0:03,30 giống Ảnh 2 */}
+                    <span className="tg-recording-time-amber">
+                      {formatVoiceCentiseconds(voiceDurationMs)}
+                    </span>
+
+                    {/* Nút điều khiển: Tạm dừng / Tiếp tục */}
+                    <button
+                      type="button"
+                      className="tg-voice-icon-ctrl-btn"
+                      onClick={handleTogglePauseVoice}
+                      title={isVoicePaused ? "Tiếp tục ghi âm" : "Tạm dừng"}
+                    >
+                      {isVoicePaused ? (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2"></circle>
+                          <polygon points="10 8 16 12 10 16 10 8"></polygon>
+                        </svg>
+                      ) : (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="9"></circle>
+                          <line x1="10" y1="9" x2="10" y2="15" strokeWidth="2.2" strokeLinecap="round"></line>
+                          <line x1="14" y1="9" x2="14" y2="15" strokeWidth="2.2" strokeLinecap="round"></line>
+                        </svg>
+                      )}
+                    </button>
+
+                    {/* Nút gửi hình tròn tím máy bay giấy giống Ảnh 2 */}
+                    <button
+                      type="button"
+                      className="tg-voice-send-circle-btn"
+                      onClick={handleStopAndSendVoice}
+                      title="Gửi tin nhắn thoại"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               ) : (
-                (() => {
-                  const latestMineMsg = [...messages].reverse().find(
-                    (m) => currentUser?.id != null && String(m.sender_id) === String(currentUser.id)
-                  )
-                  const latestMineId = latestMineMsg ? latestMineMsg.id : null
+                /* Telegram Message Input Pill */
+                <div className="tg-input-area">
+                  <div className="tg-attach-wrapper" ref={attachMenuRef}>
+                    <button
+                      type="button"
+                      className={`tg-icon-btn tg-attach-btn ${showAttachMenu ? 'active' : ''}`}
+                      title="Đính kèm ảnh / video / tệp tin"
+                      onClick={handleAttachmentClick}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                      </svg>
+                    </button>
 
-                  // QUY TẮC HIỆU NĂNG: Chỉ hiển thị visibleCount (mặc định 20) tin nhắn gần nhất để mượt mà, không lag
-                  const displayedMessages = messages.slice(-visibleCount)
-                  const hiddenCount = Math.max(0, messages.length - visibleCount)
+                    {/* Popup menu đính kèm: Chỉ hiện trên mobile khi bấm kẹp ghim */}
+                    {showAttachMenu && (
+                      <div className="tg-attach-popup">
+                        <button
+                          type="button"
+                          className="tg-attach-option"
+                          onClick={() => {
+                            setShowAttachMenu(false)
+                            cameraInputRef.current?.click()
+                          }}
+                        >
+                          <span className="tg-attach-icon">📷</span>
+                          <span>Camera</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="tg-attach-option"
+                          onClick={() => {
+                            setShowAttachMenu(false)
+                            photoInputRef.current?.click()
+                          }}
+                        >
+                          <span className="tg-attach-icon">🖼️</span>
+                          <span>Photos</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="tg-attach-option"
+                          onClick={() => {
+                            setShowAttachMenu(false)
+                            documentInputRef.current?.click()
+                          }}
+                        >
+                          <span className="tg-attach-icon">📁</span>
+                          <span>Tệp tin</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
-                  return (
-                    <>
-                      {/* Nút Tải Thêm Tin Nhắn Cũ (Giảm Lag) */}
-                      {hiddenCount > 0 && (
-                        <div className="tg-load-more-container" style={{ textAlign: 'center', margin: '8px 0 16px' }}>
-                          <button
-                            type="button"
-                            className="tg-load-more-btn"
-                            onClick={() => setVisibleCount((prev) => prev + 20)}
-                            style={{
-                              background: 'rgba(135, 116, 225, 0.15)',
-                              border: '1px solid rgba(135, 116, 225, 0.35)',
-                              color: '#c4b5fd',
-                              padding: '8px 18px',
-                              borderRadius: 20,
-                              fontSize: 12.5,
-                              fontWeight: 600,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              transition: 'all 0.2s ease',
-                            }}
+                  {/* Mention Suggestions Popover (@username & @everyone) */}
+                  {showMentionPopover && mentionCandidates.length > 0 && (
+                    <div className="tg-mention-popover" ref={mentionPopoverRef}>
+                      <div className="tg-mention-popover-header">Nhắc tên thành viên (@)</div>
+                      <div className="tg-mention-popover-list">
+                        {mentionCandidates.map((cand, idx) => (
+                          <div
+                            key={cand.id}
+                            className={`tg-mention-item ${idx === mentionSelectedIndex ? 'selected' : ''}`}
+                            onClick={() => handleSelectMention(cand)}
+                            onMouseEnter={() => setMentionSelectedIndex(idx)}
                           >
-                            <span>⬆️ Tải thêm tin nhắn cũ</span>
-                            <span style={{ background: '#8774e1', color: '#fff', padding: '1px 7px', borderRadius: 10, fontSize: 11 }}>
-                              Còn {hiddenCount} tin
-                            </span>
-                          </button>
-                        </div>
-                      )}
-
-                      {displayedMessages.map((item, idx) => {
-                        const isMine = Boolean(
-                          currentUser?.id != null &&
-                          String(item.sender_id) === String(currentUser.id)
-                        )
-                        const isLatestMine = isMine && item.id === latestMineId
-                        const isCurrentMatch =
-                          matchingMessageIds.length > 0 &&
-                          matchingMessageIds[chatSearchIndex] === item.id
-
-                        const currentDateStr = formatDate(item.created_at)
-                        const prevDateStr = idx > 0 ? formatDate(displayedMessages[idx - 1].created_at) : null
-                        const showDateBubble = idx === 0 || (currentDateStr && currentDateStr !== prevDateStr)
-
-                        const prevItem = idx > 0 ? displayedMessages[idx - 1] : null
-                        const isFirstInSequence =
-                          idx === 0 ||
-                          showDateBubble ||
-                          String(prevItem?.sender_id) !== String(item.sender_id)
-
-                        const isActionMenuOpen = activeActionMsgId === item.id
-
-                        return (
-                          <div key={item.id}>
-                            {showDateBubble && currentDateStr && (
-                              <div className="tg-bubble-date">{currentDateStr}</div>
+                            {cand.isEveryone ? (
+                              <div className="tg-mention-item-avatar everyone">📢</div>
+                            ) : (
+                              <div
+                                className="tg-mention-item-avatar"
+                                style={{ background: !cand.avatar_url ? getAvatarGradient(cand.id || cand.username) : undefined }}
+                              >
+                                {cand.avatar_url ? (
+                                  <img src={cand.avatar_url} alt="" className="avatar-img" />
+                                ) : (
+                                  (cand.display_name || cand.username || 'U').charAt(0).toUpperCase()
+                                )}
+                              </div>
                             )}
-                            <div
-                              className={`tg-msg-row ${isMine ? 'mine' : 'theirs'} ${isFirstInSequence ? 'first-in-sequence' : 'consecutive'}`}
-                              id={`msg-${item.id}`}
-                              style={{ position: 'relative' }}
-                            >
-                              {!isMine && (
-                                <div className="tg-msg-avatar-col theirs">
-                                  {isFirstInSequence ? (
-                                    <div
-                                      className="tg-msg-avatar theirs"
-                                      title={item.sender_name || item.sender_username || getFriendName(activeChat)}
-                                    >
-                                      {item.sender_avatar || activeChat.avatar_url ? (
-                                        <img
-                                          src={item.sender_avatar || activeChat.avatar_url}
-                                          alt=""
-                                          onError={(e) => {
-                                            e.currentTarget.style.display = 'none'
-                                          }}
-                                        />
-                                      ) : (
-                                        (item.sender_name || item.sender_username || getFriendName(activeChat)).charAt(0).toUpperCase()
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <div className="tg-msg-avatar-placeholder" />
-                                  )}
-                                  <div
-                                    className="tg-msg-hover-time"
-                                    title={formatFullDateTime(item.created_at)}
-                                  >
-                                    {formatTime(item.created_at)}
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* If mine: action buttons sit to the left of the bubble */}
-                              {isMine && (
-                                <div className="tg-msg-actions" style={{ position: 'relative' }}>
-                                  <button
-                                    className="tg-msg-act-btn"
-                                    title="Trả lời (Reply)"
-                                    onClick={() => handleStartReply(item)}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className="tg-msg-act-btn"
-                                    title="Chia sẻ (Share / Forward)"
-                                    onClick={() => handleStartShare(item)}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                      <polyline points="15 14 20 9 15 4"></polyline>
-                                      <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
-                                    title="Tùy chọn tin nhắn (...)"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
-                                    }}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <circle cx="5" cy="12" r="2.2"></circle>
-                                      <circle cx="12" cy="12" r="2.2"></circle>
-                                      <circle cx="19" cy="12" r="2.2"></circle>
-                                    </svg>
-                                  </button>
-
-                                  {/* Popover Menu khi ấn nút ... */}
-                                  {isActionMenuOpen && (
-                                    <div
-                                      className="tg-msg-popover-menu"
-                                      onClick={(e) => e.stopPropagation()}
-                                      style={{
-                                        position: 'absolute',
-                                        bottom: '100%',
-                                        right: 0,
-                                        background: '#212d3b',
-                                        borderRadius: 10,
-                                        boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-                                        border: '1px solid rgba(255,255,255,0.12)',
-                                        padding: 4,
-                                        zIndex: 100,
-                                        minWidth: 150,
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        gap: 2,
-                                        marginBottom: 6,
-                                      }}
-                                    >
-                                      <button
-                                        type="button"
-                                        className="tg-popover-item"
-                                        onClick={() => {
-                                          handleCopyMessage(item.content)
-                                          setActiveActionMsgId(null)
-                                        }}
-                                        style={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 8,
-                                          padding: '7px 10px',
-                                          background: 'transparent',
-                                          border: 'none',
-                                          color: '#e2e8f0',
-                                          fontSize: 13,
-                                          borderRadius: 6,
-                                          cursor: 'pointer',
-                                          textAlign: 'left',
-                                        }}
-                                      >
-                                        <span>📋</span> Sao chép
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="tg-popover-item danger"
-                                        onClick={() => handleDeleteMessage(item.id)}
-                                        style={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 8,
-                                          padding: '7px 10px',
-                                          background: 'transparent',
-                                          border: 'none',
-                                          color: '#ef4444',
-                                          fontSize: 13,
-                                          borderRadius: 6,
-                                          cursor: 'pointer',
-                                          textAlign: 'left',
-                                        }}
-                                      >
-                                        <span>🗑️</span> Xóa tin nhắn
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              <div
-                                className={`tg-msg-bubble ${isCurrentMatch ? 'search-active-bubble' : ''} ${isImageMessage(item.content) && !item.reply_to_id ? 'image-only-bubble' : ''}`}
-                                title={formatFullDateTime(item.created_at)}
-                              >
-                                {/* Nếu là trong nhóm và là tin nhắn của người khác, hiển thị tên người gửi */}
-                                {activeChat.is_group && !isMine && isFirstInSequence && (
-                                  <div
-                                    style={{
-                                      fontSize: 12,
-                                      fontWeight: 700,
-                                      color: '#a78bfa',
-                                      marginBottom: 4,
-                                    }}
-                                  >
-                                    {item.sender_name || item.sender_username || 'Thành viên'}
-                                  </div>
-                                )}
-
-                                {/* Replied Message Quote */}
-                                {item.reply_to_id && (
-                                  <div
-                                    className="tg-reply-quote"
-                                    onClick={() => scrollToMessage(item.reply_to_id)}
-                                    title="Bấm để chuyển tới tin nhắn gốc"
-                                  >
-                                    <div className="tg-reply-bar" />
-                                    <div className="tg-reply-quote-content">
-                                      <span className="tg-reply-author">
-                                        {getReplyAuthorName(item)}
-                                      </span>
-                                      <span className="tg-reply-snippet">
-                                        {getMessageSnippet(getReplyContent(item))}
-                                      </span>
-                                    </div>
-                                  </div>
-                                )}
-
-                                <div className="tg-msg-text">
-                                  {renderMessageContent(item.content, chatSearchQuery)}
-                                </div>
-                                {isLatestMine && (
-                                  <div className="tg-msg-meta status-only">
-                                    <span className={`tg-msg-receipt ${item.is_read ? 'read' : 'sent'}`}>
-                                      {item.is_read ? 'Đã xem' : 'Đã gửi'}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* If theirs: action buttons sit to the right of the bubble */}
-                              {!isMine && (
-                                <div className="tg-msg-actions" style={{ position: 'relative' }}>
-                                  <button
-                                    className="tg-msg-act-btn"
-                                    title="Trả lời (Reply)"
-                                    onClick={() => handleStartReply(item)}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <path d="M9.983 3v7.391c0 5.704-3.731 9.57-8.983 10.609l-.995-2.151c2.432-.917 3.995-3.638 3.995-5.849h-4v-10h9.983zm14.017 0v7.391c0 5.704-3.748 9.571-9 10.609l-.996-2.151c2.433-.917 3.996-3.638 3.996-5.849h-3.983v-10h9.983z" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className="tg-msg-act-btn"
-                                    title="Chia sẻ (Share / Forward)"
-                                    onClick={() => handleStartShare(item)}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                      <polyline points="15 14 20 9 15 4"></polyline>
-                                      <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
-                                    </svg>
-                                  </button>
-                                  <button
-                                    className={`tg-msg-act-btn ${isActionMenuOpen ? 'active' : ''}`}
-                                    title="Tùy chọn tin nhắn (...)"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      setActiveActionMsgId((curr) => (curr === item.id ? null : item.id))
-                                    }}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <circle cx="5" cy="12" r="2.2"></circle>
-                                      <circle cx="12" cy="12" r="2.2"></circle>
-                                      <circle cx="19" cy="12" r="2.2"></circle>
-                                    </svg>
-                                  </button>
-
-                                  {/* Popover Menu khi ấn nút ... */}
-                                  {isActionMenuOpen && (
-                                    <div
-                                      className="tg-msg-popover-menu"
-                                      onClick={(e) => e.stopPropagation()}
-                                      style={{
-                                        position: 'absolute',
-                                        bottom: '100%',
-                                        left: 0,
-                                        background: '#212d3b',
-                                        borderRadius: 10,
-                                        boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-                                        border: '1px solid rgba(255,255,255,0.12)',
-                                        padding: 4,
-                                        zIndex: 100,
-                                        minWidth: 150,
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        gap: 2,
-                                        marginBottom: 6,
-                                      }}
-                                    >
-                                      <button
-                                        type="button"
-                                        className="tg-popover-item"
-                                        onClick={() => {
-                                          handleCopyMessage(item.content)
-                                          setActiveActionMsgId(null)
-                                        }}
-                                        style={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 8,
-                                          padding: '7px 10px',
-                                          background: 'transparent',
-                                          border: 'none',
-                                          color: '#e2e8f0',
-                                          fontSize: 13,
-                                          borderRadius: 6,
-                                          cursor: 'pointer',
-                                          textAlign: 'left',
-                                        }}
-                                      >
-                                        <span>📋</span> Sao chép
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="tg-popover-item danger"
-                                        onClick={() => handleDeleteMessage(item.id)}
-                                        style={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 8,
-                                          padding: '7px 10px',
-                                          background: 'transparent',
-                                          border: 'none',
-                                          color: '#ef4444',
-                                          fontSize: 13,
-                                          borderRadius: 6,
-                                          cursor: 'pointer',
-                                          textAlign: 'left',
-                                        }}
-                                      >
-                                        <span>🗑️</span> Xóa tin nhắn
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                          {isMine && (
-                            <div className="tg-msg-avatar-col mine">
-                              {isFirstInSequence ? (
-                                <div className="tg-msg-avatar mine" title="Bạn">
-                                  {currentUser?.avatar_url ? (
-                                    <img
-                                      src={currentUser.avatar_url}
-                                      alt={currentUser.username}
-                                      onError={(e) => {
-                                        e.currentTarget.style.display = 'none'
-                                      }}
-                                    />
-                                  ) : (
-                                    (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
-                                  )}
-                                </div>
-                              ) : (
-                                <div className="tg-msg-avatar-placeholder" />
-                              )}
-                              <div
-                                className="tg-msg-hover-time"
-                                title={formatFullDateTime(item.created_at)}
-                              >
-                                {formatTime(item.created_at)}
-                              </div>
+                            <div className="tg-mention-item-info">
+                              <span className="tg-mention-item-name">
+                                {cand.isEveryone ? '@everyone' : (cand.display_name || cand.username)}
+                              </span>
+                              <span className="tg-mention-item-sub">
+                                {cand.isEveryone ? 'Thông báo đến tất cả mọi người' : `@${cand.username}`}
+                              </span>
                             </div>
-                          )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    ref={msgInputRef}
+                    className="tg-msg-input"
+                    placeholder={pendingAttachment ? "Nhập chú thích (tùy chọn)..." : "Viết tin nhắn..."}
+                    value={message}
+                    onChange={handleChatInputChange}
+                    onPaste={handleInputPaste}
+                    onKeyDown={handleChatInputKeyDown}
+                    disabled={chatLoading}
+                  />
+
+                  {/* Nút icon (Emoji / Biểu tượng cảm xúc) nằm gần nút Mic / Gửi */}
+                  <div className="tg-emoji-wrapper" ref={emojiPickerRef}>
+                    <button
+                      type="button"
+                      className={`tg-icon-btn tg-emoji-btn ${showEmojiPicker ? 'active' : ''}`}
+                      title="Biểu tượng cảm xúc (Apple Emoji)"
+                      onClick={() => setShowEmojiPicker((prev) => !prev)}
+                    >
+                      <img
+                        src={getAppleEmojiUrl('😊')}
+                        alt=""
+                        className="tg-emoji-toggle-apple-img"
+                        draggable={false}
+                      />
+                    </button>
+
+                    {/* Popover chọn emoji */}
+                    {showEmojiPicker && (
+                      <div className="tg-emoji-picker-popover">
+                        <div className="tg-emoji-categories">
+                          {EMOJI_CATEGORIES.map((cat, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              className={`tg-emoji-cat-btn ${activeEmojiTab === idx ? 'active' : ''}`}
+                              onClick={() => setActiveEmojiTab(idx)}
+                            >
+                              <img
+                                src={getAppleEmojiUrl(cat.icon)}
+                                alt=""
+                                className="tg-apple-cat-img"
+                                draggable={false}
+                              />
+                            </button>
+                          ))}
+                        </div>
+                        <div className="tg-emoji-grid">
+                          {(EMOJI_CATEGORIES[activeEmojiTab] || EMOJI_CATEGORIES[0])?.emojis.map((emoji, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              className="tg-emoji-item"
+                              onClick={() => handleInsertEmoji(emoji)}
+                            >
+                              <img
+                                src={getAppleEmojiUrl(emoji)}
+                                alt=""
+                                className="tg-apple-emoji-img"
+                                loading="lazy"
+                                draggable={false}
+                              />
+                            </button>
+                          ))}
                         </div>
                       </div>
-                    )
-                  })}
-                </>
-              )
-            })()
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-            {/* Hidden File Picker Input */}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              accept="image/*,video/*,.pdf,.doc,.docx,.txt"
-              style={{ display: 'none' }}
-            />
-
-            {/* Telegram Reply Banner above Input */}
-            {replyingMessage && (
-              <div className="tg-reply-bar-container">
-                <div className="tg-reply-bar-accent" />
-                <div className="tg-reply-bar-body">
-                  <div className="tg-reply-bar-title">
-                    Trả lời{' '}
-                    {replyingMessage.sender_id === currentUser?.id
-                      ? 'chính bạn'
-                      : getFriendName(activeChat)}
+                    )}
                   </div>
-                  <div className="tg-reply-bar-text">
-                    {getMessageSnippet(replyingMessage.content)}
-                  </div>
+
+                  {/* Nút gửi: Nếu có chữ hoặc có tệp thì là Send ✈️, nếu trống thì là Mic 🎙️ để gửi voice */}
+                  {message.trim() || pendingAttachment ? (
+                    <button
+                      className="tg-send-btn"
+                      onClick={handleSend}
+                      disabled={chatLoading}
+                      title="Gửi"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                      </svg>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="tg-send-btn tg-mic-btn"
+                      onClick={handleStartVoiceRecord}
+                      title="Nhấn để gửi tin nhắn thoại"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ stroke: '#ffffff', color: '#ffffff' }}>
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" stroke="#ffffff"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="#ffffff"></path>
+                        <line x1="12" y1="19" x2="12" y2="23" stroke="#ffffff"></line>
+                        <line x1="8" y1="23" x2="16" y2="23" stroke="#ffffff"></line>
+                      </svg>
+                    </button>
+                  )}
                 </div>
-                <button
-                  className="tg-reply-bar-close"
-                  onClick={() => setReplyingMessage(null)}
-                  title="Hủy trả lời"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-
-            {/* Telegram Message Input Pill */}
-            <div className="tg-input-area">
-              <button
-                className="tg-icon-btn tg-attach-btn"
-                title="Đính kèm ảnh / video / tệp tin"
-                onClick={handleAttachmentClick}
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-                </svg>
-              </button>
-
-              <input
-                type="text"
-                ref={msgInputRef}
-                className="tg-msg-input"
-                placeholder="Viết tin nhắn..."
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                onPaste={handleInputPaste}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    handleSend()
-                  }
-                }}
-                disabled={chatLoading}
-              />
-
-              <button
-                className="tg-send-btn"
-                onClick={handleSend}
-                disabled={!message.trim() || chatLoading}
-                title="Gửi"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13"></line>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-              </button>
+              )}
             </div>
-          </div>
-        ) : (
-          <div
-            className="tg-no-chat-selected"
-            onDoubleClick={handleChatBackgroundDoubleClick}
-            title="Nhấp đúp chuột 2 lần vào nền để đổi giao diện"
-          >
-            <div className="tg-no-chat-badge tg-no-chat-dblclick-hint">
-              <span style={{ fontSize: 14, fontWeight: 600, color: '#f1f5f9' }}>
-                Xin chào! Chào mừng bạn đã đến với ứng dụng CloudChat
-              </span>
-            </div>
-          </div>
-        )}
+          ) : (
+            <div className="tg-no-chat-selected" />
+          )}
+        </ErrorBoundary>
       </main>
 
       {/* Thông tin hội thoại Panel (Khớp với Ảnh 1 & Ảnh 2) */}
@@ -5736,400 +8838,634 @@ function App() {
               </button>
             </div>
 
-          <div className="tg-info-body">
-            {/* User or Group Card */}
-            <div className="tg-info-user-card">
-              <div className="tg-info-avatar-large">
-                {activeChat.avatar_url ? (
-                  <img
-                    src={activeChat.avatar_url}
-                    alt=""
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none'
-                    }}
-                  />
-                ) : activeChat.is_group ? (
-                  getFriendInitials(activeChat.name)
-                ) : (
-                  getFriendName(activeChat).charAt(0).toUpperCase()
-                )}
-              </div>
+            <div className="tg-info-body">
+              {/* User or Group Card */}
+              <div className="tg-info-user-card">
+                <div
+                  className="tg-info-avatar-large"
+                  style={activeChat.is_group && groupDetailData?.is_creator ? { cursor: 'pointer' } : {}}
+                  onClick={() => {
+                    if (activeChat.is_group && groupDetailData?.is_creator) {
+                      groupAvatarInputRef.current?.click()
+                    }
+                  }}
+                  title={activeChat.is_group && groupDetailData?.is_creator ? 'Nhấp để đổi ảnh đại diện nhóm' : ''}
+                >
+                  {activeChat.avatar_url ? (
+                    <img
+                      src={activeChat.avatar_url}
+                      alt=""
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  ) : activeChat.is_group ? (
+                    getFriendInitials(activeChat.name)
+                  ) : (
+                    (getFriendName(activeChat) || 'U').charAt(0).toUpperCase()
+                  )}
 
-              {activeChat.is_group ? (
-                <>
-                  <div className="tg-info-name-wrap">
-                    <h2>{activeChat.name}</h2>
-                    {activeChat.is_community ? (
-                      <span style={{ fontSize: 11, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '2px 8px', borderRadius: 10, fontWeight: 700 }}>
-                        CỘNG ĐỒNG
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 11, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '2px 8px', borderRadius: 10 }}>
-                        Nhóm ({groupDetailData?.member_count || activeChat.member_count || 1}/50)
-                      </span>
-                    )}
-                  </div>
-                  <p className="tg-info-bio">
-                    {activeChat.is_community
-                      ? '🚀 Nhóm cộng đồng không giới hạn thành viên'
-                      : '👥 Nhóm giới hạn tối đa 50 người'}
-                  </p>
-                </>
-              ) : (
-                <>
-                  {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
-                  <div className="tg-info-name-wrap">
-                    <h2>{getFriendName(activeChat)}</h2>
+                  {activeChat.is_group && groupDetailData?.is_creator && (
                     <button
-                      className="tg-edit-nickname-btn"
-                      title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
-                      onClick={() => {
-                        setNicknameInput(
-                          nicknames[activeChat.id] ||
-                          activeChat.display_name ||
-                          activeChat.username ||
-                          ''
-                        )
-                        setEditingNickname(true)
+                      type="button"
+                      className="tg-group-avatar-camera-badge"
+                      title="Đổi ảnh đại diện nhóm"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        groupAvatarInputRef.current?.click()
                       }}
                     >
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
                       </svg>
                     </button>
-                  </div>
+                  )}
+                </div>
 
-                  {nicknames[activeChat.id] && (
-                    <p className="tg-info-original-name">
-                      Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
+                {activeChat.is_group && groupDetailData?.is_creator && (
+                  <input
+                    type="file"
+                    ref={groupAvatarInputRef}
+                    style={{ display: 'none' }}
+                    accept="image/*"
+                    onChange={handleGroupAvatarSelect}
+                  />
+                )}
+
+                {activeChat.is_group ? (
+                  <>
+                    <div className="tg-info-name-wrap">
+                      <h2>{activeChat.name}</h2>
+                      {groupDetailData?.is_creator && (
+                        <button
+                          className="tg-edit-nickname-btn"
+                          title="Đổi tên nhóm"
+                          onClick={() => {
+                            setRenameGroupNameInput(activeChat.name || '')
+                            setShowRenameGroupModal(true)
+                          }}
+                        >
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
+                    <div className="tg-info-name-wrap">
+                      <h2>{getFriendName(activeChat)}</h2>
+                      <button
+                        className="tg-edit-nickname-btn"
+                        title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
+                        onClick={() => {
+                          setNicknameInput(
+                            nicknames[activeChat.id] ||
+                            activeChat.display_name ||
+                            activeChat.username ||
+                            ''
+                          )
+                          setEditingNickname(true)
+                        }}
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                      </button>
+                    </div>
+
+                    {nicknames[activeChat.id] && (
+                      <p className="tg-info-original-name">
+                        Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
+                      </p>
+                    )}
+                    {!nicknames[activeChat.id] && (
+                      <p className="tg-info-original-name">@{activeChat.username}</p>
+                    )}
+
+                    <p className="tg-info-bio">
+                      {activeChat.bio || 'Chưa có tiểu sử'}
                     </p>
-                  )}
-                  {!nicknames[activeChat.id] && (
-                    <p className="tg-info-original-name">@{activeChat.username}</p>
-                  )}
+                  </>
+                )}
 
-                  <p className="tg-info-bio">
-                    {activeChat.bio || 'Chưa có tiểu sử'}
-                  </p>
-                </>
-              )}
 
-              {/* Nút Đổi hình nền riêng cho hội thoại này */}
-              <button
-                type="button"
-                className="tg-info-wallpaper-act-btn"
-                onClick={() => handleOpenWallpaperModal('chat')}
-                title="Tùy biến hình nền riêng cho cuộc trò chuyện này"
-              >
-                <span className="icon">🎨</span>
-                <div className="texts">
-                  <strong>Hình nền cuộc trò chuyện</strong>
-                  <small>
-                    {chatWallpapers[activeChat.id]
-                      ? 'Đang dùng hình nền riêng'
-                      : 'Đang dùng hình nền mặc định'}
-                  </small>
-                </div>
-                <span className="arrow">›</span>
-              </button>
-            </div>
+              </div>
 
-            {/* NẾU LÀ NHÓM CHAT: PHẦN QUẢN LÝ THÀNH VIÊN VÀ QUY TẮC HIỂN THỊ */}
-            {activeChat.is_group && (
-              <div className="tg-accordion-section" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px 8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                      Thành viên ({groupDetailData?.member_count || activeChat.member_count || 1})
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddMemberSelectedIds([])
-                      setAddMemberError('')
-                      setShowAddGroupMemberModal(true)
-                    }}
-                    style={{
-                      background: 'rgba(135, 116, 225, 0.2)',
-                      border: '1px solid #8774e1',
-                      color: '#c4b5fd',
-                      padding: '4px 10px',
-                      borderRadius: 14,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    + Thêm thành viên
-                  </button>
-                </div>
-
-                {/* Kiểm tra nút Nâng cấp Cộng đồng (nếu là người tạo nhóm và chưa phải cộng đồng) */}
-                {groupDetailData?.is_creator && !activeChat.is_community && (
-                  <div style={{ margin: '8px 16px', padding: 12, background: 'rgba(56, 189, 248, 0.08)', borderRadius: 10, border: '1px solid rgba(56, 189, 248, 0.25)' }}>
-                    <div style={{ fontSize: 12.5, color: '#e0f2fe', marginBottom: 6, lineHeight: 1.4 }}>
-                      💡 <strong>Nâng cấp lên Cộng đồng:</strong> Nhóm thường giới hạn 50 người. Với tư cách là người lập nhóm, bạn có thể nâng cấp để thêm không giới hạn thành viên.
+              {/* NẾU LÀ NHÓM CHAT: PHẦN QUẢN LÝ THÀNH VIÊN VÀ QUY TẮC HIỂN THỊ */}
+              {activeChat.is_group && (
+                <div
+                  className="tg-accordion-section tg-group-members-section"
+                  style={{
+                    borderBottom: '1px solid var(--tg-border, rgba(255,255,255,0.08))',
+                    paddingBottom: 12,
+                    overflow: 'visible',
+                    position: 'relative',
+                    zIndex: 30,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px 8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span className="tg-group-members-header" style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                        Thành viên ({groupDetailData?.member_count || activeChat.member_count || 1})
+                      </span>
                     </div>
                     <button
                       type="button"
-                      disabled={upgradingCommunity}
-                      onClick={() => handleUpgradeCommunity(activeChat.id)}
+                      onClick={() => {
+                        setAddMemberSelectedIds([])
+                        setAddMemberError('')
+                        setShowAddGroupMemberModal(true)
+                      }}
                       style={{
-                        background: 'linear-gradient(135deg, #0284c7, #2563eb)',
-                        border: 'none',
-                        color: '#fff',
-                        padding: '6px 14px',
+                        background: 'rgba(135, 116, 225, 0.2)',
+                        border: '1px solid #8774e1',
+                        color: 'var(--tg-primary, #8774e1)',
+                        padding: '4px 10px',
                         borderRadius: 14,
                         fontSize: 12,
-                        fontWeight: 700,
+                        fontWeight: 600,
                         cursor: 'pointer',
-                        width: '100%',
                       }}
                     >
-                      {upgradingCommunity ? 'Đang nâng cấp...' : '🚀 Nâng cấp nhóm lên Cộng đồng'}
+                      + Mời thành viên
                     </button>
                   </div>
-                )}
 
-                {/* QUY TẮC HIỂN THỊ DANH SÁCH THÀNH VIÊN: Dưới hoặc bằng 50 hiện, trên 50 thì KHÔNG hiện */}
-                {(groupDetailData?.member_count || 0) <= 50 && !groupDetailData?.members_hidden ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '4px 16px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '4px 16px', overflow: 'visible' }}>
                     {(groupDetailData?.members || []).map((m) => (
                       <div
                         key={m.id}
+                        className="tg-group-member-item"
                         style={{
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
                           padding: '6px 8px',
-                          background: 'rgba(255,255,255,0.03)',
                           borderRadius: 8,
+                          position: 'relative',
+                          zIndex: activeMemberMenuId === m.id ? 50 : 1,
+                          overflow: 'visible',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                           <div
                             className="tg-avatar sm"
                             style={{
                               width: 32,
                               height: 32,
                               fontSize: 13,
+                              flexShrink: 0,
                               background: !m.avatar_url ? getAvatarGradient(m.id || m.username) : undefined,
                             }}
                           >
                             {m.avatar_url ? (
                               <img src={m.avatar_url} alt="" className="avatar-img" />
                             ) : (
-                              (m.display_name || m.username).charAt(0).toUpperCase()
+                              (m.display_name || m.username || 'U').charAt(0).toUpperCase()
                             )}
                           </div>
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div className="tg-group-member-name" style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {m.display_name || m.username}
-                              {m.id === currentUser?.id && <span style={{ color: '#94a3b8', fontSize: 11 }}> (Bạn)</span>}
+                              {m.id === currentUser?.id && <span style={{ color: 'var(--tg-text-secondary)', fontSize: 11 }}> (Bạn)</span>}
                             </div>
-                            <div style={{ fontSize: 11, color: '#64748b' }}>@{m.username}</div>
+                            <div className="tg-group-member-username" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>@{m.username}</div>
                           </div>
                         </div>
 
-                        {m.role === 'creator' ? (
-                          <span style={{ fontSize: 10, background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', padding: '2px 7px', borderRadius: 8, fontWeight: 700 }}>
-                            👑 Người tạo
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 10, color: '#94a3b8' }}>Thành viên</span>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                          {m.role === 'creator' || m.role === 'admin' ? (
+                            <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: 'var(--tg-primary, #8774e1)', padding: '2px 7px', borderRadius: 8, fontWeight: 700 }}>
+                              Quản trị viên
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10, color: 'var(--tg-text-secondary)' }}>Thành viên</span>
+                          )}
+
+                          {groupDetailData?.is_creator && m.id !== currentUser?.id && (
+                            <div
+                              className="tg-member-actions-dropdown-wrapper"
+                              style={{
+                                position: 'relative',
+                                zIndex: activeMemberMenuId === m.id ? 60 : 1,
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="tg-icon-btn tg-member-menu-btn"
+                                title="Quản lý thành viên"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setActiveMemberMenuId(activeMemberMenuId === m.id ? null : m.id)
+                                }}
+                                style={{ width: 26, height: 26, borderRadius: 6, padding: 0, fontSize: 12 }}
+                              >
+                                •••
+                              </button>
+                              {activeMemberMenuId === m.id && (
+                                <div
+                                  className="tg-member-actions-menu"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button
+                                    type="button"
+                                    className="tg-member-action-item"
+                                    onClick={() => {
+                                      setActiveMemberMenuId(null)
+                                      handleToggleAdminRole(m)
+                                    }}
+                                  >
+                                    {m.role === 'admin' ? '👤 Hạ quyền thành viên' : '👑 Bổ nhiệm Quản trị viên'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="tg-member-action-item danger"
+                                    onClick={() => {
+                                      setActiveMemberMenuId(null)
+                                      setMemberToKickModal(m)
+                                    }}
+                                  >
+                                    🚫 Loại khỏi nhóm
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <div style={{ padding: '12px 16px', textAlign: 'center', background: 'rgba(0,0,0,0.2)', margin: '6px 16px', borderRadius: 8 }}>
-                    <div style={{ fontSize: 24, marginBottom: 4 }}>🔒</div>
-                    <div style={{ fontSize: 12.5, color: '#cbd5e1', fontWeight: 600 }}>
-                      Danh sách thành viên được ẩn
-                    </div>
-                    <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>
-                      Nhóm có hơn 50 thành viên. Danh sách được ẩn để bảo mật thông tin cộng đồng.
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
-            {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
-            <div className="tg-accordion-section">
-              <button
-                className={`tg-accordion-header ${accordionOpen.media ? 'open' : ''}`}
-                onClick={() =>
-                  setAccordionOpen((prev) => ({ ...prev, media: !prev.media }))
-                }
-              >
-                <span>Ảnh/Video ({chatMediaItems.length})</span>
-                <span className="chevron">▾</span>
-              </button>
-
-              {accordionOpen.media && (
-                <div className="tg-accordion-content">
-                  {chatMediaItems.length > 0 ? (
-                    <>
-                      <div className="tg-media-grid">
-                        {chatMediaItems.slice(0, 8).map((media, idx) => (
+                  {/* Lời mời vào nhóm đang chờ đồng ý (chỉ nhóm trưởng thấy) */}
+                  {groupDetailData?.pending_members && groupDetailData.pending_members.length > 0 && groupDetailData.is_creator && (
+                    <div style={{ marginTop: 12, padding: '0 16px' }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--tg-text-secondary)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 6 }}>
+                        Đang chờ đồng ý ({groupDetailData.pending_members.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {groupDetailData.pending_members.map((p) => (
                           <div
-                            className="tg-media-thumb"
-                            key={idx}
-                            onClick={() => setPreviewMediaUrl(media.url)}
-                            title="Bấm để xem ảnh phóng to"
+                            key={p.id}
+                            className="tg-group-member-item"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '6px 8px',
+                              borderRadius: 8,
+                              opacity: 0.85,
+                            }}
                           >
-                            {media.type === 'video' ? (
-                              <video src={media.url} />
-                            ) : (
-                              <img
-                                src={media.url}
-                                alt=""
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none'
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                              <div
+                                className="tg-avatar sm"
+                                style={{
+                                  width: 28,
+                                  height: 28,
+                                  fontSize: 12,
+                                  flexShrink: 0,
+                                  background: !p.avatar_url ? getAvatarGradient(p.id || p.username) : undefined,
                                 }}
-                              />
-                            )}
+                              >
+                                {p.avatar_url ? (
+                                  <img src={p.avatar_url} alt="" className="avatar-img" />
+                                ) : (
+                                  (p.display_name || p.username || 'U').charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div style={{ minWidth: 0 }}>
+                                <div className="tg-group-member-name" style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {p.display_name || p.username}
+                                </div>
+                                <div className="tg-group-member-username" style={{ fontSize: 10 }}>@{p.username}</div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeGroupInvitation(p)}
+                              style={{
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                border: '1px solid rgba(239, 68, 68, 0.25)',
+                                color: '#ef4444',
+                                borderRadius: 6,
+                                padding: '2px 8px',
+                                fontSize: 11,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Huỷ lời mời
+                            </button>
                           </div>
                         ))}
                       </div>
-                      {chatMediaItems.length > 8 && (
-                        <button
-                          className="tg-view-all-btn"
-                          onClick={() => {
-                            setPreviewMediaUrl(chatMediaItems[0].url)
-                          }}
-                        >
-                          Xem tất cả ({chatMediaItems.length})
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <div className="tg-file-empty-note">
-                      Chưa có ảnh hoặc video nào được gửi
                     </div>
                   )}
                 </div>
               )}
-            </div>
 
-            {/* Phần Lịch Sử File (Chỉ hiện file thực tế của 2 người) */}
-            <div className="tg-accordion-section">
-              <button
-                className={`tg-accordion-header ${accordionOpen.files ? 'open' : ''}`}
-                onClick={() =>
-                  setAccordionOpen((prev) => ({ ...prev, files: !prev.files }))
-                }
-              >
-                <span>File ({chatFileItems.length})</span>
-                <span className="chevron">▾</span>
-              </button>
+              {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
+              <div className="tg-accordion-section">
+                <button
+                  className={`tg-accordion-header ${accordionOpen.media ? 'open' : ''}`}
+                  onClick={() =>
+                    setAccordionOpen((prev) => ({ ...prev, media: !prev.media }))
+                  }
+                >
+                  <span>Ảnh/Video ({chatMediaItems.length})</span>
+                  <span className="chevron">▾</span>
+                </button>
 
-              {accordionOpen.files && (
-                <div className="tg-accordion-content">
-                  {chatFileItems.length > 0 ? (
-                    <div className="tg-files-list">
-                      {chatFileItems.map((file, idx) => (
-                        <div
-                          className="tg-file-row"
-                          key={idx}
-                        >
-                          <div className={`tg-file-icon ${getFileBadgeType(file.name, file.fileType)}`}>
-                            {getFileIconSvg(file.name, file.fileType)}
-                          </div>
-                          <div className="tg-file-info">
-                            <strong title={file.name}>{file.name}</strong>
-                            <span>{file.size} • {file.date}</span>
-                          </div>
-                          <a
-                            href={file.url || '#'}
-                            download={file.name}
-                            className="tg-file-download-action-btn"
-                            title={`Tải xuống ${file.name}`}
-                          >
-                            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                              <polyline points="7 10 12 15 17 10"></polyline>
-                              <line x1="12" y1="15" x2="12" y2="3"></line>
-                            </svg>
-                          </a>
+                {accordionOpen.media && (
+                  <div className="tg-accordion-content">
+                    {chatMediaItems.length > 0 ? (
+                      <>
+                        <div className="tg-media-grid">
+                          {(showAllMedia ? chatMediaItems : chatMediaItems.slice(0, 8)).map((media, idx) => (
+                            <div
+                              className="tg-media-thumb"
+                              key={idx}
+                              onClick={() => setPreviewMediaUrl(media.url)}
+                              title="Bấm để xem ảnh phóng to"
+                            >
+                              {media.type === 'video' ? (
+                                <video src={media.url} />
+                              ) : (
+                                <img
+                                  src={media.url}
+                                  alt=""
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    e.currentTarget.style.opacity = '0.3'
+                                  }}
+                                />
+                              )}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                        {chatMediaItems.length > 8 && (
+                          <button
+                            className="tg-view-all-btn"
+                            onClick={() => setShowAllMedia((prev) => !prev)}
+                          >
+                            {showAllMedia ? 'Thu gọn ▴' : `Xem tất cả (${chatMediaItems.length}) ▾`}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div className="tg-file-empty-note">
+                        Chưa có ảnh hoặc video nào được gửi
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Phần Lịch Sử File (Chỉ hiện file thực tế của 2 người) */}
+              <div className="tg-accordion-section">
+                <button
+                  className={`tg-accordion-header ${accordionOpen.files ? 'open' : ''}`}
+                  onClick={() =>
+                    setAccordionOpen((prev) => ({ ...prev, files: !prev.files }))
+                  }
+                >
+                  <span>File ({chatFileItems.length})</span>
+                  <span className="chevron">▾</span>
+                </button>
+
+                {accordionOpen.files && (
+                  <div className="tg-accordion-content">
+                    {chatFileItems.length > 0 ? (
+                      <div className="tg-files-list">
+                        {chatFileItems.map((file, idx) => (
+                          <div
+                            className="tg-file-row"
+                            key={idx}
+                          >
+                            <div className={`tg-file-icon ${getFileBadgeType(file.name, file.fileType)}`}>
+                              {getFileIconSvg(file.name, file.fileType)}
+                            </div>
+                            <div className="tg-file-info">
+                              <strong title={file.name}>{file.name}</strong>
+                              <span>{file.size} • {file.date}</span>
+                            </div>
+                            <a
+                              href={file.url || '#'}
+                              download={file.name}
+                              className="tg-file-download-action-btn"
+                              title={`Tải xuống ${file.name}`}
+                            >
+                              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                              </svg>
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="tg-file-empty-note">
+                        Chưa có tệp tin nào được gửi
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Phần Lịch Sử Link (Chỉ hiện liên kết thực tế của 2 người) */}
+              <div className="tg-accordion-section">
+                <button
+                  className={`tg-accordion-header ${accordionOpen.links ? 'open' : ''}`}
+                  onClick={() =>
+                    setAccordionOpen((prev) => ({ ...prev, links: !prev.links }))
+                  }
+                >
+                  <span>Link ({chatLinkItems.length})</span>
+                  <span className="chevron">▾</span>
+                </button>
+
+                {accordionOpen.links && (
+                  <div className="tg-accordion-content">
+                    {chatLinkItems.length > 0 ? (
+                      <div className="tg-links-list">
+                        {chatLinkItems.map((link, idx) => (
+                          <a
+                            href={link.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="tg-link-row"
+                            key={idx}
+                          >
+                            <div className={`tg-link-icon-box ${link.iconType || 'generic'}`}>
+                              {link.iconType === 'github' ? (
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+                                </svg>
+                              ) : link.iconType === 'meet' ? (
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                  <rect x="2" y="5" width="13" height="14" rx="2" fill="#ffbb00" />
+                                  <polygon points="17 9 22 6 22 18 17 15" fill="#f44336" />
+                                </svg>
+                              ) : (
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                                </svg>
+                              )}
+                            </div>
+
+                            <div className="tg-link-details">
+                              <span className="tg-link-title">{link.title}</span>
+                              <span className="tg-link-domain">{link.domain}</span>
+                            </div>
+
+                            <span className="tg-link-date">{link.date}</span>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="tg-file-empty-note">
+                        Chưa có liên kết nào được gửi
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Nút Giải tán nhóm (Nhóm trưởng) hoặc Rời khỏi nhóm (Thành viên) */}
+              {activeChat.is_group && (
+                <div className="tg-sidebar-block-action" style={{ padding: "16px 20px", marginTop: 12 }}>
+                  {groupDetailData?.is_creator ? (
+                    <button
+                      type="button"
+                      className="tg-clear-history-btn"
+                      onClick={() => setShowDisbandConfirmModal(true)}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        padding: "11px 16px",
+                        borderRadius: 12,
+                        background: "rgba(239, 68, 68, 0.12)",
+                        border: "1px solid rgba(239, 68, 68, 0.35)",
+                        color: "#ef4444",
+                        fontSize: 14,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        transition: "all 0.2s ease",
+                      }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      <span>Giải tán nhóm</span>
+                    </button>
                   ) : (
-                    <div className="tg-file-empty-note">
-                      Chưa có tệp tin nào được gửi
-                    </div>
+                    <button
+                      type="button"
+                      className="tg-clear-history-btn"
+                      onClick={() => setShowLeaveGroupConfirmModal(true)}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        padding: "11px 16px",
+                        borderRadius: 12,
+                        background: "rgba(239, 68, 68, 0.1)",
+                        border: "1px solid rgba(239, 68, 68, 0.25)",
+                        color: "#ef4444",
+                        fontSize: 14,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        transition: "all 0.2s ease",
+                      }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                      </svg>
+                      <span>Rời khỏi nhóm</span>
+                    </button>
                   )}
                 </div>
               )}
-            </div>
 
-            {/* Phần Lịch Sử Link (Chỉ hiện liên kết thực tế của 2 người) */}
-            <div className="tg-accordion-section">
-              <button
-                className={`tg-accordion-header ${accordionOpen.links ? 'open' : ''}`}
-                onClick={() =>
-                  setAccordionOpen((prev) => ({ ...prev, links: !prev.links }))
-                }
-              >
-                <span>Link ({chatLinkItems.length})</span>
-                <span className="chevron">▾</span>
-              </button>
-
-              {accordionOpen.links && (
-                <div className="tg-accordion-content">
-                  {chatLinkItems.length > 0 ? (
-                    <div className="tg-links-list">
-                      {chatLinkItems.map((link, idx) => (
-                        <a
-                          href={link.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="tg-link-row"
-                          key={idx}
-                        >
-                          <div className={`tg-link-icon-box ${link.iconType || 'generic'}`}>
-                            {link.iconType === 'github' ? (
-                              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-                              </svg>
-                            ) : link.iconType === 'meet' ? (
-                              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                                <rect x="2" y="5" width="13" height="14" rx="2" fill="#ffbb00" />
-                                <polygon points="17 9 22 6 22 18 17 15" fill="#f44336" />
-                              </svg>
-                            ) : (
-                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-                              </svg>
-                            )}
-                          </div>
-
-                          <div className="tg-link-details">
-                            <span className="tg-link-title">{link.title}</span>
-                            <span className="tg-link-domain">{link.domain}</span>
-                          </div>
-
-                          <span className="tg-link-date">{link.date}</span>
-                        </a>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="tg-file-empty-note">
-                      Chưa có liên kết nào được gửi
-                    </div>
-                  )}
+              {/* Nút Xoá lịch sử & Chặn / Bỏ chặn người dùng */}
+              {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
+                <div className="tg-sidebar-block-action" style={{ padding: "16px 20px", marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="tg-clear-history-btn"
+                    onClick={() => handleClearChatHistory(activeChat)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      padding: "11px 16px",
+                      borderRadius: 12,
+                      background: "rgba(239, 68, 68, 0.08)",
+                      border: "1px solid rgba(239, 68, 68, 0.25)",
+                      color: "#ef4444",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      marginBottom: 10,
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    <span>Xoá lịch sử trò chuyện</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tg-block-user-btn"
+                    onClick={() => handleToggleBlockUser(activeChat)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      padding: "11px 16px",
+                      borderRadius: 12,
+                      background: blockedUserIds.includes(String(activeChat.id))
+                        ? "rgba(34, 197, 94, 0.12)"
+                        : "rgba(239, 68, 68, 0.12)",
+                      border: blockedUserIds.includes(String(activeChat.id))
+                        ? "1px solid rgba(34, 197, 94, 0.4)"
+                        : "1px solid rgba(239, 68, 68, 0.4)",
+                      color: blockedUserIds.includes(String(activeChat.id)) ? "#22c55e" : "#ef4444",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                    </svg>
+                    <span>{blockedUserIds.includes(String(activeChat.id)) ? 'Bỏ chặn người dùng' : 'Chặn người dùng'}</span>
+                  </button>
                 </div>
               )}
             </div>
-          </div>
-        </aside>
-      </>
-    )}
+          </aside>
+        </>
+      )}
 
       {/* Lightbox Preview Modal cho Ảnh / Video */}
       {previewMediaUrl && (
@@ -6157,7 +9493,11 @@ function App() {
                 ✕
               </button>
             </div>
-            <img src={previewMediaUrl} alt="Preview" className="tg-lightbox-img" />
+            {/\.(mp4|webm|mov|ogg)(\?.*)?$/i.test(previewMediaUrl) || (typeof previewMediaUrl === 'string' && previewMediaUrl.startsWith('data:video/')) ? (
+              <video src={previewMediaUrl} controls autoPlay className="tg-lightbox-img" style={{ maxHeight: '85vh', maxWidth: '90vw' }} />
+            ) : (
+              <img src={previewMediaUrl} alt="Preview" className="tg-lightbox-img" />
+            )}
           </div>
         </div>
       )}
@@ -6171,7 +9511,7 @@ function App() {
                 <div className="modal-icon">✉️</div>
                 <div>
                   <h3>Lời mời kết bạn</h3>
-                  <p>Quản lý các lời mời kết bạn đã nhận và đã gửi</p>
+
                 </div>
               </div>
               <button
@@ -6183,52 +9523,34 @@ function App() {
               </button>
             </div>
 
-            <div className="modal-tabs">
-              <button
-                type="button"
-                className={`modal-tab ${friendRequestsModalTab === 'received' ? 'active' : ''}`}
-                onClick={() => setFriendRequestsModalTab('received')}
-              >
-                Lời mời đã nhận {friendRequests.length > 0 && `(${friendRequests.length})`}
-              </button>
-              <button
-                type="button"
-                className={`modal-tab ${friendRequestsModalTab === 'sent' ? 'active' : ''}`}
-                onClick={() => setFriendRequestsModalTab('sent')}
-              >
-                Lời mời đã gửi {sentFriendRequests.length > 0 && `(${sentFriendRequests.length})`}
-              </button>
-            </div>
+            <div className="tg-modal-requests-body" style={{ display: 'flex', flexDirection: 'column', gap: 20, maxHeight: '65vh', overflowY: 'auto', padding: '12px 4px' }}>
+              {/* PHẦN 1: LỜI MỜI ĐÃ NHẬN */}
+              <div className="tg-requests-section">
+                <div className="tg-requests-section-header">
+                  <span className="tg-requests-section-title">
+                    📥 Lời mời đã nhận
+                  </span>
+                  <span className={`tg-requests-count-badge ${friendRequests.length > 0 ? 'active' : ''}`}>
+                    {friendRequests.length}
+                  </span>
+                </div>
 
-            <div className="tg-modal-requests-body">
-              {friendRequestsModalTab === 'received' ? (
-                friendRequests.length > 0 ? (
+                {friendRequests.length > 0 ? (
                   <div className="tg-friend-requests-list">
                     {friendRequests.map((req) => {
                       const reqName = req.display_name || req.username
                       return (
                         <div className="tg-friend-req-card" key={req.id}>
                           <div className="tg-friend-req-user">
-                            <div
-                              className="tg-avatar sm"
-                              style={{
-                                background: !req.avatar_url
-                                  ? getAvatarGradient(req.user_id || req.username)
-                                  : undefined,
-                              }}
-                            >
-                              {req.avatar_url ? (
-                                <img
-                                  src={req.avatar_url}
-                                  alt=""
-                                  className="avatar-img"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none'
-                                  }}
-                                />
-                              ) : (
-                                getFriendInitials(reqName)
-                              )}
+                            <div className="tg-avatar sm">
+                              <img
+                                src={req.avatar_url || getDefaultAvatar(reqName)}
+                                alt=""
+                                className="avatar-img"
+                                onError={(e) => {
+                                  e.currentTarget.src = getDefaultAvatar(reqName)
+                                }}
+                              />
                             </div>
                             <div className="tg-friend-req-info">
                               <div className="tg-friend-req-top">
@@ -6239,7 +9561,7 @@ function App() {
                                   {formatChatListTime(req.created_at)}
                                 </span>
                               </div>
-                              <span className="tg-friend-req-uname">@{req.username}</span>
+                              <span className="tg-friend-req-uname">{req.username}</span>
                               {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
                             </div>
                           </div>
@@ -6270,42 +9592,39 @@ function App() {
                     })}
                   </div>
                 ) : (
-                  <div className="tg-empty-list" style={{ padding: '36px 0' }}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>📬</div>
-                    <p>Chưa có lời mời kết bạn nào gửi đến bạn</p>
-                    <span style={{ fontSize: 12, color: '#727e90' }}>
-                      Khi có người gửi lời mời, bạn có thể đồng ý hoặc từ chối tại đây.
-                    </span>
+                  <div className="tg-empty-section-hint">
+                    Không có lời mời nào gửi đến bạn
                   </div>
-                )
-              ) : (
-                sentFriendRequests.length > 0 ? (
+                )}
+              </div>
+
+              {/* PHẦN 2: LỜI MỜI ĐÃ GỬI */}
+              <div className="tg-requests-section" style={{ marginTop: 8 }}>
+                <div className="tg-requests-section-header">
+                  <span className="tg-requests-section-title">
+                    📤 Lời mời bạn đã gửi
+                  </span>
+                  <span className={`tg-requests-count-badge ${sentFriendRequests.length > 0 ? 'active' : ''}`}>
+                    {sentFriendRequests.length}
+                  </span>
+                </div>
+
+                {sentFriendRequests.length > 0 ? (
                   <div className="tg-friend-requests-list">
                     {sentFriendRequests.map((req) => {
                       const reqName = req.display_name || req.username
                       return (
                         <div className="tg-friend-req-card" key={req.id}>
                           <div className="tg-friend-req-user">
-                            <div
-                              className="tg-avatar sm"
-                              style={{
-                                background: !req.avatar_url
-                                  ? getAvatarGradient(req.friend_id || req.username)
-                                  : undefined,
-                              }}
-                            >
-                              {req.avatar_url ? (
-                                <img
-                                  src={req.avatar_url}
-                                  alt=""
-                                  className="avatar-img"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none'
-                                  }}
-                                />
-                              ) : (
-                                getFriendInitials(reqName)
-                              )}
+                            <div className="tg-avatar sm">
+                              <img
+                                src={req.avatar_url || getDefaultAvatar(reqName)}
+                                alt=""
+                                className="avatar-img"
+                                onError={(e) => {
+                                  e.currentTarget.src = getDefaultAvatar(reqName)
+                                }}
+                              />
                             </div>
                             <div className="tg-friend-req-info">
                               <div className="tg-friend-req-top">
@@ -6316,7 +9635,7 @@ function App() {
                                   {formatChatListTime(req.created_at)}
                                 </span>
                               </div>
-                              <span className="tg-friend-req-uname">@{req.username}</span>
+                              <span className="tg-friend-req-uname">{req.username}</span>
                               <span className="tg-friend-req-status-tag">Đang chờ đối phương phản hồi...</span>
                               {req.bio && <p className="tg-friend-req-bio">{req.bio}</p>}
                             </div>
@@ -6339,22 +9658,11 @@ function App() {
                     })}
                   </div>
                 ) : (
-                  <div className="tg-empty-list" style={{ padding: '36px 0' }}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>📤</div>
-                    <p>Bạn chưa gửi lời mời kết bạn nào đang chờ</p>
-                    <button
-                      className="secondary-button"
-                      style={{ marginTop: 14, fontSize: 12, padding: '7px 14px' }}
-                      onClick={() => {
-                        setShowFriendRequestsModal(false)
-                        setShowAddFriendModal(true)
-                      }}
-                    >
-                      + Tìm và kết bạn mới
-                    </button>
+                  <div className="tg-empty-section-hint">
+                    Bạn chưa gửi lời mời kết bạn nào đang chờ
                   </div>
-                )
-              )}
+                )}
+              </div>
             </div>
 
             <div className="modal-footer" style={{ marginTop: 20 }}>
@@ -6379,7 +9687,7 @@ function App() {
                 <div className="modal-icon">👥</div>
                 <div>
                   <h3>Danh bạ (Contacts)</h3>
-                  <p>{friends.length} người bạn trong danh bạ</p>
+
                 </div>
               </div>
               <button
@@ -6401,7 +9709,7 @@ function App() {
                     <div className="contact-item" key={req.id}>
                       <div className="contact-user">
                         <div className="tg-avatar sm">
-                          {req.username.charAt(0).toUpperCase()}
+                          {(req.username || req.name || 'U').charAt(0).toUpperCase()}
                         </div>
                         <div>
                           <strong>{req.username}</strong>
@@ -6431,7 +9739,7 @@ function App() {
                 style={{ padding: '6px 12px', fontSize: 12 }}
                 onClick={() => {
                   setShowContactsModal(false)
-                  setShowAddFriendModal(true)
+                  handleOpenAddFriendModal()
                 }}
               >
                 + Thêm bạn mới
@@ -6447,7 +9755,7 @@ function App() {
                         {friend.avatar_url ? (
                           <img src={friend.avatar_url} alt="" className="avatar-img" />
                         ) : (
-                          (friend.display_name || friend.username).charAt(0).toUpperCase()
+                          (friend.display_name || friend.username || 'U').charAt(0).toUpperCase()
                         )}
                         <div className={`tg-online-dot ${friend.is_online ? 'online' : 'offline'}`} />
                       </div>
@@ -6490,16 +9798,16 @@ function App() {
         </div>
       )}
 
-      {/* Add Friend Modal (Tìm kiếm hoặc Quét mã QR) */}
+      {/* Add Friend Modal (Tìm kiếm bạn bè) */}
       {showAddFriendModal && (
         <div className="modal-overlay" onClick={handleCloseAddFriendModal}>
-          <div className="modal-card tg-qr-modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title-wrap">
-                <div className="modal-icon">{addFriendTab === 'qr_scan' ? '📷' : '➕'}</div>
+                <div className="modal-icon">➕</div>
                 <div>
-                  <h3>Kết bạn mới</h3>
-                  <p>{addFriendTab === 'qr_scan' ? 'Quét mã QR để kết bạn tức thì' : 'Tìm kiếm theo tên người dùng'}</p>
+                  <h3>Thêm bạn bè</h3>
+
                 </div>
               </div>
               <button
@@ -6511,461 +9819,63 @@ function App() {
               </button>
             </div>
 
-            {/* Modal Tabs: Tìm theo Username | Quét mã QR */}
-            <div className="modal-tabs">
-              <button
-                type="button"
-                className={`modal-tab ${addFriendTab === 'search' ? 'active' : ''}`}
-                onClick={() => {
-                  handleStopQrCamera()
-                  setAddFriendTab('search')
-                  setSearchFriendError('')
-                  setSearchFriendSuccess('')
-                }}
-              >
-                🔍 Tìm theo Username
-              </button>
-              <button
-                type="button"
-                className={`modal-tab ${addFriendTab === 'qr_scan' ? 'active' : ''}`}
-                onClick={() => {
-                  setAddFriendTab('qr_scan')
-                  setQrScanError('')
-                  setQrScanSuccess('')
-                }}
-              >
-                📷 Quét mã QR
-              </button>
-            </div>
+            {searchFriendError && <div className="modal-alert error">{searchFriendError}</div>}
+            {searchFriendSuccess && <div className="modal-alert success">{searchFriendSuccess}</div>}
 
-            {/* TAB 1: TÌM THEO USERNAME */}
-            {addFriendTab === 'search' && (
-              <>
-                {searchFriendError && <div className="modal-alert error">{searchFriendError}</div>}
-                {searchFriendSuccess && <div className="modal-alert success">{searchFriendSuccess}</div>}
-
-                <form onSubmit={handleSearchFriend} className="profile-form">
-                  <label>
-                    Username người dùng
-                    <div style={{ display: 'flex', gap: 10 }}>
-                      <input
-                        type="text"
-                        placeholder="Nhập chính xác username..."
-                        value={searchFriendInput}
-                        onChange={(e) => setSearchFriendInput(e.target.value)}
-                      />
-                      <button
-                        type="submit"
-                        className="primary-button"
-                        style={{ minWidth: 100, height: 48, marginTop: 0 }}
-                        disabled={searchFriendLoading || !searchFriendInput.trim()}
-                      >
-                        {searchFriendLoading ? 'Đang tìm...' : 'Tìm kiếm'}
-                      </button>
-                    </div>
-                  </label>
-                </form>
-
-                {searchFriendResult && (
-                  <div className="qr-result-card">
-                    <div className="qr-result-user">
-                      <div className="tg-avatar sm">
-                        {searchFriendResult.avatar_url ? (
-                          <img src={searchFriendResult.avatar_url} alt="" className="avatar-img" />
-                        ) : (
-                          (searchFriendResult.display_name || searchFriendResult.username).charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      <div>
-                        <strong>{searchFriendResult.display_name || searchFriendResult.username}</strong>
-                        <span>@{searchFriendResult.username}</span>
-                      </div>
-                    </div>
-
-                    <button
-                      className="primary-button"
-                      style={{ height: 36, padding: '0 16px', fontSize: 12 }}
-                      disabled={searchFriendLoading}
-                      onClick={() => handleSendFriendRequest(searchFriendResult.id)}
-                    >
-                      Kết bạn
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* TAB 2: QUÉT MÃ QR */}
-            {addFriendTab === 'qr_scan' && (
-              <div className="qr-scan-tab-body">
-                {qrScanError && <div className="modal-alert error">{qrScanError}</div>}
-                {qrScanSuccess && <div className="modal-alert success">{qrScanSuccess}</div>}
-
-                {/* Camera Viewfinder */}
-                {qrCameraActive ? (
-                  <div className="qr-camera-wrap">
-                    <video ref={qrVideoRef} className="qr-camera-video" playsInline autoPlay muted />
-                    <div className="qr-camera-overlay">
-                      <div className="qr-viewfinder">
-                        <div className="viewfinder-corner tl" />
-                        <div className="viewfinder-corner tr" />
-                        <div className="viewfinder-corner bl" />
-                        <div className="viewfinder-corner br" />
-                        <div className="viewfinder-laser" />
-                      </div>
-                      <p className="qr-camera-tip">Đưa mã QR của bạn bè vào khung hình để quét</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="qr-camera-stop-btn"
-                      onClick={handleStopQrCamera}
-                    >
-                      ⏹ Tắt Camera
-                    </button>
-                  </div>
-                ) : (
-                  <div className="qr-scan-actions">
-                    <button
-                      type="button"
-                      className="primary-button qr-scan-camera-btn"
-                      onClick={handleStartQrCamera}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                        <circle cx="12" cy="13" r="4"></circle>
-                      </svg>
-                      <span>Bật Camera để quét trực tiếp</span>
-                    </button>
-
-                    <div
-                      className="qr-image-dropzone"
-                      onClick={() => qrFileInputRef.current?.click()}
-                    >
-                      <input
-                        type="file"
-                        ref={qrFileInputRef}
-                        accept="image/*"
-                        style={{ display: 'none' }}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0]
-                          if (file) handleScanQrFromFile(file)
-                          e.target.value = ''
-                        }}
-                      />
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                        <polyline points="21 15 16 10 5 21"></polyline>
-                      </svg>
-                      <span>Hoặc <strong>tải ảnh mã QR</strong> từ máy tính</span>
-                      <small>Kéo thả tệp ảnh vào đây hoặc bấm Ctrl+V</small>
-                    </div>
-                  </div>
-                )}
-
-                {/* Direct Text Input Fallback */}
-                <div className="qr-manual-input-box">
-                  <span className="qr-manual-label">Hoặc nhập mã / dán liên kết kết bạn:</span>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      type="text"
-                      placeholder="Dán mã QR code (ví dụ: a7b8c9d0...)"
-                      value={qrScanInput}
-                      onChange={(e) => setQrScanInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleResolveQrCode(qrScanInput)
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="primary-button"
-                      style={{ minWidth: 90, height: 42, marginTop: 0, fontSize: 13 }}
-                      disabled={qrScanning || !qrScanInput.trim()}
-                      onClick={() => handleResolveQrCode(qrScanInput)}
-                    >
-                      {qrScanning ? 'Đang đọc...' : 'Kiểm tra'}
-                    </button>
-                  </div>
+            <form onSubmit={handleSearchFriend} className="profile-form">
+              <label>
+                Tên người dùng hoặc Email
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    type="text"
+                    placeholder="Nhập tên hiển thị hoặc email người dùng..."
+                    value={searchFriendInput}
+                    onChange={(e) => setSearchFriendInput(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    style={{ minWidth: 100, height: 48, marginTop: 0 }}
+                    disabled={searchFriendLoading || !searchFriendInput.trim()}
+                  >
+                    {searchFriendLoading ? 'Đang tìm...' : 'Tìm kiếm'}
+                  </button>
                 </div>
+              </label>
+            </form>
 
-                {/* QR Scan Result Card */}
-                {qrScanResult && qrScanResult.user && (
-                  <div className="qr-resolved-card">
-                    <div className="qr-resolved-header">
-                      <div className="tg-avatar md">
-                        {qrScanResult.user.avatar_url ? (
-                          <img src={qrScanResult.user.avatar_url} alt="" className="avatar-img" />
-                        ) : (
-                          (qrScanResult.user.display_name || qrScanResult.user.username).charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      <div className="qr-resolved-info">
-                        <strong>{qrScanResult.user.display_name || qrScanResult.user.username}</strong>
-                        <span>@{qrScanResult.user.username}</span>
-                        {qrScanResult.user.bio && <p className="qr-resolved-bio">{qrScanResult.user.bio}</p>}
-                      </div>
-                    </div>
-
-                    <div className="qr-resolved-actions">
-                      {qrScanResult.friendship_status === 'accepted' ? (
-                        <div className="qr-status-badge success">
-                          <span>✅ Hai bạn đã là bạn bè của nhau rồi</span>
-                          <button
-                            type="button"
-                            className="primary-button"
-                            style={{ height: 36, padding: '0 16px', fontSize: 12, marginTop: 6 }}
-                            onClick={() => {
-                              setActiveChat({
-                                id: qrScanResult.user.id,
-                                username: qrScanResult.user.username,
-                                display_name: qrScanResult.user.display_name,
-                                avatar_url: qrScanResult.user.avatar_url,
-                                bio: qrScanResult.user.bio,
-                              })
-                              handleCloseAddFriendModal()
-                            }}
-                          >
-                            Nhắn tin ngay
-                          </button>
-                        </div>
-                      ) : qrScanResult.friendship_status === 'pending_sent' ? (
-                        <div className="qr-status-badge warning">
-                          <span>⏳ Đã gửi lời mời kết bạn trước đó, vui lòng chờ đối phương đồng ý.</span>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="primary-button qr-add-btn"
-                          disabled={qrActionLoading}
-                          onClick={() => handleAddFriendViaQr(qrScanResult.resolvedCode)}
-                        >
-                          {qrActionLoading ? 'Đang kết nối...' : '⚡ Kết bạn ngay qua mã QR'}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="modal-footer" style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <button
-                type="button"
-                className="secondary-button"
-                style={{ fontSize: 12 }}
-                onClick={() => {
-                  handleCloseAddFriendModal()
-                  handleOpenMyQrModal()
-                }}
-              >
-                📷 Xem mã QR của tôi
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={handleCloseAddFriendModal}
-              >
-                Đóng
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal "Mã QR của tôi" (Tự động spawn & set thời gian hủy) */}
-      {showMyQrModal && (
-        <div className="modal-overlay" onClick={handleCloseMyQrModal}>
-          <div className="modal-card tg-my-qr-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div className="modal-title-wrap">
-                <div className="modal-icon">📷</div>
-                <div>
-                  <h3>Mã QR kết bạn của tôi</h3>
-                  <p>Mã tự động hủy để bảo mật quyền riêng tư</p>
-                </div>
-              </div>
-              <button
-                className="modal-close-button"
-                onClick={handleCloseMyQrModal}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-
-            {myQrError && <div className="modal-alert error">{myQrError}</div>}
-            {myQrSuccess && <div className="modal-alert success">{myQrSuccess}</div>}
-
-            <div className="my-qr-body">
-              {/* Card QR Poster Preview */}
-              <div className="my-qr-poster">
-                {/* User Header */}
-                <div className="my-qr-user-header">
+            {searchFriendResult && (
+              <div className="qr-result-card" style={{ marginTop: 14 }}>
+                <div className="qr-result-user">
                   <div className="tg-avatar sm">
-                    {currentUser?.avatar_url ? (
-                      <img src={currentUser.avatar_url} alt="" className="avatar-img" />
+                    {searchFriendResult.avatar_url ? (
+                      <img src={searchFriendResult.avatar_url} alt="" className="avatar-img" />
                     ) : (
-                      (currentUser?.display_name || currentUser?.username || 'U').charAt(0).toUpperCase()
+                      (searchFriendResult.display_name || searchFriendResult.username || 'U').charAt(0).toUpperCase()
                     )}
                   </div>
                   <div>
-                    <strong className="my-qr-name">
-                      {currentUser?.display_name || currentUser?.username || 'CloudChat User'}
-                    </strong>
-                    <span className="my-qr-handle">@{currentUser?.username || 'user'}</span>
+                    <strong>{searchFriendResult.display_name || searchFriendResult.username}</strong>
+                    <span>@{searchFriendResult.username}</span>
                   </div>
                 </div>
 
-                {/* QR Code Container */}
-                <div className="my-qr-canvas-box">
-                  {myQrLoading ? (
-                    <div className="my-qr-loading-spinner">
-                      <div className="spinner-ring" />
-                      <span>Đang tạo mã QR bảo mật...</span>
-                    </div>
-                  ) : myQrImageUrl ? (
-                    <div className="my-qr-image-wrap">
-                      <img
-                        src={myQrImageUrl}
-                        alt="My QR Code"
-                        className={`my-qr-img ${myQrRemainingSeconds <= 0 ? 'expired' : ''}`}
-                      />
-
-                      {/* Overlay khi mã hết hạn */}
-                      {myQrRemainingSeconds <= 0 && (
-                        <div className="my-qr-expired-overlay">
-                          <div className="expired-icon">⌛</div>
-                          <strong>Mã QR đã hết hạn</strong>
-                          <p>Mã đã tự động bị hủy để bảo mật tài khoản.</p>
-                          <button
-                            type="button"
-                            className="primary-button"
-                            style={{ height: 36, padding: '0 16px', fontSize: 12, marginTop: 8 }}
-                            onClick={() => handleGenerateMyQr(myQrTtl)}
-                          >
-                            🔄 Tạo mã mới ngay
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="my-qr-empty">Chưa có mã QR nào</div>
-                  )}
-                </div>
-
-                {/* Countdown Timer with Progress Bar */}
-                <div className="my-qr-timer-section">
-                  <div className="my-qr-timer-row">
-                    <span className="timer-label">
-                      {myQrRemainingSeconds > 0 ? '⏳ Tự động hủy sau:' : '⚠️ Trạng thái:'}
-                    </span>
-                    <span className={`timer-clock ${myQrRemainingSeconds <= 30 && myQrRemainingSeconds > 0 ? 'urgent' : ''} ${myQrRemainingSeconds <= 0 ? 'expired' : ''}`}>
-                      {myQrRemainingSeconds > 0
-                        ? formatCountdown(myQrRemainingSeconds)
-                        : 'Đã hết hạn'}
-                    </span>
-                  </div>
-
-                  <div className="my-qr-progress-bar">
-                    <div
-                      className={`my-qr-progress-fill ${myQrRemainingSeconds <= 30 ? 'urgent' : ''}`}
-                      style={{
-                        width: `${Math.min(100, Math.max(0, (myQrRemainingSeconds / (myQrTtl || 300)) * 100))}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* TTL Presets Selector (Set thời gian hủy) */}
-              <div className="my-qr-ttl-panel">
-                <span className="ttl-panel-title">⏱️ Chọn thời gian tự hủy mã:</span>
-                <div className="ttl-presets-list">
-                  {QR_TTL_PRESETS.map((preset) => (
-                    <button
-                      type="button"
-                      key={preset.seconds}
-                      className={`ttl-preset-btn ${myQrTtl === preset.seconds ? 'selected' : ''}`}
-                      onClick={() => handleGenerateMyQr(preset.seconds)}
-                      title={`Tạo mã mới với thời hạn ${preset.label}`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="my-qr-actions-grid">
                 <button
-                  type="button"
-                  className="my-qr-action-btn primary"
-                  onClick={() => handleGenerateMyQr(myQrTtl)}
-                  disabled={myQrLoading}
-                  title="Spawn mã QR mới và hủy mã cũ"
+                  className="primary-button"
+                  style={{ height: 36, padding: '0 16px', fontSize: 12 }}
+                  disabled={searchFriendLoading}
+                  onClick={() => handleSendFriendRequest(searchFriendResult.id)}
                 >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10"></polyline>
-                    <polyline points="1 20 1 14 7 14"></polyline>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-                  </svg>
-                  <span>Làm mới mã</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="my-qr-action-btn secondary"
-                  onClick={handleDownloadQrCard}
-                  disabled={!myQrImageUrl}
-                  title="Tải ảnh thẻ QR về máy tính"
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="7 10 12 15 17 10"></polyline>
-                    <line x1="12" y1="15" x2="12" y2="3"></line>
-                  </svg>
-                  <span>Tải ảnh thẻ QR</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="my-qr-action-btn secondary"
-                  onClick={handleCopyQrCode}
-                  disabled={!myQrData?.code}
-                  title="Sao chép liên kết kết bạn"
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                  <span>Sao chép link</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="my-qr-action-btn danger"
-                  onClick={handleRevokeMyQr}
-                  disabled={myQrRevoking || myQrRemainingSeconds <= 0}
-                  title="Hủy ngay mã QR này"
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="15" y1="9" x2="9" y2="15"></line>
-                    <line x1="9" y1="9" x2="15" y2="15"></line>
-                  </svg>
-                  <span>Hủy mã ngay</span>
+                  Kết bạn
                 </button>
               </div>
-            </div>
+            )}
 
-            <div className="modal-footer" style={{ marginTop: 20 }}>
+            <div className="modal-footer" style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
               <button
                 type="button"
                 className="secondary-button"
-                onClick={handleCloseMyQrModal}
+                onClick={handleCloseAddFriendModal}
               >
                 Đóng
               </button>
@@ -6974,428 +9884,16 @@ function App() {
         </div>
       )}
 
-      {/* Modal Đổi hình nền trò chuyện (10 Theme 3D & tải ảnh từ máy) */}
-      {showWallpaperModal && (
-        <div className="modal-overlay" onClick={() => setShowWallpaperModal(false)}>
-          <div
-            className="modal-card tg-wallpaper-modal-card"
-            onClick={(e) => e.stopPropagation()}
-            onPaste={handleWallpaperPaste}
-          >
-            <div className="modal-header">
-              <div className="modal-title-wrap">
-                <div className="modal-icon">🎨</div>
-                <div>
-                  <h3>Màu nền cuộc trò chuyện</h3>
-                  <p>
-                    {wallpaperScope === 'chat' && activeChat
-                      ? `Áp dụng màu nền riêng cho cuộc trò chuyện với ${getFriendName(activeChat)}`
-                      : 'Cài đặt màu nền mặc định cho tất cả cuộc trò chuyện'}
-                  </p>
-                </div>
-              </div>
-              <button
-                className="modal-close-button"
-                onClick={() => setShowWallpaperModal(false)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Scope Selector: Riêng cuộc trò chuyện này VS Tất cả cuộc trò chuyện */}
-            <div className="wallpaper-scope-bar">
-              <span className="scope-bar-label">Áp dụng cho:</span>
-              <div className="scope-pills">
-                {activeChat && (
-                  <button
-                    type="button"
-                    className={`scope-pill-btn ${wallpaperScope === 'chat' ? 'active' : ''}`}
-                    onClick={() => setWallpaperScope('chat')}
-                  >
-                    📌 Cuộc trò chuyện này ({getFriendName(activeChat)})
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={`scope-pill-btn ${wallpaperScope === 'global' ? 'active' : ''}`}
-                  onClick={() => setWallpaperScope('global')}
-                >
-                  🌐 Tất cả cuộc trò chuyện
-                </button>
-              </div>
-            </div>
-
-            {/* Live Crisp Color Preview Box (Xem trước màu sắc với bong bóng tin nhắn, nét 100%) */}
-            <div className="wallpaper-live-preview-box">
-              <div
-                className="wallpaper-preview-bg"
-                style={{
-                  background:
-                    tempWallpaper.type === 'custom' || tempWallpaper.type === 'url'
-                      ? `url("${tempWallpaper.value}") center/cover no-repeat`
-                      : tempWallpaper.value || '#0e1621',
-                }}
-              >
-                {/* Sample chat bubbles to show contrast */}
-                <div className="wallpaper-preview-chat-bubbles">
-                  <div className="preview-bubble theirs">
-                    <span>Chào bạn! Màu nền này nhìn thế nào bạn? ✨</span>
-                    <small>10:24</small>
-                  </div>
-                  <div className="preview-bubble mine">
-                    <span>Màu chuẩn cực kỳ rõ nét, không bị mờ và rất dịu mắt! 🔥</span>
-                    <small>10:25 ✓✓</small>
-                  </div>
-                </div>
-              </div>
-
-              {/* Status bar displaying currently selected color info */}
-              <div className="wallpaper-preview-color-info">
-                <span className="color-preview-badge" style={{ background: tempWallpaper.value || '#0e1621' }}></span>
-                <span className="color-preview-name">{tempWallpaper.name || 'Màu đã chọn'}</span>
-                {tempWallpaper.type === 'color' && tempWallpaper.value && (
-                  <code className="color-preview-code">{tempWallpaper.value}</code>
-                )}
-              </div>
-            </div>
-
-            {/* Thanh Nhập Mã Màu Tự Động Đổi Nền Tức Thì (Không Giới Hạn Màu) */}
-            <div className="instant-color-input-panel">
-              <div className="instant-color-input-header">
-                <span className="instant-input-title">⚡ Nhập mã màu (Tự động đổi màu tức thì • Không giới hạn):</span>
-                <span className="instant-input-badge">Mọi định dạng CSS</span>
-              </div>
-              <div className="instant-color-input-wrap">
-                <div
-                  className="instant-color-swatch-picker"
-                  style={{ background: tempWallpaper.value || '#0e1621' }}
-                  title="Bấm để chọn màu bằng bảng màu trực quan"
-                  onClick={() => document.getElementById('native-color-picker-trigger')?.click()}
-                >
-                  <input
-                    id="native-color-picker-trigger"
-                    type="color"
-                    value={customColorHex.startsWith('#') && customColorHex.length === 7 ? customColorHex : '#0e1621'}
-                    onChange={(e) => {
-                      const hex = e.target.value
-                      setCustomColorHex(hex)
-                      handleColorInputChange(hex)
-                    }}
-                    style={{ opacity: 0, position: 'absolute', pointerEvents: 'none', width: 0, height: 0 }}
-                  />
-                  <span>🎨</span>
-                </div>
-                <input
-                  type="text"
-                  className={`instant-color-text-input ${colorInputStatus === 'invalid' ? 'error' : colorInputStatus === 'valid' ? 'valid' : ''}`}
-                  value={customColorInput}
-                  onChange={(e) => handleColorInputChange(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      if (colorInputStatus === 'valid') {
-                        handleSaveWallpaper()
-                      }
-                    }
-                  }}
-                  placeholder="Gõ mã màu (VD: #ff4500, 0f172a, rgb(20,30,50), navy, linear-gradient...)"
-                />
-                <button
-                  type="button"
-                  className="instant-color-apply-btn"
-                  onClick={handleSaveWallpaper}
-                  disabled={colorInputStatus !== 'valid'}
-                  title="Lưu và áp dụng ngay màu này"
-                >
-                  Áp dụng ngay
-                </button>
-              </div>
-              <div className="instant-color-status-row">
-                {colorInputStatus === 'valid' && (
-                  <span className="instant-status-msg valid">
-                    ✅ Màu hợp lệ! Đã tự động đổi màu nền xem trước (Ấn Enter để áp dụng ngay)
-                  </span>
-                )}
-                {colorInputStatus === 'invalid' && (
-                  <span className="instant-status-msg error">
-                    ⚠️ Chưa nhận diện được màu (Gợi ý: #1e293b, ff0055, rgb(15,23,42), navy, v.v...)
-                  </span>
-                )}
-                {colorInputStatus === 'empty' && (
-                  <span className="instant-status-msg hint">
-                    💡 Hỗ trợ không giới hạn: Mã HEX (#ff0055 hoặc ff0055), RGB, HSL, tên màu (black, red, navy...) & Gradient
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Navigation Tabs */}
-            <div className="modal-tabs wallpaper-tabs">
-              <button
-                type="button"
-                className={`modal-tab ${wallpaperModalTab === 'colors' ? 'active' : ''}`}
-                onClick={() => setWallpaperModalTab('colors')}
-              >
-                🌈 Bảng màu & Gradient (14 Chủ đề)
-              </button>
-              <button
-                type="button"
-                className={`modal-tab ${wallpaperModalTab === 'custom_picker' ? 'active' : ''}`}
-                onClick={() => setWallpaperModalTab('custom_picker')}
-              >
-                🎨 Tự chọn mã màu
-              </button>
-              <button
-                type="button"
-                className={`modal-tab ${wallpaperModalTab === 'upload' ? 'active' : ''}`}
-                onClick={() => setWallpaperModalTab('upload')}
-              >
-                📁 Tải ảnh riêng
-              </button>
-            </div>
-
-            {/* TAB 1: 14 CHỦ ĐỀ MÀU SẮC & GRADIENT */}
-            {wallpaperModalTab === 'colors' && (
-              <div className="chat-color-presets-grid">
-                {CHAT_COLOR_PRESETS.map((preset) => (
-                  <div
-                    key={preset.id}
-                    className={`chat-color-card ${tempWallpaper.value === preset.value ? 'selected' : ''}`}
-                    onClick={() => {
-                      setTempWallpaper({
-                        type: preset.type,
-                        value: preset.value,
-                        name: preset.name,
-                      })
-                      if (preset.type === 'color' && preset.value.startsWith('#')) {
-                        setCustomColorHex(preset.value)
-                      }
-                    }}
-                  >
-                    <div
-                      className="color-card-swatch"
-                      style={{ background: preset.value }}
-                    >
-                      <span className="color-card-num">{preset.num}</span>
-                      {tempWallpaper.value === preset.value && (
-                        <div className="color-selected-check">✓</div>
-                      )}
-                    </div>
-                    <div className="color-card-info">
-                      <strong>{preset.name}</strong>
-                      <small>{preset.desc}</small>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* TAB 2: TỰ CHỌN MÃ MÀU (COLOR PICKER & SWATCHES) */}
-            {wallpaperModalTab === 'custom_picker' && (
-              <div className="custom-color-picker-pane">
-                <div className="color-picker-row">
-                  <div className="color-picker-input-wrap">
-                    <label className="color-picker-label">Bấm vào ô màu để chọn hoặc nhập mã HEX:</label>
-                    <div className="color-picker-control">
-                      <input
-                        type="color"
-                        value={customColorHex.startsWith('#') && customColorHex.length === 7 ? customColorHex : '#0e1621'}
-                        onChange={(e) => {
-                          const hex = e.target.value
-                          setCustomColorHex(hex)
-                          setTempWallpaper({
-                            type: 'color',
-                            value: hex,
-                            name: `Màu tự chọn (${hex})`,
-                          })
-                        }}
-                        className="color-input-native"
-                        title="Chọn màu sắc"
-                      />
-                      <input
-                        type="text"
-                        value={customColorHex}
-                        onChange={(e) => {
-                          const hex = e.target.value
-                          setCustomColorHex(hex)
-                          if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(hex)) {
-                            setTempWallpaper({
-                              type: 'color',
-                              value: hex,
-                              name: `Màu tự chọn (${hex})`,
-                            })
-                          }
-                        }}
-                        placeholder="#0e1621"
-                        className="color-hex-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="color-swatches-section">
-                    <label className="color-picker-label">Màu cơ bản đề xuất (bấm chọn nhanh):</label>
-                    <div className="color-swatches-grid">
-                      {QUICK_COLOR_SWATCHES.map((swatch) => (
-                        <button
-                          type="button"
-                          key={swatch.hex}
-                          className={`color-swatch-btn ${tempWallpaper.value === swatch.hex ? 'selected' : ''}`}
-                          style={{ background: swatch.hex }}
-                          title={`${swatch.name} (${swatch.hex})`}
-                          onClick={() => {
-                            setCustomColorHex(swatch.hex)
-                            setTempWallpaper({
-                              type: 'color',
-                              value: swatch.hex,
-                              name: swatch.name,
-                            })
-                          }}
-                        >
-                          {tempWallpaper.value === swatch.hex && <span>✓</span>}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 3: TẢI ẢNH RIÊNG */}
-            {wallpaperModalTab === 'upload' && (
-              <div className="wallpaper-upload-pane">
-                <input
-                  type="file"
-                  ref={wallpaperFileInputRef}
-                  accept="image/png,image/jpeg,image/jpg,image/webp"
-                  style={{ display: 'none' }}
-                  onChange={handleWallpaperFileSelect}
-                />
-                <div
-                  className={`avatar-dropzone ${wallpaperDragOver ? 'active' : ''}`}
-                  onClick={() => wallpaperFileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault()
-                    setWallpaperDragOver(true)
-                  }}
-                  onDragLeave={() => setWallpaperDragOver(false)}
-                  onDrop={handleWallpaperDrop}
-                >
-                  <div className="dropzone-icon">
-                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                      <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                      <polyline points="21 15 16 10 5 21"></polyline>
-                    </svg>
-                  </div>
-                  <div className="dropzone-text">
-                    <strong>Bấm để chọn ảnh từ máy</strong> hoặc kéo thả ảnh vào đây
-                  </div>
-                  <div className="dropzone-hint">
-                    Hỗ trợ JPG, PNG, WebP • Tự động hiển thị sắc nét, không làm mờ
-                  </div>
-                  <div className="dropzone-badge-paste">
-                    📋 Mẹo: Bạn có thể copy ảnh bất kỳ rồi bấm <strong>Ctrl + V</strong> để dán trực tiếp
-                  </div>
-
-                  {wallpaperFileMeta && (
-                    <div className="avatar-file-status">
-                      <span>✅ {wallpaperFileMeta.name}</span>
-                      {wallpaperFileMeta.size && <span className="size-pill">{wallpaperFileMeta.size}</span>}
-                    </div>
-                  )}
-                </div>
-
-                {tempWallpaper.type === 'custom' && (
-                  <div className="custom-wallpaper-preview-badge">
-                    <span>Đang chọn ảnh tùy chỉnh từ thiết bị của bạn</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Cài đặt cử chỉ nhấp đúp trên nền chat */}
-            <div className="wallpaper-dblclick-setting">
-              <div className="dblclick-setting-header">
-                <div className="dblclick-setting-title">
-                  <span>⚡ Cử chỉ nhấp đúp (Double-Click) trên nền chat</span>
-                  <span className="dblclick-badge">Mới</span>
-                </div>
-                <p className="dblclick-setting-desc">
-                  Nhấp chuột 2 lần vào khoảng trống hình nền chat để thao tác nhanh màu nền
-                </p>
-              </div>
-              <div className="dblclick-options">
-                <button
-                  type="button"
-                  className={`dblclick-option-btn ${doubleClickAction === 'next' ? 'active' : ''}`}
-                  onClick={() => handleSetDoubleClickAction('next')}
-                >
-                  <span className="option-icon">🎨</span>
-                  <div className="option-text">
-                    <strong>Đổi ngay màu nền kế tiếp (14 chủ đề màu)</strong>
-                    <small>Tự động chuyển vòng 14 màu & dải gradient sắc nét, không mờ</small>
-                  </div>
-                  {doubleClickAction === 'next' && <span className="option-check">✓</span>}
-                </button>
-                <button
-                  type="button"
-                  className={`dblclick-option-btn ${doubleClickAction === 'modal' ? 'active' : ''}`}
-                  onClick={() => handleSetDoubleClickAction('modal')}
-                >
-                  <span className="option-icon">⚙️</span>
-                  <div className="option-text">
-                    <strong>Mở bảng chọn màu nền</strong>
-                    <small>Bật cửa sổ để tự chọn mã màu HEX hoặc bảng màu yêu thích</small>
-                  </div>
-                  {doubleClickAction === 'modal' && <span className="option-check">✓</span>}
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="modal-footer" style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <button
-                type="button"
-                className="secondary-button"
-                style={{ color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
-                onClick={handleResetWallpaper}
-                title="Khôi phục lại giao diện Telegram Dark gốc"
-              >
-                ↺ Đặt lại mặc định
-              </button>
-
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setShowWallpaperModal(false)}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  style={{ minWidth: 130 }}
-                  onClick={handleSaveWallpaper}
-                >
-                  Áp dụng màu nền
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* Modal Thông tin tài khoản (Giao diện MỚI chuẩn: Avatar gọn gàng, Giới tính, Ngày sinh) */}
       {showProfileModal && (
         <div className="modal-overlay" onClick={() => setShowProfileModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} onPaste={handleProfilePaste}>
+          <div className="modal-card tg-profile-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title-wrap">
                 <div className="modal-icon">👤</div>
                 <div>
                   <h3>Thông tin tài khoản</h3>
-                  <p>Quản lý thông tin cá nhân và bảo mật</p>
+
                 </div>
               </div>
               <button
@@ -7407,391 +9905,391 @@ function App() {
               </button>
             </div>
 
-            <div className="modal-tabs">
-              <button
-                type="button"
-                className={`modal-tab ${profileTab === 'info' ? 'active' : ''}`}
-                onClick={() => {
-                  setProfileTab('info')
-                  setProfileError('')
-                  setProfileSuccess('')
-                }}
-              >
-                Thông tin cá nhân
-              </button>
-              <button
-                type="button"
-                className={`modal-tab ${profileTab === 'password' ? 'active' : ''}`}
-                onClick={() => {
-                  setProfileTab('password')
-                  setProfileError('')
-                  setProfileSuccess('')
-                }}
-              >
-                Đổi mật khẩu
-              </button>
-            </div>
-
             {profileError && <div className="modal-alert error">{profileError}</div>}
             {profileSuccess && <div className="modal-alert success">{profileSuccess}</div>}
 
-            {profileTab === 'info' ? (
-              <form onSubmit={handleUpdateProfile} className="profile-form">
-                {/* --- HERO AVATAR SECTION --- */}
-                <div className="avatar-hero-card">
-                  <div className="avatar-hero-main">
-                    <div
-                      className={`avatar-preview-box ${avatarDragOver ? 'drag-over' : ''}`}
-                      onClick={() => avatarFileInputRef.current?.click()}
-                      onDragOver={handleAvatarDragOver}
-                      onDragLeave={handleAvatarDragLeave}
-                      onDrop={handleAvatarDrop}
-                      title="Bấm để chọn ảnh từ máy hoặc kéo thả ảnh vào đây"
-                    >
-                      {profileAvatarUrl ? (
-                        <img
-                          src={profileAvatarUrl}
-                          alt="Avatar preview"
-                          className="avatar-hero-img"
-                          onError={(e) => {
-                            e.currentTarget.style.display = 'none'
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className="avatar-hero-fallback"
-                          style={{
-                            background: getAvatarGradient(currentUser?.id || currentUser?.username || 'user'),
-                          }}
-                        >
-                          {(profileDisplayName || currentUser?.username || 'U').charAt(0).toUpperCase()}
-                        </div>
-                      )}
-
-                      <div className="avatar-hero-overlay">
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                          <circle cx="12" cy="13" r="4"></circle>
-                        </svg>
-                        <span>Đổi ảnh</span>
-                      </div>
-                    </div>
-
-                    <div className="avatar-hero-details">
-                      <div className="avatar-hero-title">Ảnh đại diện</div>
-                      <div className="avatar-hero-subtitle">
-                        {profileAvatarUrl
-                          ? (profileAvatarUrl.startsWith('data:image/')
-                              ? 'Ảnh tải lên từ thiết bị'
-                              : 'Ảnh từ liên kết bên ngoài')
-                          : 'Đang dùng chữ cái mặc định'}
-                      </div>
-
-                      <div className="avatar-hero-actions">
-                        <button
-                          type="button"
-                          className="avatar-action-btn primary"
-                          onClick={() => {
-                            setAvatarMethodTab('upload')
-                            avatarFileInputRef.current?.click()
-                          }}
-                          title="Tải ảnh từ máy tính hoặc thiết bị"
-                        >
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="17 8 12 3 7 8"></polyline>
-                            <line x1="12" y1="3" x2="12" y2="15"></line>
-                          </svg>
-                          <span>Tải ảnh từ máy</span>
-                        </button>
-
-                        {profileAvatarUrl && (
-                          <button
-                            type="button"
-                            className="avatar-action-btn view"
-                            onClick={() => setPreviewMediaUrl(profileAvatarUrl)}
-                            title="Xem ảnh phóng to"
-                          >
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                              <circle cx="11" cy="11" r="8"></circle>
-                              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                              <line x1="11" y1="8" x2="11" y2="14"></line>
-                              <line x1="8" y1="11" x2="14" y2="11"></line>
-                            </svg>
-                            <span>Xem to</span>
-                          </button>
-                        )}
-
-                        {profileAvatarUrl && (
-                          <button
-                            type="button"
-                            className="avatar-action-btn danger"
-                            onClick={handleRemoveAvatar}
-                            title="Gỡ ảnh và dùng chữ cái"
-                          >
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="3 6 5 6 21 6"></polyline>
-                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                            </svg>
-                            <span>Gỡ ảnh</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Hidden file input for file picker */}
-                  <input
-                    type="file"
-                    ref={avatarFileInputRef}
-                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,image/svg+xml"
-                    onChange={handleAvatarFileSelect}
-                    style={{ display: 'none' }}
-                  />
-
-                  {/* SUB-TABS FOR AVATAR SOURCE */}
-                  <div className="avatar-source-tabs">
-                    <button
-                      type="button"
-                      className={`avatar-source-tab ${avatarMethodTab === 'upload' ? 'active' : ''}`}
-                      onClick={() => setAvatarMethodTab('upload')}
-                    >
-                      📁 Tải ảnh từ máy
-                    </button>
-                    <button
-                      type="button"
-                      className={`avatar-source-tab ${avatarMethodTab === 'url' ? 'active' : ''}`}
-                      onClick={() => setAvatarMethodTab('url')}
-                    >
-                      🌐 Link ảnh bên ngoài
-                    </button>
-                    <button
-                      type="button"
-                      className={`avatar-source-tab ${avatarMethodTab === 'preset' ? 'active' : ''}`}
-                      onClick={() => setAvatarMethodTab('preset')}
-                    >
-                      🤖 Ảnh mẫu có sẵn
-                    </button>
-                  </div>
-
-                  {/* TAB 1: UPLOAD FROM DEVICE */}
-                  {avatarMethodTab === 'upload' && (
-                    <div
-                      className={`avatar-dropzone ${avatarDragOver ? 'active' : ''}`}
-                      onClick={() => avatarFileInputRef.current?.click()}
-                      onDragOver={handleAvatarDragOver}
-                      onDragLeave={handleAvatarDragLeave}
-                      onDrop={handleAvatarDrop}
-                    >
-                      <div className="dropzone-icon">
-                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                          <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                          <polyline points="21 15 16 10 5 21"></polyline>
-                        </svg>
-                      </div>
-                      <div className="dropzone-text">
-                        <strong>Bấm để chọn tệp ảnh</strong> hoặc kéo thả ảnh vào đây
-                      </div>
-                      <div className="dropzone-hint">
-                        Hỗ trợ JPG, PNG, GIF, WebP, SVG • Tự động nén tối ưu hiển thị
-                      </div>
-                      <div className="dropzone-badge-paste">
-                        📋 Mẹo: Bạn có thể copy ảnh trên mạng rồi bấm <strong>Ctrl + V</strong> để dán trực tiếp
-                      </div>
-
-                      {avatarFileMeta && (
-                        <div className="avatar-file-status">
-                          <span>✅ {avatarFileMeta.name}</span>
-                          {avatarFileMeta.size && <span className="size-pill">{avatarFileMeta.size}</span>}
-                        </div>
-                      )}
-                    </div>
+            <form onSubmit={handleUpdateProfile} className="profile-form">
+              {/* --- COMPACT AVATAR: ICON DUY NHẤT & RÊ CHUỘT THAY ẢNH --- */}
+              <div className="profile-avatar-center">
+                <div
+                  className="profile-avatar-wrapper"
+                  onClick={() => avatarFileInputRef.current?.click()}
+                  title="Nhấp để thay đổi ảnh đại diện"
+                >
+                  {profileAvatarUrl ? (
+                    <img
+                      src={profileAvatarUrl}
+                      alt="Avatar"
+                      className="profile-avatar-img"
+                      onError={(e) => {
+                        e.currentTarget.src = getDefaultAvatar(profileDisplayName || currentUser?.display_name || currentUser?.username)
+                      }}
+                    />
+                  ) : (
+                    <img
+                      src={getDefaultAvatar(profileDisplayName || currentUser?.display_name || currentUser?.username)}
+                      alt="Avatar"
+                      className="profile-avatar-img"
+                    />
                   )}
 
-                  {/* TAB 2: EXTERNAL URL */}
-                  {avatarMethodTab === 'url' && (
-                    <div className="avatar-url-pane">
-                      <div className="avatar-url-input-wrap">
-                        <span className="url-prefix-icon">🔗</span>
-                        <input
-                          type="url"
-                          placeholder="Dán link ảnh từ web (https://...)"
-                          value={avatarUrlInput}
-                          onChange={(e) => {
-                            setAvatarUrlInput(e.target.value)
-                            setAvatarUrlStatus(null)
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              handleApplyAvatarUrl()
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="url-apply-btn"
-                          onClick={handleApplyAvatarUrl}
-                          disabled={avatarCheckingUrl || !avatarUrlInput.trim()}
-                        >
-                          {avatarCheckingUrl ? 'Đang thử...' : 'Áp dụng'}
-                        </button>
-                      </div>
+                  {/* Nút overlay thay ảnh khi rê chuột gần */}
+                  <div className="profile-avatar-hover-overlay">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                      <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                    <span>Thay ảnh</span>
+                  </div>
 
-                      <div className="avatar-url-tips">
-                        {avatarUrlStatus === 'valid' && (
-                          <div className="url-status success">
-                            ✅ Link ảnh hợp lệ và đã tải thành công!
+                  {/* Badge camera nhỏ góc avatar */}
+                  <div className="profile-avatar-camera-badge">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                      <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                  </div>
+                </div>
+
+                <input
+                  type="file"
+                  ref={avatarFileInputRef}
+                  accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,image/svg+xml"
+                  onChange={handleAvatarFileSelect}
+                  style={{ display: 'none' }}
+                />
+              </div>
+
+              {/* Tên hiển thị */}
+              <label>
+                Tên hiển thị
+                <input
+                  type="text"
+                  placeholder="Nhập tên hiển thị (tối đa 50 ký tự)"
+                  value={profileDisplayName}
+                  maxLength={50}
+                  onChange={(e) => setProfileDisplayName(e.target.value)}
+                />
+              </label>
+
+
+              {/* --- THÔNG TIN CÁ NHÂN (GIỚI TÍNH & NGÀY SINH) --- */}
+              <div className="profile-personal-section">
+                <div className="profile-section-heading">Thông tin cá nhân</div>
+
+                {/* Giới tính */}
+                <div className="profile-gender-group">
+                  <label className="profile-radio-label">
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="nam"
+                      checked={profileGender === 'nam'}
+                      onChange={() => setProfileGender('nam')}
+                      className="profile-radio-input"
+                    />
+                    <span className="profile-radio-custom"></span>
+                    <span className="profile-radio-text">Nam</span>
+                  </label>
+
+                  <label className="profile-radio-label">
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="nu"
+                      checked={profileGender === 'nu'}
+                      onChange={() => setProfileGender('nu')}
+                      className="profile-radio-input"
+                    />
+                    <span className="profile-radio-custom"></span>
+                    <span className="profile-radio-text">Nữ</span>
+                  </label>
+                </div>
+
+                {/* Ngày sinh */}
+                <div className="profile-dob-group">
+                  <div className="profile-field-title">Ngày sinh</div>
+                  <div className="profile-dob-row">
+                    <CustomDobSelect
+                      value={birthDay}
+                      options={Array.from({ length: 31 }, (_, i) => {
+                        const val = String(i + 1).padStart(2, '0')
+                        return { value: val, label: val }
+                      })}
+                      onChange={(val) => setBirthDay(val)}
+                      placeholder="Ngày"
+                    />
+
+                    <CustomDobSelect
+                      value={birthMonth}
+                      options={Array.from({ length: 12 }, (_, i) => {
+                        const val = String(i + 1).padStart(2, '0')
+                        return { value: val, label: val }
+                      })}
+                      onChange={(val) => setBirthMonth(val)}
+                      placeholder="Tháng"
+                    />
+
+                    <CustomDobSelect
+                      value={birthYear}
+                      options={Array.from({ length: 85 }, (_, i) => {
+                        const val = String(2026 - i)
+                        return { value: val, label: val }
+                      })}
+                      onChange={(val) => setBirthYear(val)}
+                      placeholder="Năm"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bio */}
+              <label>
+                Bio
+                <textarea
+                  placeholder="Mô tả ngắn về bạn..."
+                  value={profileBio}
+                  maxLength={200}
+                  rows={3}
+                  onChange={(e) => setProfileBio(e.target.value)}
+                />
+                <small className="field-hint text-right">{profileBio.length}/200 ký tự</small>
+              </label>
+
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShowProfileModal(false)}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={profileLoading}
+                >
+                  {profileLoading ? 'Đang lưu...' : 'Lưu thay đổi'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Bảo mật tài khoản (Tách riêng từ nút Bảo mật trên menu) */}
+      {showSecurityModal && (
+        <div className="modal-overlay" onClick={() => setShowSecurityModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171' }}>
+                  🔒
+                </div>
+                <div>
+                  <h3>Bảo mật tài khoản</h3>
+
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowSecurityModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {securityError && <div className="modal-alert error">{securityError}</div>}
+            {securitySuccess && <div className="modal-alert success">{securitySuccess}</div>}
+
+            <form onSubmit={handleSecurityChangePassword} className="profile-form">
+              <label>
+                Mật khẩu mới *
+                <input
+                  type="password"
+                  placeholder="Nhập mật khẩu mới (ít nhất 6 ký tự)"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </label>
+
+              <label>
+                Xác nhận mật khẩu mới *
+                <input
+                  type="password"
+                  placeholder="Nhập lại mật khẩu mới"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  required
+                />
+              </label>
+
+              <div className="modal-footer" style={{ marginTop: 16 }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShowSecurityModal(false)}
+                >
+                  Đóng
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={securityLoading || !newPassword || !confirmNewPassword}
+                >
+                  {securityLoading ? 'Đang cập nhật...' : 'Cập nhật mật khẩu'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Cài đặt hệ thống (Giao diện Sáng / Tối / Hệ Thống) */}
+
+      {showSettingsModal && (
+        <div className="modal-overlay" onClick={() => setShowSettingsModal(false)}>
+          <div className="modal-card tg-settings-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+                  ⚙️
+                </div>
+                <div>
+                  <h3>Cài đặt</h3>
+
+                </div>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setShowSettingsModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="settings-body">
+              {/* Phần Giao diện */}
+              <div className="settings-section">
+                <div className="settings-section-title">
+                  <span className="settings-section-icon">🎨</span>
+                  <span>Giao diện</span>
+                </div>
+
+                <div className="settings-item">
+                  <div className="settings-item-header">
+
+                    <div className="settings-item-label">
+                      {themeMode === 'light'
+                        ? 'Đang áp dụng giao diện Sáng'
+                        : themeMode === 'dark'
+                          ? 'Đang áp dụng giao diện Tối'
+                          : 'Tự động đồng bộ theo giao diện máy tính / điện thoại'}
+                    </div>
+                  </div>
+
+                  {/* 3 lựa chọn: Sáng / Tối / Hệ Thống */}
+                  <div className="theme-toggle-group">
+                    <button
+                      type="button"
+                      className={`theme-option-btn ${themeMode === 'light' ? 'active' : ''}`}
+                      onClick={() => handleThemeChange('light')}
+                    >
+                      <span className="theme-option-icon">☀️</span>
+                      <span className="theme-option-text">Sáng</span>
+                      {themeMode === 'light' && <span className="theme-check-icon">✓</span>}
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`theme-option-btn ${themeMode === 'dark' ? 'active' : ''}`}
+                      onClick={() => handleThemeChange('dark')}
+                    >
+                      <span className="theme-option-icon">🌙</span>
+                      <span className="theme-option-text">Tối</span>
+                      {themeMode === 'dark' && <span className="theme-check-icon">✓</span>}
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`theme-option-btn ${themeMode === 'system' ? 'active' : ''}`}
+                      onClick={() => handleThemeChange('system')}
+                    >
+                      <span className="theme-option-icon">💻</span>
+                      <span className="theme-option-text">Hệ Thống</span>
+                      {themeMode === 'system' && <span className="theme-check-icon">✓</span>}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Phần Danh sách đã chặn */}
+              <div className="settings-section" style={{ marginTop: 20 }}>
+                <div className="settings-section-title">
+                  <span className="settings-section-icon">🚫</span>
+                  <span>Danh sách đã chặn</span>
+                </div>
+
+                <div className="settings-item">
+
+                  {blockedUserIds.length === 0 ? (
+                    <div style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic', padding: '10px 0' }}>
+                      Chưa có người dùng nào trong danh sách chặn.
+                    </div>
+                  ) : (
+                    <div className="tg-blocked-users-list">
+                      {blockedUserIds.map((bId) => {
+                        const targetUser = friends.find((f) => String(f.id) === String(bId)) || {
+                          id: bId,
+                          display_name: 'Người dùng ' + String(bId).slice(0, 6),
+                          username: 'user_' + String(bId).slice(0, 6),
+                        }
+                        const name = targetUser.display_name || targetUser.username
+                        return (
+                          <div className="tg-blocked-user-row" key={bId}>
+                            <div className="tg-blocked-user-left">
+                              <div className="tg-avatar sm">
+                                {targetUser.avatar_url ? (
+                                  <img src={targetUser.avatar_url} alt="" className="avatar-img" />
+                                ) : (
+                                  (name || 'U').charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="tg-blocked-user-info">
+                                <strong>{name}</strong>
+                                <span>@{targetUser.username}</span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="tg-unblock-btn"
+                              onClick={() => handleToggleBlockUser(targetUser)}
+                            >
+                              Bỏ chặn
+                            </button>
                           </div>
-                        )}
-                        {avatarUrlStatus === 'invalid' && (
-                          <div className="url-status error">
-                            ⚠️ Không thể tải ảnh từ liên kết này. Trang web đó có thể chặn hiển thị bên ngoài (CORS). Bạn hãy tải ảnh về máy rồi dùng tab "Tải ảnh từ máy" nhé!
-                          </div>
-                        )}
-                        {profileAvatarUrl && profileAvatarUrl.startsWith('http') && (
-                          <button
-                            type="button"
-                            className="url-convert-btn"
-                            onClick={handleSaveUrlAsBase64}
-                            disabled={avatarConvertingBase64}
-                            title="Lưu ảnh vào hệ thống để không lo link gốc bị chết"
-                          >
-                            {avatarConvertingBase64 ? 'Đang chuyển đổi...' : '🛡️ Chuyển thành ảnh lưu trữ vĩnh viễn'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 3: PRESET AVATARS */}
-                  {avatarMethodTab === 'preset' && (
-                    <div className="avatar-presets-pane">
-                      <div className="preset-grid">
-                        {PRESET_AVATARS.map((url, idx) => (
-                          <button
-                            type="button"
-                            key={idx}
-                            className={`preset-grid-item ${profileAvatarUrl === url ? 'selected' : ''}`}
-                            onClick={() => handleSelectPreset(url)}
-                            title={`Mẫu robot ${idx + 1}`}
-                          >
-                            <img src={url} alt={`Preset ${idx + 1}`} />
-                          </button>
-                        ))}
-                      </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
 
-                <label>
-                  Tên hiển thị
-                  <input
-                    type="text"
-                    placeholder="Nhập tên hiển thị (tối đa 50 ký tự)"
-                    value={profileDisplayName}
-                    maxLength={50}
-                    onChange={(e) => setProfileDisplayName(e.target.value)}
-                  />
-                </label>
-
-                <label>
-                  Tên đăng nhập (Username)
-                  <input
-                    type="text"
-                    value={currentUser?.username || ''}
-                    disabled
-                    className="disabled-input"
-                  />
-                  <small className="field-hint">Tên đăng nhập cố định không thể thay đổi</small>
-                </label>
-
-                <label>
-                  Tiểu sử / Trạng thái
-                  <textarea
-                    placeholder="Mô tả ngắn về bạn..."
-                    value={profileBio}
-                    maxLength={200}
-                    rows={3}
-                    onChange={(e) => setProfileBio(e.target.value)}
-                  />
-                  <small className="field-hint text-right">{profileBio.length}/200 ký tự</small>
-                </label>
-
-                {currentUser?.created_at && (
-                  <div className="account-meta">
-                    🗓 Ngày tham gia: <strong>{formatDate(currentUser.created_at)}</strong>
-                  </div>
-                )}
-
-                <div className="modal-footer">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => setShowProfileModal(false)}
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    disabled={profileLoading}
-                  >
-                    {profileLoading ? 'Đang lưu...' : 'Lưu thay đổi'}
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <form onSubmit={handleChangePassword} className="profile-form">
-                <label>
-                  Mật khẩu hiện tại
-                  <input
-                    type="password"
-                    placeholder="Nhập mật khẩu đang dùng"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                  />
-                </label>
-
-                <label>
-                  Mật khẩu mới
-                  <input
-                    type="password"
-                    placeholder="Ít nhất 6 ký tự"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                  />
-                </label>
-
-                <label>
-                  Xác nhận mật khẩu mới
-                  <input
-                    type="password"
-                    placeholder="Nhập lại mật khẩu mới"
-                    value={confirmNewPassword}
-                    onChange={(e) => setConfirmNewPassword(e.target.value)}
-                  />
-                </label>
-
-                <div className="modal-footer">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => setShowProfileModal(false)}
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    disabled={profileLoading}
-                  >
-                    {profileLoading ? 'Đang cập nhật...' : 'Cập nhật mật khẩu'}
-                  </button>
-                </div>
-              </form>
-            )}
+            <div className="modal-footer" style={{ marginTop: 20 }}>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => setShowSettingsModal(false)}
+              >
+                Hoàn tất
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -7876,7 +10374,7 @@ function App() {
                 </div>
                 <div>
                   <h3>Chia sẻ tin nhắn</h3>
-                  <p>Chọn bạn bè để chuyển tiếp tin nhắn này</p>
+
                 </div>
               </div>
               <button
@@ -7945,7 +10443,7 @@ function App() {
                             }}
                           />
                         ) : (
-                          getFriendName(friend).charAt(0).toUpperCase()
+                          (getFriendName(friend) || 'U').charAt(0).toUpperCase()
                         )}
                       </div>
                       <div className="tg-forward-info">
@@ -7996,7 +10494,7 @@ function App() {
                 </div>
                 <div>
                   <h3>Tạo nhóm chat mới</h3>
-                  <p>Gôm bạn bè vào nhóm (tối đa 50 người)</p>
+
                 </div>
               </div>
               <button className="modal-close-button" onClick={() => setShowCreateGroupModal(false)}>
@@ -8090,7 +10588,7 @@ function App() {
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={() => {}}
+                            onChange={() => { }}
                             style={{ cursor: 'pointer' }}
                           />
                         </div>
@@ -8132,7 +10630,7 @@ function App() {
                 </div>
                 <div>
                   <h3>Thêm thành viên</h3>
-                  <p>Vào nhóm "{activeChat?.name}"</p>
+
                 </div>
               </div>
               <button className="modal-close-button" onClick={() => setShowAddGroupMemberModal(false)}>
@@ -8211,7 +10709,7 @@ function App() {
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          onChange={() => {}}
+                          onChange={() => { }}
                           style={{ cursor: 'pointer' }}
                         />
                       </div>
@@ -8242,11 +10740,342 @@ function App() {
         </div>
       )}
 
+      {/* Hộp thoại xác nhận xoá trò chuyện Khớp chuẩn 100% Ảnh */}
+      {chatToDeleteHistory && (
+        <div
+          className="tg-confirm-modal-overlay"
+          onClick={() => {
+            if (!isDeletingChatHistory) setChatToDeleteHistory(null)
+          }}
+        >
+          <div
+            className="tg-confirm-modal-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Xác nhận</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => {
+                  if (!isDeletingChatHistory) setChatToDeleteHistory(null)
+                }}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="tg-confirm-modal-body">
+              <p>Toàn bộ nội dung trò chuyện sẽ bị xóa vĩnh viễn.</p>
+              <p>Bạn có chắc chắn muốn xóa?</p>
+            </div>
+
+            {/* Footer */}
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setChatToDeleteHistory(null)}
+                disabled={isDeletingChatHistory}
+              >
+                Không
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                onClick={confirmClearChatHistory}
+                disabled={isDeletingChatHistory}
+              >
+                {isDeletingChatHistory ? 'Đang xóa...' : 'Xóa'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hộp thoại xác nhận Chặn người dùng Giống chuẩn 100% Xác nhận xoá trò chuyện */}
+      {userToBlock && (
+        <div
+          className="tg-confirm-modal-overlay"
+          onClick={() => setUserToBlock(null)}
+        >
+          <div
+            className="tg-confirm-modal-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Xác nhận chặn</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => setUserToBlock(null)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="tg-confirm-modal-body">
+              <p>Người này sẽ không thể gửi tin nhắn hoặc gọi điện cho bạn nữa.</p>
+              <p>Bạn có chắc chắn muốn chặn <strong>{getFriendName(userToBlock)}</strong>?</p>
+            </div>
+
+            {/* Footer */}
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setUserToBlock(null)}
+              >
+                Không
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                onClick={confirmBlockUser}
+              >
+                Chặn
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Đổi tên nhóm (Nhóm trưởng) */}
+      {showRenameGroupModal && (
+        <div className="tg-confirm-modal-overlay" onClick={() => !renameGroupLoading && setShowRenameGroupModal(false)}>
+          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Đổi tên nhóm</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => !renameGroupLoading && setShowRenameGroupModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="tg-confirm-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--tg-text-secondary)' }}>
+                Nhập tên mới cho nhóm trò chuyện của bạn:
+              </p>
+              <input
+                type="text"
+                className="fpt-input"
+                value={renameGroupNameInput}
+                onChange={(e) => setRenameGroupNameInput(e.target.value)}
+                placeholder="Tên nhóm mới..."
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleRenameGroup()
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--tg-border, rgba(255,255,255,0.15))',
+                  background: 'var(--tg-input-bg, rgba(0,0,0,0.2))',
+                  color: 'var(--tg-text-primary, #ffffff)',
+                  fontSize: 14,
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setShowRenameGroupModal(false)}
+                disabled={renameGroupLoading}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                style={{ background: 'var(--tg-primary, #8774e1)', borderColor: 'var(--tg-primary, #8774e1)' }}
+                onClick={handleRenameGroup}
+                disabled={renameGroupLoading || !renameGroupNameInput.trim()}
+              >
+                {renameGroupLoading ? 'Đang lưu...' : 'Lưu thay đổi'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xác nhận giải tán nhóm (Nhóm trưởng) */}
+      {showDisbandConfirmModal && (
+        <div className="tg-confirm-modal-overlay" onClick={() => !disbandGroupLoading && setShowDisbandConfirmModal(false)}>
+          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Xác nhận giải tán nhóm</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => !disbandGroupLoading && setShowDisbandConfirmModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="tg-confirm-modal-body">
+              <p>Tất cả tin nhắn, hình ảnh và thành viên trong nhóm sẽ bị xóa vĩnh viễn.</p>
+              <p>Hành động này không thể hoàn tác. Bạn có chắc chắn muốn giải tán nhóm?</p>
+            </div>
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setShowDisbandConfirmModal(false)}
+                disabled={disbandGroupLoading}
+              >
+                Không
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                onClick={handleDisbandGroup}
+                disabled={disbandGroupLoading}
+              >
+                {disbandGroupLoading ? 'Đang giải tán...' : 'Giải tán nhóm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xác nhận rời khỏi nhóm (Thành viên) */}
+      {showLeaveGroupConfirmModal && (
+        <div className="tg-confirm-modal-overlay" onClick={() => !leaveGroupLoading && setShowLeaveGroupConfirmModal(false)}>
+          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Xác nhận rời khỏi nhóm</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => !leaveGroupLoading && setShowLeaveGroupConfirmModal(false)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="tg-confirm-modal-body">
+              <p>Bạn sẽ không còn nhận được tin nhắn và thông báo từ nhóm này.</p>
+              <p>Bạn có chắc chắn muốn rời khỏi nhóm?</p>
+            </div>
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setShowLeaveGroupConfirmModal(false)}
+                disabled={leaveGroupLoading}
+              >
+                Không
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                onClick={handleLeaveGroup}
+                disabled={leaveGroupLoading}
+              >
+                {leaveGroupLoading ? 'Đang rời...' : 'Rời khỏi nhóm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xác nhận loại thành viên khỏi nhóm */}
+      {memberToKickModal && (
+        <div className="tg-confirm-modal-overlay" onClick={() => setMemberToKickModal(null)}>
+          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="tg-confirm-modal-header">
+              <h3 className="tg-confirm-modal-title">Xác nhận loại thành viên</h3>
+              <button
+                type="button"
+                className="tg-confirm-modal-close"
+                onClick={() => setMemberToKickModal(null)}
+                title="Đóng"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="tg-confirm-modal-body">
+              <p>
+                Bạn có chắc chắn muốn loại <strong>{memberToKickModal.display_name || memberToKickModal.username}</strong> khỏi nhóm trò chuyện này không?
+              </p>
+            </div>
+            <div className="tg-confirm-modal-footer">
+              <button
+                type="button"
+                className="tg-confirm-btn-cancel"
+                onClick={() => setMemberToKickModal(null)}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="tg-confirm-btn-delete"
+                onClick={() => handleKickMember(memberToKickModal)}
+              >
+                Loại thành viên
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Floating toast notification */}
       {copyToast && (
         <div className="tg-floating-toast">
           {copyToast}
         </div>
+      )}
+
+      {/* DevTools Security Blocker Fullscreen Overlay */}
+      {isDevToolsBlocked && (
+        <div className="tg-devtools-blocker-overlay">
+          <div className="tg-devtools-blocker-card">
+            <div className="tg-devtools-blocker-icon">🛡️</div>
+            <h2>Cảnh báo bảo mật: Đã phát hiện DevTools</h2>
+            <p>
+              Để bảo vệ dữ liệu hội thoại và ngăn chặn các hành vi tấn công API trái phép, công cụ phát triển (DevTools / F12) bị hạn chế trên CloudChat.
+            </p>
+            <div className="tg-devtools-blocker-instructions">
+              <strong>Hướng dẫn tiếp tục sử dụng:</strong>
+              <div>1. Đóng hoàn toàn cửa sổ DevTools (hoặc Inspect Element).</div>
+              <div>2. Nhấn nút "Tải lại trang" dưới đây (hoặc nhấn phím F5).</div>
+            </div>
+            <button
+              type="button"
+              className="tg-devtools-reload-btn"
+              onClick={() => {
+                window.location.reload()
+              }}
+            >
+              🔄 Tải lại trang (F5)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Chỉnh sửa / Cắt ảnh đại diện trước khi lưu */}
+      {cropImageSource && (
+        <AvatarCropModal
+          imageSource={cropImageSource}
+          onApply={handleApplyCroppedAvatar}
+          onCancel={() => setCropImageSource(null)}
+        />
       )}
     </div>
   )
