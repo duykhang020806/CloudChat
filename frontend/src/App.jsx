@@ -1713,21 +1713,8 @@ const EMOJI_CATEGORIES = [
 ]
 
 function App() {
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('cloudchat_current_user')
-      return saved ? JSON.parse(saved) : null
-    } catch {
-      return null
-    }
-  })
-  const [page, setPage] = useState(() => {
-    try {
-      return localStorage.getItem('cloudchat_current_user') ? 'chat' : 'loading'
-    } catch {
-      return 'loading'
-    }
-  })
+  const [currentUser, setCurrentUser] = useState(null)
+  const [page, setPage] = useState('loading')
   const [loginEmail, setLoginEmail] = useState('')
   const [registerEmail, setRegisterEmail] = useState('')
   const [username, setUsername] = useState('')
@@ -1739,14 +1726,7 @@ function App() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
 
-  const [friends, setFriends] = useState(() => {
-    try {
-      const cached = localStorage.getItem('cloudchat_cached_friends')
-      return cached ? JSON.parse(cached) : []
-    } catch {
-      return []
-    }
-  })
+  const [friends, setFriends] = useState([])
   const [activeChat, setActiveChat] = useState(null)
   const activeChatRef = useRef(activeChat)
   useEffect(() => {
@@ -2031,14 +2011,7 @@ function App() {
   const [deletingMsgId, setDeletingMsgId] = useState(null)
 
   // Groups & Community State
-  const [groups, setGroups] = useState(() => {
-    try {
-      const cached = localStorage.getItem('cloudchat_cached_groups')
-      return cached ? JSON.parse(cached) : []
-    } catch {
-      return []
-    }
-  })
+  const [groups, setGroups] = useState([])
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
   const [groupNameInput, setGroupNameInput] = useState('')
   const [groupAvatarInput, setGroupAvatarInput] = useState('')
@@ -3513,7 +3486,10 @@ function App() {
           if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
           return { ...g, last_message: lm }
         })
-        localStorage.setItem(`cloudchat_cached_groups`, JSON.stringify(cleanGroups))
+        if (currentUser?.id) {
+          localStorage.setItem(`cloudchat_cached_groups_${currentUser.id}`, JSON.stringify(cleanGroups))
+        }
+        localStorage.removeItem('cloudchat_cached_groups')
       } catch { }
 
       setActiveChat((current) => {
@@ -4654,7 +4630,10 @@ function App() {
           if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
           return { ...f, last_message: lm }
         })
-        localStorage.setItem(`cloudchat_cached_friends`, JSON.stringify(cleanFriends))
+        if (currentUser?.id) {
+          localStorage.setItem(`cloudchat_cached_friends_${currentUser.id}`, JSON.stringify(cleanFriends))
+        }
+        localStorage.removeItem('cloudchat_cached_friends')
       } catch { }
 
       setActiveChat((current) => {
@@ -5084,12 +5063,19 @@ function App() {
     } catch (e) {
       console.warn('SignOut error:', e)
     }
-    localStorage.removeItem('cloudchat_token')
     try {
+      localStorage.removeItem('cloudchat_token')
       localStorage.removeItem('cloudchat_current_user')
+      localStorage.removeItem('cloudchat_cached_friends')
+      localStorage.removeItem('cloudchat_cached_groups')
+      if (currentUser?.id) {
+        localStorage.removeItem(`cloudchat_cached_friends_${currentUser.id}`)
+        localStorage.removeItem(`cloudchat_cached_groups_${currentUser.id}`)
+      }
     } catch { }
     setCurrentUser(null)
     setFriends([])
+    setGroups([])
     setActiveChat(null)
     setMessages([])
     setMessage('')
@@ -5265,36 +5251,51 @@ function App() {
     const initSession = async () => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession()
-        if (error) {
-          console.error('getSession error:', error)
-          setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
+        if (error || !session?.user) {
+          if (error) console.error('getSession error:', error)
+          setCurrentUser(null)
+          try {
+            localStorage.removeItem('cloudchat_current_user')
+            localStorage.removeItem('cloudchat_cached_friends')
+            localStorage.removeItem('cloudchat_cached_groups')
+          } catch { }
+          setActiveChat(null)
+          setFriends([])
+          setGroups([])
+          setMessages([])
+          setPage('login')
           return
         }
 
-        if (session?.user) {
-          const userProfile = await resolveUserProfile(session.user)
-          if (userProfile) {
-            setCurrentUser(userProfile)
-            try {
-              localStorage.setItem('cloudchat_current_user', JSON.stringify(userProfile))
-            } catch { }
-            setPage('chat')
-          }
-          setLoading(false)
-          if (window.location.hash && window.location.hash.includes('access_token')) {
-            window.history.replaceState(null, '', window.location.pathname)
-          }
-          return
+        const userProfile = await resolveUserProfile(session.user)
+        if (userProfile) {
+          setCurrentUser((prev) => {
+            if (prev && prev.id !== userProfile.id) {
+              setActiveChat(null)
+              setFriends([])
+              setGroups([])
+              setMessages([])
+            }
+            return userProfile
+          })
+          try {
+            localStorage.setItem('cloudchat_current_user', JSON.stringify(userProfile))
+          } catch { }
+          setPage('chat')
+        } else {
+          setPage('login')
         }
-
-        if (window.location.hash.includes('access_token') || window.location.search.includes('code=')) {
-          return
+        if (window.location.hash && window.location.hash.includes('access_token')) {
+          window.history.replaceState(null, '', window.location.pathname)
         }
-
-        setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
       } catch (err) {
         console.error('Session init error:', err)
-        setPage((prev) => (prev === 'chat' ? 'chat' : 'login'))
+        setCurrentUser(null)
+        setActiveChat(null)
+        setFriends([])
+        setGroups([])
+        setMessages([])
+        setPage('login')
       } finally {
         setLoading(false)
       }
@@ -5305,12 +5306,16 @@ function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('Supabase Auth Event:', event, session?.user?.email)
 
-      if (event === 'SIGNED_OUT') {
+      if (event === 'SIGNED_OUT' || !session?.user) {
         setCurrentUser(null)
         try {
           localStorage.removeItem('cloudchat_current_user')
+          localStorage.removeItem('cloudchat_cached_friends')
+          localStorage.removeItem('cloudchat_cached_groups')
         } catch { }
         setActiveChat(null)
+        setFriends([])
+        setGroups([])
         setMessages([])
         setPage('login')
         setLoading(false)
@@ -5321,7 +5326,15 @@ function App() {
         try {
           const userProfile = await resolveUserProfile(session.user)
           if (userProfile) {
-            setCurrentUser(userProfile)
+            setCurrentUser((prev) => {
+              if (prev && prev.id !== userProfile.id) {
+                setActiveChat(null)
+                setFriends([])
+                setGroups([])
+                setMessages([])
+              }
+              return userProfile
+            })
             try {
               localStorage.setItem('cloudchat_current_user', JSON.stringify(userProfile))
             } catch { }
