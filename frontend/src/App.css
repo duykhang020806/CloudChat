@@ -1684,7 +1684,7 @@ button {
 .tg-multiple-emojis-wrap .tg-single-emoji-fallback {
   font-size: 38px !important;
   line-height: 1 !important;
-  display: inline-block !important;
+  display: inline-block;
 }
 
 .tg-msg-bubble.single-emoji-bubble .tg-msg-text {

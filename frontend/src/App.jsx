@@ -5725,9 +5725,9 @@ function App() {
   const handleLogin = async (event) => {
     event.preventDefault()
 
-    const cleanUser = username.trim()
+    const cleanUser = (loginEmail || username).trim()
     if (!cleanUser || !password.trim()) {
-      setError('Vui lòng nhập username và mật khẩu')
+      setError('Vui lòng nhập email và mật khẩu')
       return
     }
 
@@ -5749,7 +5749,7 @@ function App() {
         if (error.message?.includes('Email not confirmed')) {
           setError('Tài khoản chưa xác nhận email. Hãy tắt "Confirm email" trong Supabase Auth!')
         } else if (error.message?.includes('Invalid login credentials')) {
-          setError('Username hoặc mật khẩu không chính xác')
+          setError('Email hoặc mật khẩu không chính xác')
         } else {
           setError(error.message || 'Đăng nhập thất bại')
         }
@@ -5817,14 +5817,17 @@ function App() {
   const handleRegister = async (event) => {
     event.preventDefault()
 
-    const cleanUser = username.trim()
-    if (!cleanUser || !password.trim()) {
-      setError('Vui lòng nhập username và mật khẩu')
+    const email = (registerEmail || username).trim().toLowerCase()
+    const displayName = registerDisplayName.trim() || (email ? email.split('@')[0] : 'User')
+
+    if (!email || !password.trim()) {
+      setError('Vui lòng nhập email và mật khẩu')
       return
     }
 
-    if (cleanUser.length < 3 || cleanUser.length > 30) {
-      setError('Username phải từ 3 đến 30 ký tự')
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      setError('Địa chỉ email không đúng định dạng (VD: example@gmail.com)')
       return
     }
 
@@ -5846,33 +5849,31 @@ function App() {
       const { data: existingUser } = await supabase
         .from('profiles')
         .select('id')
-        .ilike('username', cleanUser)
+        .ilike('username', email)
         .maybeSingle()
 
       if (existingUser) {
-        setError('Username này đã được sử dụng. Vui lòng chọn username khác.')
+        setError('Email này đã được sử dụng. Vui lòng chọn email khác hoặc đăng nhập.')
         return
       }
-
-      const email = cleanUser.includes('@')
-        ? cleanUser
-        : `${cleanUser.toLowerCase().replace(/[^a-z0-9_]/g, '')}@cloudchat.top`
-
-      const displayName = registerDisplayName.trim() || cleanUser
 
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
-            username: cleanUser,
+            username: email,
             display_name: displayName,
           },
         },
       })
 
       if (error) {
-        setError(error.message || 'Đăng ký thất bại')
+        if (error.message?.includes('already registered')) {
+          setError('Email này đã được đăng ký tài khoản. Vui lòng đăng nhập.')
+        } else {
+          setError(error.message || 'Đăng ký thất bại')
+        }
         return
       }
 
@@ -5881,9 +5882,9 @@ function App() {
           .from('profiles')
           .upsert({
             id: data.user.id,
-            username: cleanUser,
+            username: email,
             display_name: displayName,
-            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanUser)}`,
+            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(email)}`,
             bio: '',
             is_online: true,
             last_seen: new Date().toISOString(),
@@ -5891,7 +5892,9 @@ function App() {
           .catch(() => { })
       }
 
-      setUsername('')
+      setUsername(email)
+      setLoginEmail(email)
+      setRegisterEmail('')
       setPassword('')
       setConfirmPassword('')
       setRegisterDisplayName('')
@@ -5899,9 +5902,9 @@ function App() {
       if (data?.session) {
         setCurrentUser({
           id: data.user.id,
-          username: cleanUser,
+          username: email,
           display_name: displayName,
-          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanUser)}`,
+          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(email)}`,
         })
         setPage('chat')
       } else {
@@ -6300,6 +6303,8 @@ function App() {
                     onClick={() => {
                       setError('')
                       setAuthSuccess('')
+                      setPassword('')
+                      setConfirmPassword('')
                       setPage('register')
                     }}
                   >
@@ -6517,7 +6522,13 @@ function App() {
             <button
               type="button"
               className="fpt-back-to-qr-btn"
-              onClick={() => setPage('login')}
+              onClick={() => {
+                setError('')
+                setAuthSuccess('')
+                setPassword('')
+                setConfirmPassword('')
+                setPage('login')
+              }}
               style={{ margin: 0 }}
             >
               {authT.backToLogin}
@@ -6639,6 +6650,8 @@ function App() {
                     onClick={() => {
                       setError('')
                       setAuthSuccess('')
+                      setPassword('')
+                      setConfirmPassword('')
                       setPage('login')
                     }}
                   >
@@ -8290,26 +8303,35 @@ function App() {
                                       <div className="tg-msg-text">
                                         {isEmojiOnly ? (
                                           <div className="tg-single-apple-emoji-wrap tg-multiple-emojis-wrap">
-                                            {emojiList.map((emoji, eIdx) => (
-                                              <span key={eIdx} className="tg-emoji-standalone-item">
-                                                {getAppleEmojiUrl(emoji) ? (
-                                                  <img
-                                                    src={getAppleEmojiUrl(emoji)}
-                                                    alt={emoji}
-                                                    className="tg-single-apple-emoji-img"
-                                                    draggable={false}
-                                                    onError={(e) => {
-                                                      e.currentTarget.style.display = 'none'
-                                                      const fallback = e.currentTarget.nextElementSibling
-                                                      if (fallback) fallback.style.display = 'inline'
-                                                    }}
-                                                  />
-                                                ) : null}
-                                                <span className="tg-single-emoji-fallback" style={getAppleEmojiUrl(emoji) ? { display: 'none' } : undefined}>
-                                                  {emoji}
+                                            {emojiList.map((emoji, eIdx) => {
+                                              const appleUrl = getAppleEmojiUrl(emoji)
+                                              return (
+                                                <span key={eIdx} className="tg-emoji-standalone-item">
+                                                  {appleUrl ? (
+                                                    <>
+                                                      <img
+                                                        src={appleUrl}
+                                                        alt={emoji}
+                                                        className="tg-single-apple-emoji-img"
+                                                        draggable={false}
+                                                        onError={(e) => {
+                                                          e.currentTarget.style.display = 'none'
+                                                          const fallback = e.currentTarget.nextElementSibling
+                                                          if (fallback) fallback.style.display = 'inline-block'
+                                                        }}
+                                                      />
+                                                      <span className="tg-single-emoji-fallback" style={{ display: 'none' }}>
+                                                        {emoji}
+                                                      </span>
+                                                    </>
+                                                  ) : (
+                                                    <span className="tg-single-emoji-fallback">
+                                                      {emoji}
+                                                    </span>
+                                                  )}
                                                 </span>
-                                              </span>
-                                            ))}
+                                              )
+                                            })}
                                           </div>
                                         ) : (
                                           renderMessageContent(item.content, chatSearchQuery)
