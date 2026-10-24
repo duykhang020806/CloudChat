@@ -1856,8 +1856,7 @@ function App() {
   }
   const authT = AUTH_TRANSLATIONS[loginLang] || AUTH_TRANSLATIONS.vi
 
-  // DevTools & F12 Security Blocker State
-  const [isDevToolsBlocked, setIsDevToolsBlocked] = useState(false)
+
 
   // Blocked Users State (Danh sách đã chặn)
   const [blockedUserIds, setBlockedUserIds] = useState(() => {
@@ -2848,32 +2847,7 @@ function App() {
     setUserMathAnswer('')
   }
 
-  // Chặn phím tắt mở Developer Tools (F12, Ctrl+Shift+I, v.v.)
-  useEffect(() => {
-    try {
-      sessionStorage.removeItem('cloudchat_devtools_locked')
-    } catch { }
 
-    const handleKeyDown = (e) => {
-      if (
-        e.key === 'F12' ||
-        e.keyCode === 123 ||
-        (e.ctrlKey && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
-        (e.ctrlKey && ['u', 'U', 's', 'S'].includes(e.key))
-      ) {
-        e.preventDefault()
-        e.stopPropagation()
-        setIsDevToolsBlocked(true)
-        return false
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true)
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true)
-    }
-  }, [])
 
   // Khởi tạo tin nhắn bảo mật của CloudChat Bot khi đăng nhập
   useEffect(() => {
@@ -11064,32 +11038,7 @@ function App() {
         </div>
       )}
 
-      {/* DevTools Security Blocker Fullscreen Overlay */}
-      {isDevToolsBlocked && (
-        <div className="tg-devtools-blocker-overlay">
-          <div className="tg-devtools-blocker-card">
-            <div className="tg-devtools-blocker-icon">🛡️</div>
-            <h2>Cảnh báo bảo mật: Đã phát hiện DevTools</h2>
-            <p>
-              Để bảo vệ dữ liệu hội thoại và ngăn chặn các hành vi tấn công API trái phép, công cụ phát triển (DevTools / F12) bị hạn chế trên CloudChat.
-            </p>
-            <div className="tg-devtools-blocker-instructions">
-              <strong>Hướng dẫn tiếp tục sử dụng:</strong>
-              <div>1. Đóng hoàn toàn cửa sổ DevTools (hoặc Inspect Element).</div>
-              <div>2. Nhấn nút "Tải lại trang" dưới đây (hoặc nhấn phím F5).</div>
-            </div>
-            <button
-              type="button"
-              className="tg-devtools-reload-btn"
-              onClick={() => {
-                window.location.reload()
-              }}
-            >
-              🔄 Tải lại trang (F5)
-            </button>
-          </div>
-        </div>
-      )}
+
 
       {/* Modal Chỉnh sửa / Cắt ảnh đại diện trước khi lưu */}
       {cropImageSource && (
