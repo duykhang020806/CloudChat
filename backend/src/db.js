@@ -45,11 +45,10 @@ export const createListenerClient = async (channelName, onNotification) => {
   }
 }
 
-// Hàm phát tín hiệu đồng bộ cho các server Backend khác (PostgreSQL NOTIFY)
+// Hàm phát tín hiệu đồng bộ cho các server Backend khác (PostgreSQL NOTIFY an toàn chuẩn tham số)
 export const broadcastNotification = async (channelName, data) => {
   try {
-    const payload = JSON.stringify(data).replace(/'/g, "''")
-    await pool.query(`NOTIFY ${channelName}, '${payload}'`)
+    await pool.query('SELECT pg_notify($1, $2)', [channelName, JSON.stringify(data)])
   } catch (err) {
     console.error(`[PostgreSQL NOTIFY] Error broadcasting on channel: ${channelName}`, err.message)
   }

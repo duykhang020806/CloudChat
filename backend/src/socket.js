@@ -50,9 +50,20 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
     ).catch(() => {})
     broadcastNotification('user_status', { userId, isOnline: true, lastSeen: new Date().toISOString() })
 
-    // Tham gia phòng chat nhóm
-    socket.on('join_group', (groupId) => {
-      socket.join(`group_${groupId}`)
+    // Tham gia phòng chat nhóm (Xác minh nghiêm ngặt quyền thành viên tránh nghe lén)
+    socket.on('join_group', async (groupId) => {
+      try {
+        if (!groupId) return
+        const check = await pool.query(
+          'SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2',
+          [groupId, userId]
+        )
+        if (check.rows.length > 0) {
+          socket.join(`group_${groupId}`)
+        }
+      } catch (err) {
+        console.warn(`[Socket] Unauthorized or error joining group ${groupId}:`, err.message)
+      }
     })
 
     // Rời phòng chat nhóm

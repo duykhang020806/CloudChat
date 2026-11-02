@@ -177,6 +177,15 @@ router.post('/:id/members', authenticateToken, async (req, res) => {
     const { userIds } = req.body
     const currentUserId = req.user.id
 
+    // Kiểm tra quyền: Người yêu cầu phải là thành viên trong nhóm
+    const memberCheck = await pool.query(
+      'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, currentUserId]
+    )
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Bạn không phải thành viên của nhóm này' })
+    }
+
     if (!Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({ error: 'Danh sách thành viên không hợp lệ' })
     }

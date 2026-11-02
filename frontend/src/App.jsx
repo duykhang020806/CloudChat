@@ -629,6 +629,15 @@ function renderTextWithMentionsAndEmoji(text, keyPrefix) {
   })
 }
 
+export function sanitizeSafeUrl(url) {
+  if (!url) return '#'
+  const trimmed = String(url).trim()
+  if (/^(https?:\/\/|\/|blob:|data:image\/)/i.test(trimmed)) {
+    return trimmed
+  }
+  return '#'
+}
+
 function renderHighlightedText(content, highlightQuery) {
   if (!content) return null
   const urlPattern = /(https?:\/\/[^\s]+)/g
@@ -4598,7 +4607,7 @@ function App() {
             </div>
           </div>
           <a
-            href={attachment.url || '#'}
+            href={sanitizeSafeUrl(attachment.url)}
             download={attachment.fileName}
             className="tg-file-download-btn"
             title={`Tải xuống ${attachment.fileName}`}
@@ -9549,7 +9558,7 @@ function App() {
                               <span>{file.size} • {file.date}</span>
                             </div>
                             <a
-                              href={file.url || '#'}
+                              href={sanitizeSafeUrl(file.url)}
                               download={file.name}
                               className="tg-file-download-action-btn"
                               title={`Tải xuống ${file.name}`}
@@ -9590,7 +9599,7 @@ function App() {
                       <div className="tg-links-list">
                         {chatLinkItems.map((link, idx) => (
                           <a
-                            href={link.url}
+                            href={sanitizeSafeUrl(link.url)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="tg-link-row"
@@ -9767,7 +9776,7 @@ function App() {
           <div className="tg-lightbox-content" onClick={(e) => e.stopPropagation()}>
             <div className="tg-lightbox-actions">
               <a
-                href={previewMediaUrl}
+                href={sanitizeSafeUrl(previewMediaUrl)}
                 download="photo.png"
                 className="tg-lightbox-download"
                 title="Tải ảnh xuống"

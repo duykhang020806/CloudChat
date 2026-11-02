@@ -134,14 +134,20 @@ router.post('/google', async (req, res) => {
     let picture = null
 
     // 1. Xác thực ID Token (Google Identity Services)
+    const expectedClientId = process.env.GOOGLE_CLIENT_ID || '535880022872-nbm39vgt0kfoj920m3i48uh8mgh5hbrk.apps.googleusercontent.com'
     if (credential) {
       try {
         const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`)
         if (googleRes.ok) {
           const gData = await googleRes.json()
-          email = gData.email?.toLowerCase().trim()
-          name = gData.name || gData.given_name || email.split('@')[0]
-          picture = gData.picture || null
+          // Xác thực audience để chống giả mạo token từ ứng dụng khác
+          if (gData.aud === expectedClientId) {
+            email = gData.email?.toLowerCase().trim()
+            name = gData.name || gData.given_name || email.split('@')[0]
+            picture = gData.picture || null
+          } else {
+            console.warn(`[OAuth Warning] Mismatched Google Client ID: received ${gData.aud}`)
+          }
         }
       } catch (e) {
         console.warn('Google id_token validation error:', e)
@@ -290,7 +296,7 @@ router.get('/search', authenticateToken, async (req, res) => {
     if (!q) return res.json({ users: [] })
 
     const result = await pool.query(
-      `SELECT id, email, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
+      `SELECT id, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
        FROM users
        WHERE (username ILIKE $1 OR display_name ILIKE $1 OR email ILIKE $1) AND id != $2
        LIMIT 20`,
