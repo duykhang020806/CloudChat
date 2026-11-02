@@ -1,6 +1,6 @@
 import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
-import { createListenerClient } from './db.js'
+import { pool, createListenerClient } from './db.js'
 
 export const setupSocketServer = (httpServer, corsOrigin) => {
   const io = new Server(httpServer, {
@@ -23,10 +23,16 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
     jwt.verify(
       token,
       process.env.JWT_SECRET || 'cloudchat_super_secure_jwt_token_secret_key_2026',
-      (err, decoded) => {
-        if (err) return next(new Error('Authentication error: Invalid token'))
-        socket.user = decoded
-        next()
+      async (err, decoded) => {
+        if (err || !decoded?.id) return next(new Error('Authentication error: Invalid token'))
+        try {
+          const userCheck = await pool.query('SELECT id, username, email FROM users WHERE id = $1', [decoded.id])
+          if (userCheck.rows.length === 0) return next(new Error('Authentication error: User not found'))
+          socket.user = userCheck.rows[0]
+          next()
+        } catch {
+          next(new Error('Authentication error: Database error'))
+        }
       }
     )
   })

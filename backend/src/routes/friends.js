@@ -86,6 +86,12 @@ router.post('/request', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Người dùng không hợp lệ' })
     }
 
+    // Kiểm tra targetUserId có tồn tại trong hệ thống không
+    const targetCheck = await pool.query('SELECT id FROM users WHERE id = $1', [targetUserId])
+    if (targetCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Người dùng được yêu cầu kết bạn không tồn tại' })
+    }
+
     // Kiểm tra xem đã kết bạn hoặc đã gửi lời mời chưa
     const existing = await pool.query(
       `SELECT * FROM friendships 

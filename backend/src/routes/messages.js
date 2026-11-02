@@ -80,6 +80,14 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Cần chỉ định người nhận hoặc nhóm nhận' })
     }
 
+    // Nếu gửi 1-1, kiểm tra người nhận có tồn tại không
+    if (receiverId) {
+      const recCheck = await pool.query('SELECT id FROM users WHERE id = $1', [receiverId])
+      if (recCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Người nhận không tồn tại' })
+      }
+    }
+
     // Nếu gửi vào nhóm, kiểm tra xem có phải thành viên không
     if (groupId) {
       const memberCheck = await pool.query(
