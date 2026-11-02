@@ -3,7 +3,7 @@ import QRCode from 'qrcode'
 import jsQR from 'jsqr'
 import './App.css'
 import { chatClient as supabase } from './chatClient'
-import { authApi, friendsApi } from './api.js'
+import { authApi, friendsApi, messagesApi } from './api.js'
 import { getAppleEmojiUrl, renderWithAppleEmoji } from './appleEmoji.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import {
@@ -4807,73 +4807,28 @@ function App() {
     try {
       const isGroup = activeChatRef.current?.is_group || false
 
-      if (isGroup) {
-        let isMember = groups.some((g) => String(g.id) === String(chatId))
-        if (!isMember) {
-          const { data: mem } = await supabase
-            .from('group_members')
-            .select('role')
-            .eq('group_id', chatId)
-            .eq('user_id', currentUser.id)
-            .neq('role', 'pending')
-            .maybeSingle()
-          if (mem) isMember = true
-        }
-
-        if (!isMember) {
-          console.warn('Unauthorized attempt to read group messages:', chatId)
-          setChatLoading(false)
-          setMessages([])
-          setActiveChat(null)
-          showFloatingToast('Bạn chưa tham gia nhóm này!')
-          return
-        }
-        query = query.eq('group_id', chatId)
-      } else {
-        query = query
-          .is('group_id', null)
-          .or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${chatId}),and(sender_id.eq.${chatId},receiver_id.eq.${currentUser.id})`)
-      }
-
-      const { data: rawMessages, error } = await query.order('created_at', { ascending: true })
-
-      if (error) throw error
+      // Tải trực tiếp qua messagesApi tối ưu tốc độ và không phụ thuộc Supabase query builder
+      const msgList = await messagesApi.getMessages(
+        isGroup ? { groupId: chatId } : { receiverId: chatId }
+      )
 
       // Nếu trong lúc tải mạng người dùng đã chuyển sang chat khác -> BỎ QUA NGAY
       if (activeChatRef.current?.id !== chatId) return
 
-      const msgList = rawMessages || []
+      const msgIdMap = new Map((msgList || []).map((m) => [m.id, m]))
 
-      // Lấy profile người gửi
-      const senderIds = [...new Set(msgList.map((m) => m.sender_id))]
-      let profileMap = new Map()
-      if (senderIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, display_name, avatar_url')
-          .in('id', senderIds)
-        profileMap = new Map((profiles || []).map((p) => [p.id, p]))
-      }
-
-      // Kiểm tra lại sau khi fetch profile
-      if (activeChatRef.current?.id !== chatId) return
-
-      const msgIdMap = new Map(msgList.map((m) => [m.id, m]))
-
-      const enriched = msgList.map((m) => {
-        const p = profileMap.get(m.sender_id) || {}
+      const enriched = (msgList || []).map((m) => {
         const replied = m.reply_to_id ? msgIdMap.get(m.reply_to_id) : null
-        const repliedSender = replied ? profileMap.get(replied.sender_id) : null
 
         return {
           ...m,
-          sender_username: p.username || 'User',
-          sender_name: p.display_name || p.username || 'User',
-          sender_avatar: p.avatar_url || '',
+          sender_username: m.sender_username || 'User',
+          sender_name: m.sender_name || m.sender_username || 'User',
+          sender_avatar: m.sender_avatar || '',
           reply_content: replied?.content || null,
           reply_sender_id: replied?.sender_id || null,
-          reply_sender_name: repliedSender?.display_name || repliedSender?.username || null,
-          reply_sender_username: repliedSender?.username || null,
+          reply_sender_name: replied?.sender_name || replied?.sender_username || null,
+          reply_sender_username: replied?.sender_username || null,
         }
       })
 
@@ -4889,7 +4844,7 @@ function App() {
         if (activeChatRef.current?.id !== chatId) return prev
         const hasChange =
           prev.length !== filteredMsgs.length ||
-          prev.some((m, idx) => m.is_read !== filteredMsgs[idx]?.is_read || m.id !== filteredMsgs[idx]?.id || m.content !== filteredMsgs[idx]?.content)
+          prev.some((m, idx) => m.is_read !== filteredMsgs[idx]?.is_read || String(m.id) !== String(filteredMsgs[idx]?.id) || m.content !== filteredMsgs[idx]?.content)
         if (!hasChange) return prev
         return filteredMsgs
       })
@@ -4915,17 +4870,16 @@ function App() {
 
       // Đánh dấu đã đọc các tin nhắn nhận được
       if (!isGroup) {
-        const unreadIds = msgList.filter((m) => m.sender_id === chatId && !m.is_read).map((m) => m.id)
+        const unreadIds = (msgList || [])
+          .filter((m) => String(m.sender_id) === String(chatId) && !m.is_read)
+          .map((m) => m.id)
         if (unreadIds.length > 0) {
-          supabase.from('messages').update({ is_read: true }).in('id', unreadIds).then(() => { })
+          messagesApi.markAsRead({ messageIds: unreadIds }).catch(() => {})
         }
       }
     } catch (error) {
       if (!silent) {
         console.error('Load messages error:', error)
-        if (activeChatRef.current?.id === chatId) {
-          setMessages([])
-        }
       }
     } finally {
       if (!silent && activeChatRef.current?.id === chatId) {
@@ -5398,17 +5352,17 @@ function App() {
           const isMyGroup = newMsg.group_id
             ? groupsRef.current.some((g) => String(g.id) === String(newMsg.group_id))
             : false
-          const isMyDirect = !newMsg.group_id && (newMsg.sender_id === currentUser.id || newMsg.receiver_id === currentUser.id)
+          const isMyDirect = !newMsg.group_id && (String(newMsg.sender_id) === String(currentUser.id) || String(newMsg.receiver_id) === String(currentUser.id))
 
           if (!isMyGroup && !isMyDirect) return
 
           const currentActive = activeChatRef.current
 
           const isForActiveChat = currentActive && (
-            (currentActive.is_group && Number(newMsg.group_id) === Number(currentActive.id)) ||
+            (currentActive.is_group && String(newMsg.group_id) === String(currentActive.id)) ||
             (!currentActive.is_group && !newMsg.group_id && (
-              (newMsg.sender_id === currentActive.id && newMsg.receiver_id === currentUser.id) ||
-              (newMsg.sender_id === currentUser.id && newMsg.receiver_id === currentActive.id)
+              (String(newMsg.sender_id) === String(currentActive.id) && String(newMsg.receiver_id) === String(currentUser.id)) ||
+              (String(newMsg.sender_id) === String(currentUser.id) && String(newMsg.receiver_id) === String(currentActive.id))
             ))
           )
 
@@ -5417,7 +5371,7 @@ function App() {
             display_name: currentUser.display_name,
             avatar_url: currentUser.avatar_url,
           }
-          if (newMsg.sender_id !== currentUser.id) {
+          if (String(newMsg.sender_id) !== String(currentUser.id)) {
             const { data: p } = await supabase
               .from('profiles')
               .select('username, display_name, avatar_url')
@@ -5447,7 +5401,7 @@ function App() {
           if (isForActiveChat) {
             setMessages((prev) => {
               const filtered = prev.filter((m) => !m.is_optimistic || m.content !== newMsg.content)
-              if (filtered.some((m) => Number(m.id) === Number(newMsg.id))) return filtered
+              if (filtered.some((m) => String(m.id) === String(newMsg.id))) return filtered
               const updated = [...filtered, enrichedMsg]
               if (currentActive?.id) {
                 setMemoryCachedMessages(currentActive.id, updated)
@@ -5456,16 +5410,16 @@ function App() {
               return updated
             })
 
-            if (newMsg.receiver_id === currentUser.id && !newMsg.is_read) {
-              supabase.from('messages').update({ is_read: true }).eq('id', newMsg.id).then(() => { })
+            if (String(newMsg.receiver_id) === String(currentUser.id) && !newMsg.is_read) {
+              messagesApi.markAsRead({ messageIds: [newMsg.id] }).catch(() => {})
             }
           } else {
-            const chatTargetId = newMsg.group_id || (newMsg.sender_id === currentUser.id ? newMsg.receiver_id : newMsg.sender_id)
+            const chatTargetId = newMsg.group_id || (String(newMsg.sender_id) === String(currentUser.id) ? newMsg.receiver_id : newMsg.sender_id)
             if (chatTargetId) {
               const cached = getMemoryCachedMessages(chatTargetId)
               if (cached && Array.isArray(cached)) {
                 const filtered = cached.filter((m) => !m.is_optimistic || m.content !== newMsg.content)
-                if (!filtered.some((m) => Number(m.id) === Number(newMsg.id))) {
+                if (!filtered.some((m) => String(m.id) === String(newMsg.id))) {
                   const updated = [...filtered, enrichedMsg]
                   setMemoryCachedMessages(chatTargetId, updated)
                   saveMessagesToDb(chatTargetId, updated)
@@ -5484,7 +5438,7 @@ function App() {
         (payload) => {
           const deletedId = payload.old?.id
           if (deletedId) {
-            setMessages((prev) => prev.filter((m) => Number(m.id) !== Number(deletedId)))
+            setMessages((prev) => prev.filter((m) => String(m.id) !== String(deletedId)))
           }
         }
       )
@@ -5496,7 +5450,7 @@ function App() {
           if (updatedMsg?.id) {
             setMessages((prev) =>
               prev.map((m) =>
-                Number(m.id) === Number(updatedMsg.id)
+                String(m.id) === String(updatedMsg.id)
                   ? { ...m, ...updatedMsg }
                   : m
               )

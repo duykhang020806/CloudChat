@@ -217,6 +217,9 @@ export const chatClient = {
 
     const queryBuilder = {
       select: (cols = '*') => {
+        if (_operation !== 'insert' && _operation !== 'update' && _operation !== 'delete') {
+          _operation = 'select'
+        }
         _selectCols = cols
         return queryBuilder
       },
@@ -341,11 +344,16 @@ export const chatClient = {
             // 2. Xử lý UPDATE
             if (_operation === 'update') {
               if (table === 'messages') {
-                if (_updatePayload.is_read) {
+                if (_updatePayload?.is_read) {
                   const inFilter = _filters.find((f) => f.op === 'in' && f.col === 'id')
                   const eqFilter = _filters.find((f) => f.op === 'eq' && f.col === 'id')
                   const messageIds = inFilter ? inFilter.val : eqFilter ? [eqFilter.val] : []
                   await messagesApi.markAsRead({ messageIds })
+                } else if (_updatePayload?.content === '__REVOKED__') {
+                  const eqId = _filters.find((f) => f.op === 'eq' && f.col === 'id')?.val
+                  if (eqId) {
+                    await messagesApi.deleteMessage(eqId)
+                  }
                 }
                 return { data: _updatePayload, error: null }
               }
