@@ -1,7 +1,11 @@
 import { io } from 'socket.io-client'
 
-// Địa chỉ Application Load Balancer trên AWS (có thể cấu hình qua biến môi trường .env)
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://alb-cloudchat-1765117084.us-east-1.elb.amazonaws.com'
+// Địa chỉ Application Load Balancer trên AWS (Tự động tránh lỗi Mixed Content trên HTTPS)
+const rawApiUrl = import.meta.env.VITE_API_URL || ''
+export const API_BASE_URL =
+  typeof window !== 'undefined' && window.location.protocol === 'https:' && (rawApiUrl.startsWith('http://') || !rawApiUrl)
+    ? '' // Chạy qua Cloudflare Worker Reverse Proxy trên cùng domain HTTPS để tránh bị trình duyệt chặn
+    : (rawApiUrl || 'http://alb-cloudchat-1765117084.us-east-1.elb.amazonaws.com')
 
 // Quản lý Token trong localStorage
 export const getToken = () => {
