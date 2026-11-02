@@ -264,9 +264,26 @@ router.delete('/reject/:id', authenticateToken, handleRejectOrCancel)
 router.delete('/request/:id', authenticateToken, handleRejectOrCancel)
 router.delete('/:id', authenticateToken, handleRejectOrCancel)
 
+const ensureBlocksTable = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_blocks (
+        id SERIAL PRIMARY KEY,
+        blocker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        blocked_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(blocker_id, blocked_id)
+      )
+    `)
+  } catch (err) {
+    console.warn('Ensure user_blocks table warning:', err.message)
+  }
+}
+
 // 6. Chặn người dùng (Lưu vào database & huỷ bỏ toàn bộ quan hệ bạn bè/lời mời)
 router.post('/block', authenticateToken, async (req, res) => {
   try {
+    await ensureBlocksTable()
     const currentUserId = req.user.id
     const { targetUserId } = req.body
 
@@ -305,6 +322,7 @@ router.post('/block', authenticateToken, async (req, res) => {
 // 7. Bỏ chặn người dùng
 router.post('/unblock', authenticateToken, async (req, res) => {
   try {
+    await ensureBlocksTable()
     const currentUserId = req.user.id
     const { targetUserId } = req.body
 
@@ -332,6 +350,7 @@ router.post('/unblock', authenticateToken, async (req, res) => {
 // 8. Lấy danh sách chặn: Người tôi chặn và người đang chặn tôi
 router.get('/blocks', authenticateToken, async (req, res) => {
   try {
+    await ensureBlocksTable()
     const currentUserId = req.user.id
 
     // Người tôi đang chặn
@@ -355,8 +374,8 @@ router.get('/blocks', authenticateToken, async (req, res) => {
       blockedByUserIds: blockedByQuery.rows.map((r) => String(r.blocker_id)),
     })
   } catch (err) {
-    console.error('Get blocks error:', err)
-    res.status(500).json({ error: 'Lỗi tải danh sách chặn' })
+    console.warn('Get blocks fallback:', err.message)
+    res.json({ blockedUsers: [], blockedUserIds: [], blockedByUserIds: [] })
   }
 })
 

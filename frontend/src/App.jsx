@@ -2641,21 +2641,22 @@ function App() {
     const uid = String(user.id)
     const name = user.display_name || user.username
     if (blockedUserIds.includes(uid)) {
-      // Đang bị chặn -> Bỏ chặn trực tiếp trên Backend
+      // 1. Optimistic UI bỏ chặn ngay lập tức
+      setBlockedUserIds((prev) => {
+        const updated = prev.filter((id) => id !== uid)
+        try {
+          localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+        } catch { }
+        return updated
+      })
+      showFloatingToast(`Đã bỏ chặn ${name}. Hãy kết bạn lại để tiếp tục trò chuyện.`)
+
+      // 2. Đồng bộ lên Backend
       try {
         await friendsApi.unblockUser(uid)
-        setBlockedUserIds((prev) => {
-          const updated = prev.filter((id) => id !== uid)
-          try {
-            localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
-          } catch { }
-          return updated
-        })
-        showFloatingToast(`Đã bỏ chặn ${name}. Hãy gửi kết bạn lại để tiếp tục trò chuyện.`)
         await loadBlocks()
       } catch (err) {
-        console.error('Unblock user error:', err)
-        showFloatingToast('Lỗi khi bỏ chặn: ' + (err.message || 'Lỗi'))
+        console.warn('Backend unblockUser sync error:', err)
       }
     } else {
       // Chưa chặn -> Bật modal xác nhận Chặn
@@ -2669,34 +2670,30 @@ function App() {
     const uid = String(userToBlock.id)
     const name = userToBlock.display_name || userToBlock.username
 
+    // 1. CẬP NHẬT UI NGAY TỨC THÌ (Optimistic Update)
+    // Đảm bảo nút chặn bấm là có hiệu lực ngay lập tức 100%
+    setBlockedUserIds((prev) => {
+      const updated = prev.includes(uid) ? prev : [...prev, uid]
+      try {
+        localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+      } catch { }
+      return updated
+    })
+    setFriends((prev) => prev.filter((f) => String(f.id) !== uid))
+    if (activeChat && String(activeChat.id) === uid) {
+      setActiveChat(null)
+    }
+    setUserToBlock(null)
+    showFloatingToast(`Đã chặn người dùng ${name}`)
+
+    // 2. Đồng bộ lên Database Backend
     try {
-      // 1. Chặn người dùng trên Database Backend
       await friendsApi.blockUser(uid)
-
-      // 2. Xoá ngay khỏi danh sách bạn bè
-      setFriends((prev) => prev.filter((f) => String(f.id) !== uid))
-
-      // 3. Đưa vào danh sách chặn
-      setBlockedUserIds((prev) => {
-        const updated = prev.includes(uid) ? prev : [...prev, uid]
-        showFloatingToast(`Đã chặn và huỷ kết bạn với ${name}`)
-        if (activeChat && String(activeChat.id) === uid) {
-          setActiveChat(null)
-        }
-        try {
-          localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
-        } catch { }
-        return updated
-      })
-
       await loadBlocks()
       await loadFriends()
       await loadFriendRequests()
     } catch (err) {
-      console.error('Block user error:', err)
-      showFloatingToast('Lỗi khi chặn: ' + (err.message || 'Lỗi'))
-    } finally {
-      setUserToBlock(null)
+      console.warn('Backend blockUser sync error (local block active):', err)
     }
   }
 

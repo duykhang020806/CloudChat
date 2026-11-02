@@ -54,7 +54,7 @@ export default {
           redirect: 'follow',
         })
 
-        // Tự động thử lại 1 lần nếu gặp lỗi 404 "Cannot POST/GET" (do 1 trong các backend chưa pull code mới) hoặc lỗi 502/503 từ ALB
+        // Tự động thử lại nếu gặp lỗi 404 "Cannot POST/GET" (do 1 trong các backend chưa pull code mới) hoặc lỗi 502/503 từ ALB
         if (
           (response.status === 404 && url.pathname.startsWith('/api/')) ||
           response.status === 502 ||
@@ -63,14 +63,20 @@ export default {
           const bodyClone = response.clone()
           const text = await bodyClone.text().catch(() => '')
           if (text.includes('Cannot POST') || text.includes('Cannot GET') || response.status >= 500) {
-            const retryResponse = await fetch(albUrl, {
-              method: request.method,
-              headers: newHeaders,
-              body: isReadMethod ? null : requestBody,
-              redirect: 'follow',
-            }).catch(() => null)
-            if (retryResponse && retryResponse.status !== 404) {
-              response = retryResponse
+            for (let i = 0; i < 2; i++) {
+              const retryUrl = `${albUrl}${albUrl.includes('?') ? '&' : '?'}_r=${i + 1}`
+              const retryHeaders = new Headers(newHeaders)
+              retryHeaders.set('Connection', 'close')
+              const retryResponse = await fetch(retryUrl, {
+                method: request.method,
+                headers: retryHeaders,
+                body: isReadMethod ? null : requestBody,
+                redirect: 'follow',
+              }).catch(() => null)
+              if (retryResponse && retryResponse.status !== 404) {
+                response = retryResponse
+                break
+              }
             }
           }
         }
