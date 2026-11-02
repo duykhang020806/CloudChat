@@ -37,10 +37,10 @@ if (getToken()) {
 }
 
 // ============================================================================
-// AWS ALB CLOUD CHAT CLIENT (SUPABASE-COMPATIBLE ADAPTER)
+// CLOUDCHAT API & REALTIME CLIENT
 // Chuyển toàn bộ truy vấn của Frontend tới AWS Application Load Balancer
 // ============================================================================
-export const supabase = {
+export const chatClient = {
   auth: {
     getSession: async () => {
       const token = getToken()
@@ -579,3 +579,7 @@ export const supabase = {
     // Không cần hủy socket connection, chỉ unbind listeners
   },
 }
+
+// Giữ alias supabase để tương thích ngược mượt mà
+export const supabase = chatClient
+export default chatClient

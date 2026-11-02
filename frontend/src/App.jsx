@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import QRCode from 'qrcode'
 import jsQR from 'jsqr'
 import './App.css'
-import { supabase } from './supabaseClient'
+import { chatClient as supabase } from './chatClient'
 import { getAppleEmojiUrl, renderWithAppleEmoji } from './appleEmoji.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import {
