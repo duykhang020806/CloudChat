@@ -350,27 +350,52 @@ function formatUserStatus(user) {
   return `Lần cuối ${date.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit' })}`
 }
 
-function formatLastMessagePreview(friend, currentUser) {
-  if (!friend.last_message) {
-    return 'Chưa có tin nhắn nào'
+function formatLastMessagePreview(chat, currentUser) {
+  if (!chat || !chat.last_message) {
+    return chat?.is_group ? 'Chưa có tin nhắn trong nhóm' : 'Chưa có tin nhắn nào'
   }
-  const isMine = friend.last_message_sender_id === currentUser?.id
+  const isMine = chat.last_message_sender_id && currentUser?.id && String(chat.last_message_sender_id) === String(currentUser.id)
   const prefix = isMine ? 'Bạn: ' : ''
-  const content = friend.last_message.trim()
+  let content = typeof chat.last_message === 'string' ? chat.last_message.trim() : ''
+
+  if (!content) {
+    return chat?.is_group ? 'Chưa có tin nhắn trong nhóm' : 'Chưa có tin nhắn nào'
+  }
 
   if (content === '__REVOKED__' || content === '[Tin nhắn đã được thu hồi]') {
     return `${prefix}🚫 Tin nhắn đã được thu hồi`
   }
 
-  if (content.startsWith('{') && content.endsWith('}')) {
+  if (content.startsWith('{')) {
     try {
       const p = JSON.parse(content)
       if (p.isRevoked) return `${prefix}🚫 Tin nhắn đã được thu hồi`
       if (p.isVoice) return `${prefix}🎤 Tin nhắn thoại`
       if (p.isImage) return `${prefix}📷 ${p.caption ? p.caption : 'Hình ảnh'}`
       if (p.isVideo) return `${prefix}🎥 ${p.caption ? p.caption : 'Video'}`
-      if (p.isAttachment) return `${prefix}📎 ${p.fileName || 'Tệp đính kèm'}`
-    } catch { }
+      if (p.isAttachment || p.fileName) return `${prefix}📎 ${p.fileName || 'Tệp đính kèm'}`
+      if (p.text) return `${prefix}${p.text}`
+      if (p.content) return `${prefix}${p.content}`
+      if (p.message) return `${prefix}${p.message}`
+      return `${prefix}📎 Tệp đính kèm`
+    } catch {
+      // Fallback khi JSON bị cắt ngắn trong cache
+      if (content.includes('"isRevoked":true')) return `${prefix}🚫 Tin nhắn đã được thu hồi`
+      if (content.includes('"isVoice":true')) return `${prefix}🎤 Tin nhắn thoại`
+      if (content.includes('"isImage":true')) {
+        const capMatch = content.match(/"caption":\s*"([^"]*)"/)
+        return `${prefix}📷 ${capMatch && capMatch[1] ? capMatch[1] : 'Hình ảnh'}`
+      }
+      if (content.includes('"isVideo":true')) {
+        const capMatch = content.match(/"caption":\s*"([^"]*)"/)
+        return `${prefix}🎥 ${capMatch && capMatch[1] ? capMatch[1] : 'Video'}`
+      }
+      if (content.includes('"isAttachment":true')) {
+        const fnMatch = content.match(/"fileName":\s*"([^"]+)"/)
+        return `${prefix}📎 ${fnMatch ? fnMatch[1] : 'Tệp đính kèm'}`
+      }
+      return `${prefix}📎 Tệp tin đính kèm`
+    }
   }
 
   const att = parseAttachment(content)
@@ -1713,8 +1738,21 @@ const EMOJI_CATEGORIES = [
 ]
 
 function App() {
-  const [currentUser, setCurrentUser] = useState(null)
-  const [page, setPage] = useState('loading')
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cloudchat_current_user')
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
+  const [page, setPage] = useState(() => {
+    try {
+      return localStorage.getItem('cloudchat_current_user') ? 'chat' : 'loading'
+    } catch {
+      return 'loading'
+    }
+  })
   const [loginEmail, setLoginEmail] = useState('')
   const [registerEmail, setRegisterEmail] = useState('')
   const [username, setUsername] = useState('')
@@ -1726,7 +1764,19 @@ function App() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
 
-  const [friends, setFriends] = useState([])
+  const [friends, setFriends] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cloudchat_current_user')
+      if (saved) {
+        const u = JSON.parse(saved)
+        if (u?.id) {
+          const cached = localStorage.getItem(`cloudchat_cached_friends_${u.id}`)
+          return cached ? JSON.parse(cached) : []
+        }
+      }
+    } catch { }
+    return []
+  })
   const [activeChat, setActiveChat] = useState(null)
   const activeChatRef = useRef(activeChat)
   useEffect(() => {
@@ -1752,20 +1802,19 @@ function App() {
 
   // Auto-hide scrollbars after 3 seconds of inactivity (show only when scrolling/mouse wheel)
   useEffect(() => {
-    // Purge any corrupted cached messages from localStorage
-    try {
-      const keysToRemove = []
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i)
-        if (k && k.startsWith('cloudchat_cached_msgs_')) {
-          const val = localStorage.getItem(k)
-          if (val && val.includes('base64,...')) {
+    // Purge any corrupted legacy cached messages from localStorage asynchronously
+    const cleanupTimer = setTimeout(() => {
+      try {
+        const keysToRemove = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)
+          if (k && k.startsWith('cloudchat_cached_msgs_')) {
             keysToRemove.push(k)
           }
         }
-      }
-      keysToRemove.forEach((k) => localStorage.removeItem(k))
-    } catch { }
+        keysToRemove.forEach((k) => localStorage.removeItem(k))
+      } catch { }
+    }, 1500)
 
     let scrollTimeout = null
     const handleScrollActivity = () => {
@@ -1782,6 +1831,7 @@ function App() {
     window.addEventListener('wheel', handleScrollActivity, { passive: true })
 
     return () => {
+      clearTimeout(cleanupTimer)
       window.removeEventListener('scroll', handleScrollActivity, { capture: true })
       window.removeEventListener('wheel', handleScrollActivity)
       if (scrollTimeout) {
@@ -1821,6 +1871,8 @@ function App() {
     }
   })
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [settingsActiveTab, setSettingsActiveTab] = useState('appearance') // 'appearance' | 'blocked'
+  const [blockedSearchQuery, setBlockedSearchQuery] = useState('')
   const [loginLang, setLoginLang] = useState(() => {
     try {
       return localStorage.getItem('cloudchat_auth_lang') || 'vi'
@@ -2011,7 +2063,23 @@ function App() {
   const [deletingMsgId, setDeletingMsgId] = useState(null)
 
   // Groups & Community State
-  const [groups, setGroups] = useState([])
+  const [groups, setGroups] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cloudchat_current_user')
+      if (saved) {
+        const u = JSON.parse(saved)
+        if (u?.id) {
+          const cached = localStorage.getItem(`cloudchat_cached_groups_${u.id}`)
+          return cached ? JSON.parse(cached) : []
+        }
+      }
+    } catch { }
+    return []
+  })
+  const groupsRef = useRef(groups)
+  useEffect(() => {
+    groupsRef.current = groups
+  }, [groups])
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false)
   const [groupNameInput, setGroupNameInput] = useState('')
   const [groupAvatarInput, setGroupAvatarInput] = useState('')
@@ -2934,45 +3002,71 @@ function App() {
           is_friend: friends.some((f) => f.id === u.id),
         }))
 
-        // 2. Tìm nhóm chat mà user đã tham gia khớp tên nhóm
-        const matchedGroups = groups.filter((g) => g.name.toLowerCase().includes(q)).slice(0, 10)
+        // 2. Tìm nhóm chat mà user ĐÃ THAM GIA khớp tên nhóm (Tuyệt đối không hiển thị nhóm chưa tham gia)
+        const matchedGroups = groups.filter((g) => g.name && g.name.toLowerCase().includes(q)).slice(0, 10)
         const groupResults = matchedGroups.map((g) => ({ ...g, is_group: true }))
 
-        // 3. Tìm tin nhắn khớp từ khóa
-        const { data: matchedMsgs } = await supabase
+        // 3. Tìm tin nhắn khớp từ khóa - BẢO MẬT TUYỆT ĐỐI:
+        // CHỈ tìm trong các cuộc trò chuyện hợp lệ mà currentUser là người gửi/nhận hoặc ĐÃ LÀ THÀNH VIÊN nhóm
+        const myGroupIds = groups.map((g) => g.id).filter(Boolean)
+
+        const directPromise = supabase
           .from('messages')
           .select('id, sender_id, receiver_id, group_id, content, created_at')
+          .is('group_id', null)
+          .or(`sender_id.eq.${currentUser.id},receiver_id.eq.${currentUser.id}`)
           .ilike('content', `%${q}%`)
           .order('created_at', { ascending: false })
-          .limit(50)
+          .limit(30)
 
-        const enrichedMsgs = (matchedMsgs || []).map((m) => {
+        const groupPromise = myGroupIds.length > 0
+          ? supabase
+              .from('messages')
+              .select('id, sender_id, receiver_id, group_id, content, created_at')
+              .in('group_id', myGroupIds)
+              .ilike('content', `%${q}%`)
+              .order('created_at', { ascending: false })
+              .limit(30)
+          : Promise.resolve({ data: [] })
+
+        const [directRes, groupRes] = await Promise.all([directPromise, groupPromise])
+        const allMatched = [...(directRes.data || []), ...(groupRes.data || [])]
+        allMatched.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        const matchedMsgs = allMatched.slice(0, 50)
+
+        const enrichedMsgs = []
+        for (const m of matchedMsgs) {
           if (m.group_id) {
+            // Nhóm: BẮT BUỘC người dùng phải ĐÃ LÀ THÀNH VIÊN của nhóm
             const g = groups.find((grp) => String(grp.id) === String(m.group_id))
-            return {
+            if (!g) continue // Loại bỏ hoàn toàn nhóm chưa tham gia
+            enrichedMsgs.push({
               ...m,
               friend_id: m.group_id,
-              username: g?.name || 'Nhóm',
-              display_name: g?.name || 'Nhóm chat',
-              avatar_url: g?.avatar_url || '',
+              username: g.name || 'Nhóm',
+              display_name: g.name || 'Nhóm chat',
+              avatar_url: g.avatar_url || '',
               is_group: true,
-            }
+            })
+          } else {
+            // Chat 1-1: Bắt buộc currentUser phải là người gửi hoặc người nhận
+            if (m.sender_id !== currentUser.id && m.receiver_id !== currentUser.id) continue
+            const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id
+            const f = friends.find((fr) => String(fr.id) === String(otherId))
+            enrichedMsgs.push({
+              ...m,
+              friend_id: otherId,
+              username: f?.username || 'User',
+              display_name: f?.display_name || f?.username || 'Người dùng',
+              avatar_url: f?.avatar_url || '',
+              is_group: false,
+            })
           }
-          const otherId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id
-          const f = friends.find((fr) => fr.id === otherId)
-          return {
-            ...m,
-            friend_id: otherId,
-            username: f?.username || 'User',
-            display_name: f?.display_name || f?.username || 'Người dùng',
-            avatar_url: f?.avatar_url || '',
-            is_group: false,
-          }
-        })
+        }
 
-        // 4. Trích xuất gợi ý từ khóa
+        // 4. Trích xuất gợi ý từ khóa (chỉ từ các tin nhắn hợp lệ mà user có quyền truy cập)
         const suggestionsSet = new Set()
-        for (const m of (matchedMsgs || [])) {
+        for (const m of enrichedMsgs) {
           if (!m.content || m.content.startsWith('data:') || m.content.startsWith('{')) continue
           const contentText = m.content.replace(/\s+/g, ' ')
           const lowerText = contentText.toLowerCase()
@@ -3008,18 +3102,27 @@ function App() {
 
   const handleSelectSearchResult = (res) => {
     const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
-    const matchedGroup = groups.find((g) => g.id === targetId)
-    const matchedFriend = friends.find((f) => f.id === targetId)
+    const matchedGroup = groups.find((g) => String(g.id) === String(targetId))
+    const matchedFriend = friends.find((f) => String(f.id) === String(targetId))
 
-    const chatTarget = matchedGroup || matchedFriend || {
-      id: targetId,
-      username: res.username || 'User',
-      display_name: res.display_name || res.username || 'Người dùng',
-      avatar_url: res.avatar_url || null,
-      is_group: Boolean(res.is_group),
+    // BẢO MẬT: Nếu là nhóm mà user chưa tham gia -> Không cho phép mở hay chat!
+    if (res.is_group) {
+      if (!matchedGroup) {
+        showFloatingToast('Bạn chưa tham gia nhóm này!')
+        return
+      }
+      setActiveChat(matchedGroup)
+    } else {
+      const chatTarget = matchedFriend || {
+        id: targetId,
+        username: res.username || 'User',
+        display_name: res.display_name || res.username || 'Người dùng',
+        avatar_url: res.avatar_url || null,
+        is_group: false,
+      }
+      setActiveChat(chatTarget)
     }
 
-    setActiveChat(chatTarget)
     setTimeout(() => {
       const el = document.getElementById(`msg-${res.id}`)
       if (el) {
@@ -3436,46 +3539,51 @@ function App() {
 
       const groupIds = acceptedMemberships.map((m) => m.group_id)
 
-      const { data: groupList, error: grpErr } = await supabase
-        .from('groups')
-        .select('*')
-        .in('id', groupIds)
-        .order('created_at', { ascending: false })
+      // Chạy song song 3 truy vấn để tăng tốc tải trang
+      const [groupListRes, allMembersRes, recentMsgsRes] = await Promise.all([
+        supabase
+          .from('groups')
+          .select('*')
+          .in('id', groupIds)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('group_members')
+          .select('group_id, role')
+          .in('group_id', groupIds),
+        supabase
+          .from('messages')
+          .select('group_id, content, created_at, sender_id')
+          .in('group_id', groupIds)
+          .order('created_at', { ascending: false })
+      ])
 
-      if (grpErr) throw grpErr
-
-      const { data: allMembers } = await supabase
-        .from('group_members')
-        .select('group_id, role')
-        .in('group_id', groupIds)
+      if (groupListRes.error) throw groupListRes.error
+      const groupList = groupListRes.data || []
+      const allMembers = allMembersRes.data || []
+      const recentMsgs = recentMsgsRes.data || []
 
       const countMap = new Map()
-      for (const m of (allMembers || [])) {
+      for (const m of allMembers) {
         if (m.role !== 'pending') {
           countMap.set(m.group_id, (countMap.get(m.group_id) || 0) + 1)
         }
       }
 
-      const { data: recentMsgs } = await supabase
-        .from('messages')
-        .select('group_id, content, created_at')
-        .in('group_id', groupIds)
-        .order('created_at', { ascending: false })
-
       const lastMsgMap = new Map()
-      for (const m of (recentMsgs || [])) {
+      for (const m of recentMsgs) {
         if (!lastMsgMap.has(m.group_id)) {
           lastMsgMap.set(m.group_id, m)
         }
       }
 
-      const formattedGroups = (groupList || []).map((g) => ({
+      const formattedGroups = groupList.map((g) => ({
         ...g,
         id: g.id,
         is_group: true,
         member_count: countMap.get(g.id) || 1,
         last_message: lastMsgMap.get(g.id)?.content || null,
         last_message_time: lastMsgMap.get(g.id)?.created_at || null,
+        last_message_sender_id: lastMsgMap.get(g.id)?.sender_id || null,
       }))
 
       setGroups(formattedGroups)
@@ -3483,7 +3591,13 @@ function App() {
       try {
         const cleanGroups = formattedGroups.slice(0, 50).map((g) => {
           let lm = g.last_message
-          if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
+          if (typeof lm === 'string') {
+            if (lm.startsWith('{')) {
+              lm = formatLastMessagePreview(g, currentUser)
+            } else if (lm.length > 100) {
+              lm = lm.slice(0, 100)
+            }
+          }
           return { ...g, last_message: lm }
         })
         if (currentUser?.id) {
@@ -3495,7 +3609,7 @@ function App() {
       setActiveChat((current) => {
         if (current && current.is_group) {
           const updated = formattedGroups.find((g) => String(g.id) === String(current.id))
-          if (updated) return { ...current, ...updated }
+          return updated ? { ...current, ...updated } : null
         }
         return current
       })
@@ -3611,6 +3725,20 @@ function App() {
     if (!currentUser?.id || !groupId) return
 
     try {
+      const { data: members, error: memErr } = await supabase
+        .from('group_members')
+        .select('user_id, role, joined_at')
+        .eq('group_id', groupId)
+
+      if (memErr) throw memErr
+
+      const myMembership = (members || []).find((m) => m.user_id === currentUser.id)
+      // BẢO MẬT: Bắt buộc user phải là thành viên hợp lệ mới được xem thông tin chi tiết nhóm
+      if (!myMembership || myMembership.role === 'pending') {
+        setGroupDetailData(null)
+        return
+      }
+
       const { data: group, error: grpErr } = await supabase
         .from('groups')
         .select('*')
@@ -3619,18 +3747,10 @@ function App() {
 
       if (grpErr) throw grpErr
 
-      const { data: members, error: memErr } = await supabase
-        .from('group_members')
-        .select('user_id, role, joined_at')
-        .eq('group_id', groupId)
-
-      if (memErr) throw memErr
-
       const acceptedMembers = (members || []).filter((m) => m.role !== 'pending')
       const pendingMembers = (members || []).filter((m) => m.role === 'pending')
 
       const memberCount = acceptedMembers.length
-      const myMembership = (members || []).find((m) => m.user_id === currentUser.id)
       const isCreator = myMembership?.role === 'creator' || group?.creator_id === currentUser.id
 
       const allUserIds = (members || []).map((m) => m.user_id)
@@ -4097,7 +4217,12 @@ function App() {
 
   // Handle attachment click: Mở trực tiếp bộ chọn file / camera hệ thống (hoạt động 100% trên cả PC và Mobile)
   const handleAttachmentClick = () => {
-    if (!activeChat?.is_group && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
+    if (activeChat?.is_group) {
+      if (!groups.some((g) => String(g.id) === String(activeChat?.id))) {
+        showFloatingToast('Bạn chưa tham gia nhóm này!')
+        return
+      }
+    } else if (activeChat?.id !== CLOUDCHAT_BOT_ID && activeChat?.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
       showFloatingToast('Bạn cần kết bạn và được đối phương đồng ý trước khi gửi tệp tin!')
       return
     }
@@ -4175,7 +4300,12 @@ function App() {
       alert('Trình duyệt của bạn không hỗ trợ ghi âm trực tiếp!')
       return
     }
-    if (!activeChat?.is_group && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
+    if (activeChat?.is_group) {
+      if (!groups.some((g) => String(g.id) === String(activeChat?.id))) {
+        showFloatingToast('Bạn chưa tham gia nhóm này!')
+        return
+      }
+    } else if (activeChat?.id !== CLOUDCHAT_BOT_ID && activeChat?.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat?.id))) {
       showFloatingToast('Bạn cần kết bạn và được đối phương đồng ý trước khi gửi thoại!')
       return
     }
@@ -4568,23 +4698,26 @@ function App() {
 
       const otherUserIds = rows.map((r) => (r.user_id === currentUser.id ? r.friend_id : r.user_id))
 
-      const { data: profiles, error: profErr } = await supabase
-        .from('profiles')
-        .select('id, username, display_name, bio, avatar_url, is_online, last_seen')
-        .in('id', otherUserIds)
+      // Chạy song song lấy profiles và tin nhắn mới nhất
+      const [profRes, recentMsgsRes] = await Promise.all([
+        supabase
+          .from('profiles')
+          .select('id, username, display_name, bio, avatar_url, is_online, last_seen')
+          .in('id', otherUserIds),
+        supabase
+          .from('messages')
+          .select('id, sender_id, receiver_id, content, created_at, is_read')
+          .is('group_id', null)
+          .or(`and(sender_id.eq.${currentUser.id},receiver_id.in.(${otherUserIds.join(',')})),and(receiver_id.eq.${currentUser.id},sender_id.in.(${otherUserIds.join(',')}))`)
+          .order('created_at', { ascending: false })
+          .limit(100)
+      ])
 
-      if (profErr) throw profErr
+      if (profRes.error) throw profRes.error
+      const profiles = profRes.data || []
+      const recentMsgs = recentMsgsRes.data || []
 
       const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
-
-      // Lấy tin nhắn mới nhất giữa currentUser và các bạn bè
-      const { data: recentMsgs } = await supabase
-        .from('messages')
-        .select('id, sender_id, receiver_id, content, created_at, is_read')
-        .is('group_id', null)
-        .or(`and(sender_id.eq.${currentUser.id},receiver_id.in.(${otherUserIds.join(',')})),and(receiver_id.eq.${currentUser.id},sender_id.in.(${otherUserIds.join(',')}))`)
-        .order('created_at', { ascending: false })
-        .limit(100)
 
       const lastMsgMap = new Map()
       for (const m of (recentMsgs || [])) {
@@ -4627,7 +4760,13 @@ function App() {
       try {
         const cleanFriends = nextFriends.slice(0, 50).map((f) => {
           let lm = f.last_message
-          if (typeof lm === 'string' && lm.length > 200) lm = lm.slice(0, 200)
+          if (typeof lm === 'string') {
+            if (lm.startsWith('{')) {
+              lm = formatLastMessagePreview(f, currentUser)
+            } else if (lm.length > 100) {
+              lm = lm.slice(0, 100)
+            }
+          }
           return { ...f, last_message: lm }
         })
         if (currentUser?.id) {
@@ -4701,11 +4840,27 @@ function App() {
     try {
       const isGroup = activeChatRef.current?.is_group || false
 
-      let query = supabase
-        .from('messages')
-        .select('id, sender_id, receiver_id, group_id, content, reply_to_id, is_read, created_at')
-
       if (isGroup) {
+        let isMember = groups.some((g) => String(g.id) === String(chatId))
+        if (!isMember) {
+          const { data: mem } = await supabase
+            .from('group_members')
+            .select('role')
+            .eq('group_id', chatId)
+            .eq('user_id', currentUser.id)
+            .neq('role', 'pending')
+            .maybeSingle()
+          if (mem) isMember = true
+        }
+
+        if (!isMember) {
+          console.warn('Unauthorized attempt to read group messages:', chatId)
+          setChatLoading(false)
+          setMessages([])
+          setActiveChat(null)
+          showFloatingToast('Bạn chưa tham gia nhóm này!')
+          return
+        }
         query = query.eq('group_id', chatId)
       } else {
         query = query
@@ -5373,6 +5528,16 @@ function App() {
         { event: 'INSERT', schema: 'public', table: 'messages' },
         async (payload) => {
           const newMsg = payload.new
+          if (!newMsg) return
+
+          // Bảo mật Realtime: Loại bỏ ngay tin nhắn không thuộc về user hiện tại
+          const isMyGroup = newMsg.group_id
+            ? groupsRef.current.some((g) => String(g.id) === String(newMsg.group_id))
+            : false
+          const isMyDirect = !newMsg.group_id && (newMsg.sender_id === currentUser.id || newMsg.receiver_id === currentUser.id)
+
+          if (!isMyGroup && !isMyDirect) return
+
           const currentActive = activeChatRef.current
 
           const isForActiveChat = currentActive && (
@@ -5600,6 +5765,21 @@ function App() {
     const text = message.trim()
     if ((!text && !pendingAttachment) || !activeChat || !currentUser?.id) return
 
+    // BẢO MẬT: Bắt buộc kiểm tra quyền gửi tin nhắn
+    if (activeChat.is_group) {
+      const isMember = groups.some((g) => String(g.id) === String(activeChat.id))
+      if (!isMember) {
+        showFloatingToast('Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn!')
+        return
+      }
+    } else if (activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat') {
+      const isFriend = friends.some((f) => String(f.id) === String(activeChat.id))
+      if (!isFriend) {
+        showFloatingToast('Bạn cần kết bạn và được đối phương đồng ý trước khi gửi tin nhắn!')
+        return
+      }
+    }
+
     // Xử lý nội dung nếu có pendingAttachment
     let finalContent = text
     if (pendingAttachment) {
@@ -5782,20 +5962,53 @@ function App() {
     }
   }
 
-  // Đăng nhập Google qua Supabase OAuth
-  const handleGoogleLogin = async () => {
+  // Đăng nhập Google qua Google Identity Services & AWS ALB Backend
+  const handleGoogleLogin = () => {
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
+    if (!clientId || clientId.includes('YOUR_GOOGLE_CLIENT_ID')) {
+      alert('Chưa cấu hình Google Client ID!\n\nVui lòng tạo OAuth 2.0 Client ID (Web Application) trên Google Cloud Console và thêm vào file frontend/.env:\nVITE_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com')
+      return
+    }
+
+    if (!window.google?.accounts?.id) {
+      setError('Thư viện Google Identity chưa tải xong. Vui lòng tải lại trang và thử lại.')
+      return
+    }
+
     setLoading(true)
     setError('')
+
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: async (response) => {
+          try {
+            if (!response.credential) {
+              throw new Error('Không nhận được credential xác thực từ Google')
+            }
+            const { data, error } = await supabase.auth.signInWithGoogleCredential(response.credential)
+            if (error) throw error
+            if (data?.user) {
+              setCurrentUser(data.user)
+              setPage('chat')
+            }
+          } catch (err) {
+            console.error('Google Auth callback error:', err)
+            setError('Lỗi xác thực Google: ' + (err.message || 'Không thể đăng nhập'))
+          } finally {
+            setLoading(false)
+          }
         },
       })
-      if (error) throw error
+
+      window.google.accounts.id.prompt((notification) => {
+        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+          console.warn('Google One-tap prompt not displayed, reason:', notification.getNotDisplayedReason?.())
+          setLoading(false)
+        }
+      })
     } catch (err) {
-      setError('Lỗi đăng nhập Google: ' + err.message)
+      setError('Lỗi mở xác thực Google: ' + err.message)
       setLoading(false)
     }
   }
@@ -6916,7 +7129,14 @@ function App() {
                           <button
                             className={`tg-chat-item ${activeChat?.id === grp.id ? 'active' : ''}`}
                             key={`search-grp-${grp.id}`}
-                            onClick={() => setActiveChat(grp)}
+                            onClick={() => {
+                              const isMember = groups.some((g) => String(g.id) === String(grp.id))
+                              if (!isMember) {
+                                showFloatingToast('Bạn chưa tham gia nhóm này!')
+                                return
+                              }
+                              setActiveChat(grp)
+                            }}
                           >
                             <div
                               className="tg-avatar"
@@ -7033,8 +7253,11 @@ function App() {
                       {globalSearchResults.length > 0 ? (
                         globalSearchResults.map((res) => {
                           const targetId = res.friend_id || (res.sender_id === currentUser?.id ? res.receiver_id : res.sender_id)
-                          const matchedGroup = groups.find((g) => g.id === targetId)
-                          const matchedFriend = friends.find((f) => f.id === targetId)
+                          const matchedGroup = groups.find((g) => String(g.id) === String(targetId))
+                          const matchedFriend = friends.find((f) => String(f.id) === String(targetId))
+
+                          // Tuyệt đối không hiển thị kết quả nếu là nhóm chưa tham gia
+                          if (res.is_group && !matchedGroup) return null
 
                           const chatTarget = matchedGroup || matchedFriend || {
                             id: targetId,
@@ -7042,6 +7265,10 @@ function App() {
                             display_name: res.display_name || res.username || 'Người dùng',
                             avatar_url: res.avatar_url || null,
                             is_group: Boolean(res.is_group),
+                          }
+
+                          if (chatTarget.is_group && !groups.some((g) => String(g.id) === String(chatTarget.id))) {
+                            return null
                           }
 
                           const displayName = chatTarget.is_group
@@ -7054,7 +7281,13 @@ function App() {
                             <button
                               className={`tg-chat-item tg-search-result-item ${isSelected ? 'active' : ''}`}
                               key={`search-msg-${res.id}`}
-                              onClick={() => handleSelectSearchResult({ ...res, friend_id: chatTarget.id })}
+                              onClick={() => {
+                                if (chatTarget.is_group && !groups.some((g) => String(g.id) === String(chatTarget.id))) {
+                                  showFloatingToast('Bạn chưa tham gia nhóm này!')
+                                  return
+                                }
+                                handleSelectSearchResult({ ...res, friend_id: chatTarget.id })
+                              }}
                             >
                               <div className="tg-avatar">
                                 {chatTarget.avatar_url ? (
@@ -7450,7 +7683,7 @@ function App() {
                               </div>
                               <div className="tg-chat-bottom">
                                 <span className="tg-chat-preview">
-                                  {group.last_message || 'Chưa có tin nhắn trong nhóm'}
+                                  {formatLastMessagePreview(group, currentUser)}
                                 </span>
                               </div>
                             </div>
@@ -7591,9 +7824,7 @@ function App() {
                               </div>
                               <div className="tg-chat-bottom">
                                 <span className="tg-chat-preview">
-                                  {isGroup
-                                    ? item.last_message || 'Chưa có tin nhắn trong nhóm'
-                                    : formatLastMessagePreview(item, currentUser)}
+                                  {formatLastMessagePreview(item, currentUser)}
                                 </span>
                               </div>
                             </div>
@@ -8614,6 +8845,14 @@ function App() {
                     </button>
                   </div>
                 </div>
+              ) : activeChat.is_group && !groups.some((g) => String(g.id) === String(activeChat.id)) ? (
+                <div style={{ textAlign: 'center', padding: '14px 20px', color: '#f87171', background: 'rgba(239, 68, 68, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
+                  🔒 Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn.
+                </div>
+              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat.id)) ? (
+                <div style={{ textAlign: 'center', padding: '14px 20px', color: '#a78bfa', background: 'rgba(135, 116, 225, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
+                  💬 Bạn cần gửi lời mời kết bạn và được đối phương chấp nhận để bắt đầu trò chuyện.
+                </div>
               ) : (
                 /* Telegram Message Input Pill */
                 <div className="tg-input-area">
@@ -8810,7 +9049,9 @@ function App() {
               )}
             </div>
           ) : (
-            <div className="tg-no-chat-selected" />
+            <div className="tg-no-chat-selected">
+              <span className="tg-no-chat-badge">Chọn một đoạn chat để bắt đầu trò chuyện</span>
+            </div>
           )}
         </ErrorBoundary>
       </main>
@@ -10158,23 +10399,16 @@ function App() {
         </div>
       )}
 
-      {/* Modal Cài đặt hệ thống (Giao diện Sáng / Tối / Hệ Thống) */}
-
+      {/* Modal Cài đặt hệ thống (Thiết kế tối giản, chuyên nghiệp) */}
       {showSettingsModal && (
-        <div className="modal-overlay" onClick={() => setShowSettingsModal(false)}>
+        <div className="modal-overlay tg-settings-modal-overlay" onClick={() => setShowSettingsModal(false)}>
           <div className="modal-card tg-settings-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div className="modal-title-wrap">
-                <div className="modal-icon" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
-                  ⚙️
-                </div>
-                <div>
-                  <h3>Cài đặt</h3>
-
-                </div>
-              </div>
+            {/* Header */}
+            <div className="tg-settings-modal-header">
+              <h3 className="tg-settings-title">Cài đặt</h3>
               <button
-                className="modal-close-button"
+                type="button"
+                className="tg-settings-close-btn"
                 onClick={() => setShowSettingsModal(false)}
                 title="Đóng"
               >
@@ -10182,76 +10416,101 @@ function App() {
               </button>
             </div>
 
-            <div className="settings-body">
-              {/* Phần Giao diện */}
-              <div className="settings-section">
-                <div className="settings-section-title">
-                  <span className="settings-section-icon">🎨</span>
-                  <span>Giao diện</span>
-                </div>
+            {/* Segmented Tabs Navigation */}
+            <div className="tg-settings-nav-bar">
+              <button
+                type="button"
+                className={`tg-settings-nav-item ${settingsActiveTab === 'appearance' ? 'active' : ''}`}
+                onClick={() => setSettingsActiveTab('appearance')}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="5" />
+                  <line x1="12" y1="1" x2="12" y2="3" />
+                  <line x1="12" y1="21" x2="12" y2="23" />
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                  <line x1="1" y1="12" x2="3" y2="12" />
+                  <line x1="21" y1="12" x2="23" y2="12" />
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                </svg>
+                <span>Giao diện</span>
+              </button>
 
-                <div className="settings-item">
-                  <div className="settings-item-header">
+              <button
+                type="button"
+                className={`tg-settings-nav-item ${settingsActiveTab === 'blocked' ? 'active' : ''}`}
+                onClick={() => setSettingsActiveTab('blocked')}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                </svg>
+                <span>Đã chặn</span>
+                {blockedUserIds.length > 0 && (
+                  <span className="tg-settings-badge-count">{blockedUserIds.length}</span>
+                )}
+              </button>
+            </div>
 
-                    <div className="settings-item-label">
-                      {themeMode === 'light'
-                        ? 'Đang áp dụng giao diện Sáng'
-                        : themeMode === 'dark'
-                          ? 'Đang áp dụng giao diện Tối'
-                          : 'Tự động đồng bộ theo giao diện máy tính / điện thoại'}
-                    </div>
-                  </div>
-
-                  {/* 3 lựa chọn: Sáng / Tối / Hệ Thống */}
-                  <div className="theme-toggle-group">
+            {/* Content Body */}
+            <div className="tg-settings-content-wrap">
+              {settingsActiveTab === 'appearance' ? (
+                <div className="tg-appearance-tab-content">
+                  <div className="tg-settings-section-label">Chế độ hiển thị</div>
+                  <div className="tg-minimal-theme-group">
                     <button
                       type="button"
-                      className={`theme-option-btn ${themeMode === 'light' ? 'active' : ''}`}
+                      className={`tg-minimal-theme-btn ${themeMode === 'light' ? 'active' : ''}`}
                       onClick={() => handleThemeChange('light')}
                     >
-                      <span className="theme-option-icon">☀️</span>
-                      <span className="theme-option-text">Sáng</span>
-                      {themeMode === 'light' && <span className="theme-check-icon">✓</span>}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="5" />
+                        <line x1="12" y1="1" x2="12" y2="3" />
+                        <line x1="12" y1="21" x2="12" y2="23" />
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                        <line x1="1" y1="12" x2="3" y2="12" />
+                        <line x1="21" y1="12" x2="23" y2="12" />
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                      </svg>
+                      <span>Sáng</span>
                     </button>
 
                     <button
                       type="button"
-                      className={`theme-option-btn ${themeMode === 'dark' ? 'active' : ''}`}
+                      className={`tg-minimal-theme-btn ${themeMode === 'dark' ? 'active' : ''}`}
                       onClick={() => handleThemeChange('dark')}
                     >
-                      <span className="theme-option-icon">🌙</span>
-                      <span className="theme-option-text">Tối</span>
-                      {themeMode === 'dark' && <span className="theme-check-icon">✓</span>}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                      </svg>
+                      <span>Tối</span>
                     </button>
 
                     <button
                       type="button"
-                      className={`theme-option-btn ${themeMode === 'system' ? 'active' : ''}`}
+                      className={`tg-minimal-theme-btn ${themeMode === 'system' ? 'active' : ''}`}
                       onClick={() => handleThemeChange('system')}
                     >
-                      <span className="theme-option-icon">💻</span>
-                      <span className="theme-option-text">Hệ Thống</span>
-                      {themeMode === 'system' && <span className="theme-check-icon">✓</span>}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                        <line x1="8" y1="21" x2="16" y2="21" />
+                        <line x1="12" y1="17" x2="12" y2="21" />
+                      </svg>
+                      <span>Hệ thống</span>
                     </button>
                   </div>
                 </div>
-              </div>
-
-              {/* Phần Danh sách đã chặn */}
-              <div className="settings-section" style={{ marginTop: 20 }}>
-                <div className="settings-section-title">
-                  <span className="settings-section-icon">🚫</span>
-                  <span>Danh sách đã chặn</span>
-                </div>
-
-                <div className="settings-item">
-
+              ) : (
+                <div className="tg-blocked-tab-content">
                   {blockedUserIds.length === 0 ? (
-                    <div style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic', padding: '10px 0' }}>
-                      Chưa có người dùng nào trong danh sách chặn.
+                    <div className="tg-blocked-empty-minimal">
+                      Chưa có người dùng nào bị chặn
                     </div>
                   ) : (
-                    <div className="tg-blocked-users-list">
+                    <div className="tg-blocked-list-container">
                       {blockedUserIds.map((bId) => {
                         const targetUser = friends.find((f) => String(f.id) === String(bId)) || {
                           id: bId,
@@ -10260,8 +10519,8 @@ function App() {
                         }
                         const name = targetUser.display_name || targetUser.username
                         return (
-                          <div className="tg-blocked-user-row" key={bId}>
-                            <div className="tg-blocked-user-left">
+                          <div className="tg-blocked-card-item" key={bId}>
+                            <div className="tg-blocked-card-left">
                               <div className="tg-avatar sm">
                                 {targetUser.avatar_url ? (
                                   <img src={targetUser.avatar_url} alt="" className="avatar-img" />
@@ -10269,14 +10528,14 @@ function App() {
                                   (name || 'U').charAt(0).toUpperCase()
                                 )}
                               </div>
-                              <div className="tg-blocked-user-info">
-                                <strong>{name}</strong>
-                                <span>@{targetUser.username}</span>
+                              <div className="tg-blocked-card-info">
+                                <strong className="tg-blocked-name">{name}</strong>
+                                <span className="tg-blocked-handle">@{targetUser.username}</span>
                               </div>
                             </div>
                             <button
                               type="button"
-                              className="tg-unblock-btn"
+                              className="tg-unblock-action-btn"
                               onClick={() => handleToggleBlockUser(targetUser)}
                             >
                               Bỏ chặn
@@ -10287,16 +10546,17 @@ function App() {
                     </div>
                   )}
                 </div>
-              </div>
+              )}
             </div>
 
-            <div className="modal-footer" style={{ marginTop: 20 }}>
+            {/* Modal Footer */}
+            <div className="tg-settings-modal-footer">
               <button
                 type="button"
-                className="primary-button"
+                className="tg-settings-done-btn"
                 onClick={() => setShowSettingsModal(false)}
               >
-                Hoàn tất
+                Xong
               </button>
             </div>
           </div>

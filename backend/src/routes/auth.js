@@ -120,6 +120,88 @@ router.post('/login', async (req, res) => {
   }
 })
 
+// 2b. Đăng nhập / Đăng ký nhanh bằng Google OAuth
+router.post('/google', async (req, res) => {
+  try {
+    const { credential } = req.body
+
+    if (!credential) {
+      return res.status(400).json({ error: 'Thiếu Google credential token' })
+    }
+
+    // 1. Xác thực ID Token trực tiếp với máy chủ Google
+    const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`)
+    if (!googleRes.ok) {
+      return res.status(401).json({ error: 'Token Google không hợp lệ hoặc đã hết hạn' })
+    }
+
+    const gData = await googleRes.json()
+    const email = gData.email?.toLowerCase().trim()
+    const name = gData.name || gData.given_name || email.split('@')[0]
+    const picture = gData.picture || null
+
+    if (!email) {
+      return res.status(400).json({ error: 'Không thể lấy email từ tài khoản Google này' })
+    }
+
+    // 2. Kiểm tra xem người dùng đã tồn tại trong CSDL chưa
+    let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email])
+    let user = null
+
+    if (userResult.rows.length === 0) {
+      // Người dùng mới: Tự tạo username duy nhất
+      let baseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '')
+      if (baseUsername.length < 3) baseUsername = 'user_' + Math.floor(Math.random() * 10000)
+
+      let finalUsername = baseUsername
+      const checkUname = await pool.query('SELECT id FROM users WHERE username = $1', [finalUsername])
+      if (checkUname.rows.length > 0) {
+        finalUsername = `${baseUsername}_${Math.floor(Math.random() * 1000)}`
+      }
+
+      // Tạo password ngẫu nhiên được mã hóa cho tài khoản OAuth
+      const salt = await bcrypt.genSalt(10)
+      const randomPassword = Math.random().toString(36).slice(-10) + Date.now()
+      const passwordHash = await bcrypt.hash(randomPassword, salt)
+
+      const insertRes = await pool.query(
+        `INSERT INTO users (email, username, password_hash, display_name, avatar_url, is_online, last_seen, is_verified)
+         VALUES ($1, $2, $3, $4, $5, true, CURRENT_TIMESTAMP, true)
+         RETURNING id, email, username, display_name, avatar_url, bio, gender, dob, is_online, last_seen, is_verified, created_at`,
+        [email, finalUsername, passwordHash, name, picture]
+      )
+      user = insertRes.rows[0]
+    } else {
+      user = userResult.rows[0]
+      // Cập nhật trạng thái online và avatar nếu chưa có
+      await pool.query(
+        `UPDATE users
+         SET is_online = true,
+             last_seen = CURRENT_TIMESTAMP,
+             avatar_url = COALESCE(avatar_url, $1)
+         WHERE id = $2`,
+        [picture, user.id]
+      )
+      user.is_online = true
+      user.avatar_url = user.avatar_url || picture
+      delete user.password_hash
+    }
+
+    // 3. Sinh token JWT của CloudChat
+    const token = generateToken(user)
+    broadcastNotification('user_status', { userId: user.id, isOnline: true })
+
+    res.json({
+      user,
+      token,
+      message: 'Đăng nhập Google thành công',
+    })
+  } catch (err) {
+    console.error('Google Auth error:', err)
+    res.status(500).json({ error: 'Lỗi xác thực Google: ' + err.message })
+  }
+})
+
 // 3. Lấy thông tin tài khoản hiện tại (Session check)
 router.get('/me', authenticateToken, async (req, res) => {
   try {
