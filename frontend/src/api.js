@@ -138,6 +138,11 @@ export const friendsApi = {
     return res.requests || []
   },
 
+  getSentFriendRequests: async () => {
+    const res = await request('/api/friends/sent-requests')
+    return res.requests || []
+  },
+
   sendRequest: async (targetUserId) => {
     return await request('/api/friends/request', {
       method: 'POST',

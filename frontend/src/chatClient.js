@@ -204,6 +204,7 @@ export const chatClient = {
   // QUERY BUILDER: BẢNG CƠ SỞ DỮ LIỆU
   // ==========================================================================
   from: (table) => {
+    let _operation = 'select' // 'select' | 'insert' | 'update' | 'delete'
     let _selectCols = '*'
     let _filters = []
     let _orderCol = 'created_at'
@@ -211,6 +212,8 @@ export const chatClient = {
     let _limitNum = 50
     let _isSingle = false
     let _isMaybeSingle = false
+    let _insertPayload = null
+    let _updatePayload = null
 
     const queryBuilder = {
       select: (cols = '*') => {
@@ -219,146 +222,26 @@ export const chatClient = {
       },
 
       insert: (payload) => {
-        const executeInsert = async () => {
-          try {
-            if (table === 'messages') {
-              const res = await messagesApi.sendMessage({
-                receiverId: payload.receiver_id,
-                groupId: payload.group_id,
-                content: payload.content,
-                replyToId: payload.reply_to_id,
-              })
-              return { data: res.message, error: null }
-            }
-
-            if (table === 'groups') {
-              const res = await groupsApi.createGroup({
-                name: payload.name,
-                avatar_url: payload.avatar_url,
-                memberIds: payload.memberIds || [],
-              })
-              return { data: res.group, error: null }
-            }
-
-            if (table === 'friendships') {
-              const res = await friendsApi.sendRequest(payload.friend_id)
-              return { data: res.request, error: null }
-            }
-
-            if (table === 'group_members') {
-              // Thêm thành viên
-              if (Array.isArray(payload)) {
-                const groupId = payload[0]?.group_id
-                const uids = payload.map((p) => p.user_id)
-                await groupsApi.addMembers(groupId, uids)
-              }
-              return { data: payload, error: null }
-            }
-
-            return { data: payload, error: null }
-          } catch (err) {
-            return { data: null, error: err }
-          }
-        }
-
-        const promise = executeInsert()
-        promise.select = () => ({
-          single: async () => {
-            const r = await executeInsert()
-            return { data: r.data, error: r.error }
-          },
-        })
-        return promise
+        _operation = 'insert'
+        _insertPayload = payload
+        return queryBuilder
       },
 
       update: (payload) => {
-        const executeUpdate = async () => {
-          try {
-            if (table === 'messages') {
-              if (payload.is_read) {
-                const inFilter = _filters.find((f) => f.op === 'in' && f.col === 'id')
-                const eqFilter = _filters.find((f) => f.op === 'eq' && f.col === 'id')
-                const messageIds = inFilter ? inFilter.val : eqFilter ? [eqFilter.val] : []
-                await messagesApi.markAsRead({ messageIds })
-              }
-              return { data: payload, error: null }
-            }
-
-            if (table === 'profiles' || table === 'users') {
-              const res = await authApi.updateProfile(payload)
-              return { data: res.user, error: null }
-            }
-
-            if (table === 'friendships') {
-              const eqId = _filters.find((f) => f.op === 'eq' && f.col === 'id')?.val
-              if (payload.status === 'accepted' && eqId) {
-                await friendsApi.acceptRequest(eqId)
-              }
-              return { data: payload, error: null }
-            }
-
-            return { data: payload, error: null }
-          } catch (err) {
-            return { data: null, error: err }
-          }
-        }
-
-        const promise = executeUpdate()
-        promise.eq = (col, val) => {
-          _filters.push({ col, op: 'eq', val })
-          return executeUpdate()
-        }
-        promise.in = (col, val) => {
-          _filters.push({ col, op: 'in', val })
-          return executeUpdate()
-        }
-        return promise
+        _operation = 'update'
+        _updatePayload = payload
+        return queryBuilder
       },
 
       delete: () => {
-        const executeDelete = async () => {
-          try {
-            if (table === 'messages') {
-              const eqId = _filters.find((f) => f.col === 'id')?.val
-              if (eqId) {
-                await messagesApi.deleteMessage(eqId)
-              }
-              return { data: null, error: null }
-            }
-
-            if (table === 'friendships') {
-              const eqId = _filters.find((f) => f.col === 'id')?.val
-              if (eqId) {
-                await friendsApi.rejectRequest(eqId)
-              }
-              return { data: null, error: null }
-            }
-
-            if (table === 'group_members') {
-              const grpId = _filters.find((f) => f.col === 'group_id')?.val
-              const uId = _filters.find((f) => f.col === 'user_id')?.val
-              if (grpId && uId) {
-                await groupsApi.removeMember(grpId, uId)
-              }
-              return { data: null, error: null }
-            }
-
-            return { data: null, error: null }
-          } catch (err) {
-            return { data: null, error: err }
-          }
-        }
-
-        const promise = executeDelete()
-        promise.eq = (col, val) => {
-          _filters.push({ col, op: 'eq', val })
-          return queryBuilder
-        }
+        _operation = 'delete'
         return queryBuilder
       },
 
       upsert: (payload) => {
-        return queryBuilder.update(payload)
+        _operation = 'update'
+        _updatePayload = payload
+        return queryBuilder
       },
 
       eq: (col, val) => {
@@ -412,10 +295,109 @@ export const chatClient = {
         return queryBuilder
       },
 
-      // Cho phép cú pháp `await supabase.from(...).select(...)`
+      // Cho phép cú pháp `await supabase.from(...)...`
       then: (resolve, reject) => {
-        const executeFetch = async () => {
+        const execute = async () => {
           try {
+            // 1. Xử lý INSERT
+            if (_operation === 'insert') {
+              if (table === 'messages') {
+                const res = await messagesApi.sendMessage({
+                  receiverId: _insertPayload.receiver_id,
+                  groupId: _insertPayload.group_id,
+                  content: _insertPayload.content,
+                  replyToId: _insertPayload.reply_to_id,
+                })
+                return { data: res.message, error: null }
+              }
+
+              if (table === 'groups') {
+                const res = await groupsApi.createGroup({
+                  name: _insertPayload.name,
+                  avatar_url: _insertPayload.avatar_url,
+                  memberIds: _insertPayload.memberIds || [],
+                })
+                return { data: res.group, error: null }
+              }
+
+              if (table === 'friendships') {
+                const targetId = _insertPayload.friend_id || _insertPayload.targetUserId
+                const res = await friendsApi.sendRequest(targetId)
+                return { data: res.request, error: null }
+              }
+
+              if (table === 'group_members') {
+                if (Array.isArray(_insertPayload)) {
+                  const groupId = _insertPayload[0]?.group_id
+                  const uids = _insertPayload.map((p) => p.user_id)
+                  await groupsApi.addMembers(groupId, uids)
+                }
+                return { data: _insertPayload, error: null }
+              }
+
+              return { data: _insertPayload, error: null }
+            }
+
+            // 2. Xử lý UPDATE
+            if (_operation === 'update') {
+              if (table === 'messages') {
+                if (_updatePayload.is_read) {
+                  const inFilter = _filters.find((f) => f.op === 'in' && f.col === 'id')
+                  const eqFilter = _filters.find((f) => f.op === 'eq' && f.col === 'id')
+                  const messageIds = inFilter ? inFilter.val : eqFilter ? [eqFilter.val] : []
+                  await messagesApi.markAsRead({ messageIds })
+                }
+                return { data: _updatePayload, error: null }
+              }
+
+              if (table === 'profiles' || table === 'users') {
+                const res = await authApi.updateProfile(_updatePayload)
+                return { data: res.user, error: null }
+              }
+
+              if (table === 'friendships') {
+                const eqId = _filters.find((f) => f.op === 'eq' && f.col === 'id')?.val
+                if (_updatePayload?.status === 'accepted' && eqId) {
+                  const res = await friendsApi.acceptRequest(eqId)
+                  return { data: res.friendship, error: null }
+                }
+                return { data: _updatePayload, error: null }
+              }
+
+              return { data: _updatePayload, error: null }
+            }
+
+            // 3. Xử lý DELETE
+            if (_operation === 'delete') {
+              if (table === 'messages') {
+                const eqId = _filters.find((f) => f.col === 'id')?.val
+                if (eqId) {
+                  await messagesApi.deleteMessage(eqId)
+                }
+                return { data: null, error: null }
+              }
+
+              if (table === 'friendships') {
+                const eqId = _filters.find((f) => f.col === 'id')?.val
+                if (eqId) {
+                  await friendsApi.rejectRequest(eqId)
+                }
+                return { data: null, error: null }
+              }
+
+              if (table === 'group_members') {
+                const grpId = _filters.find((f) => f.col === 'group_id')?.val
+                const uId = _filters.find((f) => f.col === 'user_id')?.val
+                if (grpId && uId) {
+                  await groupsApi.removeMember(grpId, uId)
+                }
+                return { data: null, error: null }
+              }
+
+              return { data: null, error: null }
+            }
+
+            // 4. Xử lý SELECT
             let resultData = []
 
             if (table === 'messages') {
@@ -435,15 +417,100 @@ export const chatClient = {
             } else if (table === 'groups') {
               resultData = await groupsApi.getGroups()
             } else if (table === 'friendships') {
-              const friendsList = await friendsApi.getFriends()
-              resultData = (friendsList || []).map((f) => ({
-                id: f.friendship_id || f.id,
-                user_id: currentSessionUser?.id || '',
-                friend_id: f.id,
-                status: 'accepted',
-                created_at: f.friendship_date || f.created_at || new Date().toISOString(),
-                ...f,
-              }))
+              const statusFilter = _filters.find((f) => f.col === 'status')
+              const userIdFilter = _filters.find((f) => f.col === 'user_id')
+              const orFilter = _filters.find((f) => f.col === '$or' || f.op === 'or')
+              const currentUid = currentSessionUser?.id
+
+              if (statusFilter?.val === 'pending') {
+                if (userIdFilter && String(userIdFilter.val) === String(currentUid)) {
+                  // Danh sách lời mời đã gửi (outgoing)
+                  const sentList = await friendsApi.getSentFriendRequests()
+                  resultData = (sentList || []).map((r) => ({
+                    id: r.id,
+                    user_id: r.user_id,
+                    friend_id: r.friend_id,
+                    status: 'pending',
+                    created_at: r.created_at,
+                    username: r.username,
+                    display_name: r.display_name,
+                    avatar_url: r.avatar_url,
+                    bio: r.bio,
+                  }))
+                } else {
+                  // Danh sách lời mời nhận được (incoming)
+                  const reqList = await friendsApi.getFriendRequests()
+                  resultData = (reqList || []).map((r) => ({
+                    id: r.id,
+                    user_id: r.user_id,
+                    friend_id: currentUid,
+                    status: 'pending',
+                    created_at: r.created_at,
+                    username: r.username,
+                    display_name: r.display_name,
+                    avatar_url: r.avatar_url,
+                    bio: r.bio,
+                  }))
+                }
+              } else if (orFilter) {
+                // Kiểm tra quan hệ bạn bè cụ thể với targetId
+                const orVal = String(orFilter.val)
+                const ids = Array.from(orVal.matchAll(/(?:user_id|friend_id)\.eq\.([a-zA-Z0-9_-]+)/g)).map((m) => m[1])
+                const targetId = ids.find((id) => String(id) !== String(currentUid)) || ids[0]
+
+                if (targetId) {
+                  const friendsList = await friendsApi.getFriends()
+                  const foundFriend = (friendsList || []).find((f) => String(f.id) === String(targetId))
+                  if (foundFriend) {
+                    resultData = [{
+                      id: foundFriend.friendship_id || foundFriend.id,
+                      user_id: currentUid,
+                      friend_id: targetId,
+                      status: 'accepted',
+                      created_at: foundFriend.friendship_date || new Date().toISOString(),
+                    }]
+                  } else {
+                    const sentList = await friendsApi.getSentFriendRequests().catch(() => [])
+                    const foundSent = (sentList || []).find((r) => String(r.friend_id) === String(targetId) || String(r.id) === String(targetId))
+                    if (foundSent) {
+                      resultData = [{
+                        id: foundSent.id,
+                        user_id: currentUid,
+                        friend_id: targetId,
+                        status: 'pending',
+                        created_at: foundSent.created_at,
+                      }]
+                    } else {
+                      const reqList = await friendsApi.getFriendRequests().catch(() => [])
+                      const foundIncoming = (reqList || []).find((r) => String(r.user_id) === String(targetId) || String(r.id) === String(targetId))
+                      if (foundIncoming) {
+                        resultData = [{
+                          id: foundIncoming.id,
+                          user_id: targetId,
+                          friend_id: currentUid,
+                          status: 'pending',
+                          created_at: foundIncoming.created_at,
+                        }]
+                      } else {
+                        resultData = []
+                      }
+                    }
+                  }
+                } else {
+                  resultData = []
+                }
+              } else {
+                // Lấy danh sách bạn bè đã chấp nhận
+                const friendsList = await friendsApi.getFriends()
+                resultData = (friendsList || []).map((f) => ({
+                  id: f.friendship_id || f.id,
+                  user_id: currentSessionUser?.id || '',
+                  friend_id: f.id,
+                  status: 'accepted',
+                  created_at: f.friendship_date || f.created_at || new Date().toISOString(),
+                  ...f,
+                }))
+              }
             } else if (table === 'group_members') {
               const groupFilter = _filters.find((f) => f.col === 'group_id')
               if (groupFilter) {
@@ -507,7 +574,7 @@ export const chatClient = {
           }
         }
 
-        executeFetch().then(resolve, reject)
+        execute().then(resolve, reject)
       },
     }
 

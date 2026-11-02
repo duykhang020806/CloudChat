@@ -84,6 +84,25 @@ router.get('/requests', authenticateToken, async (req, res) => {
   }
 })
 
+// 2b. Lấy danh sách lời mời kết bạn đã gửi đang chờ (Outgoing / Sent requests)
+router.get('/sent-requests', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT f.id, f.created_at, f.user_id, f.friend_id, u.username, u.display_name, u.avatar_url, u.bio
+       FROM friendships f
+       JOIN users u ON f.friend_id = u.id
+       WHERE f.user_id = $1 AND f.status = 'pending'
+       ORDER BY f.created_at DESC`,
+      [req.user.id]
+    )
+
+    res.json({ requests: result.rows })
+  } catch (err) {
+    console.error('Get sent requests error:', err)
+    res.status(500).json({ error: 'Lỗi tải lời mời kết bạn đã gửi' })
+  }
+})
+
 // 3. Gửi lời mời kết bạn
 router.post('/request', authenticateToken, async (req, res) => {
   try {
@@ -110,9 +129,33 @@ router.post('/request', authenticateToken, async (req, res) => {
     if (existing.rows.length > 0) {
       const rel = existing.rows[0]
       if (rel.status === 'accepted') {
-        return res.status(400).json({ error: 'Hai người đã là bạn bè của nhau' })
+        return res.status(400).json({ error: 'Hai bạn đã là bạn bè của nhau rồi' })
       }
-      return res.status(400).json({ error: 'Lời mời kết bạn đã tồn tại hoặc đang chờ xử lý' })
+
+      // Trường hợp 1: Đối phương đã gửi lời mời cho mình trước đó -> Tự động chấp nhận luôn!
+      if (String(rel.user_id) === String(targetUserId) && String(rel.friend_id) === String(currentUserId)) {
+        const acceptRes = await pool.query(
+          "UPDATE friendships SET status = 'accepted' WHERE id = $1 RETURNING *",
+          [rel.id]
+        )
+        broadcastNotification('friend_accepted', {
+          userA: rel.user_id,
+          userB: rel.friend_id,
+        })
+        return res.json({ message: 'Đã chấp nhận kết bạn thành công', request: acceptRes.rows[0], status: 'accepted' })
+      }
+
+      // Trường hợp 2: Lời mời cũ đang chờ hoặc bị huỷ -> Làm mới lại lời mời thành pending
+      const renewRes = await pool.query(
+        "UPDATE friendships SET user_id = $1, friend_id = $2, status = 'pending', created_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *",
+        [currentUserId, targetUserId, rel.id]
+      )
+      broadcastNotification('friend_request', {
+        fromUserId: currentUserId,
+        toUserId: targetUserId,
+        requestId: rel.id,
+      })
+      return res.json({ message: 'Đã gửi lời mời kết bạn thành công', request: renewRes.rows[0], status: 'pending' })
     }
 
     const insertResult = await pool.query(
@@ -136,7 +179,7 @@ router.post('/request', authenticateToken, async (req, res) => {
   }
 })
 
-// 4. Chấp nhận lời mời kết bạn
+// 4. Chấp nhận lời mời kết bạn (Hỗ trợ cả friendshipId lẫn sender user_id)
 router.put('/accept/:id', authenticateToken, async (req, res) => {
   try {
     const requestId = req.params.id
@@ -145,7 +188,7 @@ router.put('/accept/:id', authenticateToken, async (req, res) => {
     const result = await pool.query(
       `UPDATE friendships
        SET status = 'accepted'
-       WHERE id = $1 AND friend_id = $2
+       WHERE (id = $1 OR user_id = $1) AND friend_id = $2
        RETURNING *`,
       [requestId, currentUserId]
     )
@@ -167,14 +210,17 @@ router.put('/accept/:id', authenticateToken, async (req, res) => {
   }
 })
 
-// 5. Từ chối lời mời kết bạn
-router.put('/reject/:id', authenticateToken, async (req, res) => {
+// 5. Từ chối lời mời hoặc thu hồi lời mời kết bạn đã gửi (Hỗ trợ cả PUT lẫn DELETE)
+const handleRejectOrCancel = async (req, res) => {
   try {
     const requestId = req.params.id
     const currentUserId = req.user.id
 
     const result = await pool.query(
-      `DELETE FROM friendships WHERE id = $1 AND friend_id = $2 RETURNING *`,
+      `DELETE FROM friendships 
+       WHERE (id = $1 OR user_id = $1 OR friend_id = $1) 
+         AND (friend_id = $2 OR user_id = $2) 
+       RETURNING *`,
       [requestId, currentUserId]
     )
 
@@ -182,12 +228,17 @@ router.put('/reject/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy lời mời kết bạn' })
     }
 
-    res.json({ message: 'Đã từ chối lời mời kết bạn' })
+    res.json({ message: 'Đã xử lý hủy / từ chối lời mời kết bạn' })
   } catch (err) {
     console.error('Reject friend error:', err)
-    res.status(500).json({ error: 'Lỗi từ chối kết bạn' })
+    res.status(500).json({ error: 'Lỗi xử lý kết bạn' })
   }
-})
+}
+
+router.put('/reject/:id', authenticateToken, handleRejectOrCancel)
+router.delete('/reject/:id', authenticateToken, handleRejectOrCancel)
+router.delete('/request/:id', authenticateToken, handleRejectOrCancel)
+router.delete('/:id', authenticateToken, handleRejectOrCancel)
 
 export default router
 

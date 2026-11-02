@@ -3,6 +3,7 @@ import QRCode from 'qrcode'
 import jsQR from 'jsqr'
 import './App.css'
 import { chatClient as supabase } from './chatClient'
+import { authApi, friendsApi } from './api.js'
 import { getAppleEmojiUrl, renderWithAppleEmoji } from './appleEmoji.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import {
@@ -4692,75 +4693,32 @@ function App() {
     if (!currentUser?.id) return
 
     try {
-      const { data: rows, error } = await supabase
-        .from('friendships')
-        .select('id, user_id, friend_id, status, created_at')
-        .eq('status', 'accepted')
-        .or(`user_id.eq.${currentUser.id},friend_id.eq.${currentUser.id}`)
-
-      if (error) throw error
-
-      if (!rows || rows.length === 0) {
+      const friendsList = await friendsApi.getFriends()
+      if (!Array.isArray(friendsList) || friendsList.length === 0) {
         setFriends([])
         return
       }
 
-      const otherUserIds = rows.map((r) => (r.user_id === currentUser.id ? r.friend_id : r.user_id))
-
-      // Chạy song song lấy profiles và tin nhắn mới nhất
-      const [profRes, recentMsgsRes] = await Promise.all([
-        supabase
-          .from('profiles')
-          .select('id, username, display_name, bio, avatar_url, is_online, last_seen')
-          .in('id', otherUserIds),
-        supabase
-          .from('messages')
-          .select('id, sender_id, receiver_id, content, created_at, is_read')
-          .is('group_id', null)
-          .or(`and(sender_id.eq.${currentUser.id},receiver_id.in.(${otherUserIds.join(',')})),and(receiver_id.eq.${currentUser.id},sender_id.in.(${otherUserIds.join(',')}))`)
-          .order('created_at', { ascending: false })
-          .limit(100)
-      ])
-
-      if (profRes.error) throw profRes.error
-      const profiles = profRes.data || []
-      const recentMsgs = recentMsgsRes.data || []
-
-      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
-
-      const lastMsgMap = new Map()
-      for (const m of (recentMsgs || [])) {
-        const partnerId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id
-        if (!lastMsgMap.has(partnerId)) {
-          lastMsgMap.set(partnerId, m)
-        }
-      }
-
-      const nextFriends = rows.map((r) => {
-        const friendId = r.user_id === currentUser.id ? r.friend_id : r.user_id
-        const p = profileMap.get(friendId) || { id: friendId, username: 'User', display_name: 'Người dùng', avatar_url: '' }
-        const lastMsg = lastMsgMap.get(friendId)
-        return {
-          id: friendId,
-          username: p.username,
-          display_name: p.display_name || p.username,
-          bio: p.bio || '',
-          avatar_url: p.avatar_url || '',
-          is_online: Boolean(p.is_online),
-          last_seen: p.last_seen,
-          friendship_id: r.id,
-          created_at: r.created_at,
-          last_message: lastMsg?.content || null,
-          last_message_time: lastMsg?.created_at || null,
-          last_message_sender_id: lastMsg?.sender_id || null,
-          last_message_is_read: lastMsg ? (lastMsg.is_read ? 1 : 0) : 1,
-          is_group: false,
-        }
-      })
+      const nextFriends = friendsList.map((f) => ({
+        id: f.id,
+        username: f.username,
+        display_name: f.display_name || f.username,
+        bio: f.bio || '',
+        avatar_url: f.avatar_url || '',
+        is_online: Boolean(f.is_online),
+        last_seen: f.last_seen,
+        friendship_id: f.friendship_id || f.id,
+        created_at: f.friendship_date || f.created_at,
+        last_message: f.last_message || null,
+        last_message_time: f.last_message_time || null,
+        last_message_sender_id: f.last_message_sender_id || null,
+        last_message_is_read: 1,
+        is_group: false,
+      }))
 
       nextFriends.sort((a, b) => {
-        const timeA = a.last_message_time ? new Date(a.last_message_time).getTime() : new Date(a.created_at).getTime()
-        const timeB = b.last_message_time ? new Date(b.last_message_time).getTime() : new Date(b.created_at).getTime()
+        const timeA = a.last_message_time ? new Date(a.last_message_time).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0)
+        const timeB = b.last_message_time ? new Date(b.last_message_time).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0)
         return timeB - timeA
       })
 
@@ -4976,43 +4934,12 @@ function App() {
     }
   }
 
-  // Friend Requests & Friendship Actions (100% Supabase BaaS)
+  // Friend Requests & Friendship Actions (Backend Node.js + PostgreSQL)
   const loadFriendRequests = async () => {
     if (!currentUser?.id) return
     try {
-      const { data: rows, error } = await supabase
-        .from('friendships')
-        .select('id, user_id, friend_id, status, created_at')
-        .eq('status', 'pending')
-        .eq('friend_id', currentUser.id)
-
-      if (error) throw error
-      if (!rows || rows.length === 0) {
-        setFriendRequests([])
-        return
-      }
-
-      const senderIds = rows.map((r) => r.user_id)
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, display_name, avatar_url, bio')
-        .in('id', senderIds)
-
-      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
-      const enriched = rows.map((r) => {
-        const p = profileMap.get(r.user_id) || {}
-        return {
-          id: r.id,
-          user_id: r.user_id,
-          friend_id: r.friend_id,
-          username: p.username || 'User',
-          display_name: p.display_name || p.username || 'Người dùng',
-          avatar_url: p.avatar_url || '',
-          bio: p.bio || '',
-          created_at: r.created_at,
-        }
-      })
-      setFriendRequests(enriched)
+      const requests = await friendsApi.getFriendRequests()
+      setFriendRequests(requests || [])
     } catch (e) {
       console.error('Load friend requests failed:', e)
     }
@@ -5021,39 +4948,8 @@ function App() {
   const loadSentFriendRequests = async () => {
     if (!currentUser?.id) return
     try {
-      const { data: rows, error } = await supabase
-        .from('friendships')
-        .select('id, user_id, friend_id, status, created_at')
-        .eq('status', 'pending')
-        .eq('user_id', currentUser.id)
-
-      if (error) throw error
-      if (!rows || rows.length === 0) {
-        setSentFriendRequests([])
-        return
-      }
-
-      const receiverIds = rows.map((r) => r.friend_id)
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, display_name, avatar_url, bio')
-        .in('id', receiverIds)
-
-      const profileMap = new Map((profiles || []).map((p) => [p.id, p]))
-      const enriched = rows.map((r) => {
-        const p = profileMap.get(r.friend_id) || {}
-        return {
-          id: r.id,
-          user_id: r.user_id,
-          friend_id: r.friend_id,
-          username: p.username || 'User',
-          display_name: p.display_name || p.username || 'Người dùng',
-          avatar_url: p.avatar_url || '',
-          bio: p.bio || '',
-          created_at: r.created_at,
-        }
-      })
-      setSentFriendRequests(enriched)
+      const sent = await friendsApi.getSentFriendRequests()
+      setSentFriendRequests(sent || [])
     } catch (e) {
       console.error('Load sent friend requests failed:', e)
     }
@@ -5061,50 +4957,35 @@ function App() {
 
   const handleAcceptFriendRequest = async (friendshipId) => {
     try {
-      const { error } = await supabase
-        .from('friendships')
-        .update({ status: 'accepted' })
-        .eq('id', friendshipId)
-
-      if (error) throw error
+      await friendsApi.acceptRequest(friendshipId)
       showFloatingToast('Đã chấp nhận lời mời kết bạn!')
       await loadFriends()
       await loadFriendRequests()
     } catch (err) {
       console.error('Accept friend error:', err)
-      showFloatingToast('Không thể chấp nhận lời mời: ' + err.message)
+      showFloatingToast('Không thể chấp nhận lời mời: ' + (err.message || 'Lỗi'))
     }
   }
 
   const handleRejectFriendRequest = async (friendshipId) => {
     try {
-      const { error } = await supabase
-        .from('friendships')
-        .delete()
-        .eq('id', friendshipId)
-
-      if (error) throw error
+      await friendsApi.rejectRequest(friendshipId)
       showFloatingToast('Đã từ chối lời mời kết bạn')
       await loadFriendRequests()
     } catch (err) {
       console.error('Reject friend error:', err)
-      showFloatingToast('Không thể từ chối lời mời: ' + err.message)
+      showFloatingToast('Không thể từ chối lời mời: ' + (err.message || 'Lỗi'))
     }
   }
 
   const handleCancelFriendRequest = async (friendshipId) => {
     try {
-      const { error } = await supabase
-        .from('friendships')
-        .delete()
-        .eq('id', friendshipId)
-
-      if (error) throw error
+      await friendsApi.rejectRequest(friendshipId)
       showFloatingToast('Đã thu hồi lời mời kết bạn')
       await loadSentFriendRequests()
     } catch (err) {
       console.error('Cancel request error:', err)
-      showFloatingToast('Không thể thu hồi lời mời: ' + err.message)
+      showFloatingToast('Không thể thu hồi lời mời: ' + (err.message || 'Lỗi'))
     }
   }
 
@@ -5141,15 +5022,9 @@ function App() {
     }
 
     try {
-      const { data: users, error } = await supabase
-        .from('profiles')
-        .select('id, username, display_name, avatar_url, bio')
-        .neq('id', currentUser?.id)
-        .or(`username.ilike.%${sanitized}%,display_name.ilike.%${sanitized}%`)
-        .limit(1)
-
-      if (error) throw error
-      if (!users || users.length === 0) {
+      const res = await authApi.searchUsers(sanitized)
+      const users = res.users || []
+      if (users.length === 0) {
         setSearchFriendError('Không tìm thấy người dùng phù hợp. Hãy chắc chắn bạn bè đã đăng ký tài khoản trên hệ thống!')
       } else {
         setSearchFriendResult(users[0])
@@ -5167,49 +5042,29 @@ function App() {
     setSearchFriendError('')
     setSearchFriendSuccess('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const currentUid = session?.user?.id || currentUser.id
-
-      const { data: existing } = await supabase
-        .from('friendships')
-        .select('id, status')
-        .or(`and(user_id.eq.${currentUid},friend_id.eq.${targetId}),and(user_id.eq.${targetId},friend_id.eq.${currentUid})`)
-        .maybeSingle()
-
-      if (existing) {
-        if (existing.status === 'accepted') {
-          setSearchFriendError('Hai bạn đã là bạn bè của nhau rồi!')
-          showFloatingToast('Hai bạn đã là bạn bè của nhau rồi!')
-        } else {
-          setSearchFriendError('Đã có lời mời kết bạn đang chờ phản hồi!')
-          showFloatingToast('Đã có lời mời kết bạn đang chờ phản hồi!')
-        }
+      // 1. Kiểm tra nếu đã là bạn bè trong danh sách hiện tại
+      if (friends.some((f) => String(f.id) === String(targetId))) {
+        setSearchFriendError('Hai bạn đã là bạn bè của nhau rồi!')
+        showFloatingToast('Hai bạn đã là bạn bè của nhau rồi!')
         return
       }
 
-      const { error } = await supabase.from('friendships').insert({
-        user_id: currentUid,
-        friend_id: targetId,
-        status: 'pending',
-      })
-      if (error) {
-        console.error('Supabase friendship insert error:', error)
-        if (error.message && error.message.includes('row-level security policy')) {
-          setSearchFriendError('Lỗi RLS Supabase: Vui lòng chạy file fix_friendships_rls.sql trong Supabase SQL Editor để cấp quyền!')
-          showFloatingToast('Lỗi RLS: Hãy chạy file fix_friendships_rls.sql')
-        } else {
-          setSearchFriendError('Không thể gửi lời mời: ' + error.message)
-          showFloatingToast('Không thể gửi lời mời: ' + error.message)
-        }
-        return
+      // 2. Gửi lời mời kết bạn lên server Node.js & PostgreSQL
+      const res = await friendsApi.sendRequest(targetId)
+      if (res?.status === 'accepted') {
+        setSearchFriendSuccess('Đối phương đã gửi lời mời trước đó. Hai bạn đã trở thành bạn bè! 🎉')
+        showFloatingToast('Hai bạn đã trở thành bạn bè!')
+        await loadFriends()
+      } else {
+        setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công! ✨')
+        showFloatingToast('Đã gửi lời mời kết bạn!')
       }
-
-      setSearchFriendSuccess('Đã gửi lời mời kết bạn thành công! ✨')
-      showFloatingToast('Đã gửi lời mời kết bạn!')
-      loadSentFriendRequests()
+      await loadSentFriendRequests()
     } catch (err) {
-      setSearchFriendError('Không thể gửi lời mời: ' + err.message)
-      showFloatingToast('Không thể gửi lời mời: ' + err.message)
+      console.error('Send friend request error:', err)
+      const msg = err.message || 'Không thể gửi lời mời kết bạn'
+      setSearchFriendError(msg)
+      showFloatingToast(msg)
     } finally {
       setSearchFriendLoading(false)
     }

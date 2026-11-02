@@ -6,27 +6,6 @@ import { authenticateToken } from '../middleware/auth.js'
 
 const router = express.Router()
 
-// Bộ đệm giới hạn tần suất yêu cầu chống tấn công Brute-force mật khẩu (Rate Limiting)
-const rateLimitMap = new Map()
-const authRateLimiter = (maxAttempts = 15, windowMs = 15 * 60 * 1000) => (req, res, next) => {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'
-  const now = Date.now()
-  const record = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs }
-
-  if (now > record.resetTime) {
-    record.count = 0
-    record.resetTime = now + windowMs
-  }
-
-  record.count++
-  rateLimitMap.set(ip, record)
-
-  if (record.count > maxAttempts) {
-    return res.status(429).json({ error: 'Quá nhiều lần thử đăng nhập hoặc đăng ký. Vui lòng đợi 15 phút sau và thử lại.' })
-  }
-  next()
-}
-
 // Hàm sinh JWT token (thời hạn 30 ngày, thuật toán HS256 chuẩn)
 const generateToken = (user) => {
   return jwt.sign(
@@ -36,8 +15,8 @@ const generateToken = (user) => {
   )
 }
 
-// 1. Đăng ký tài khoản (Kèm Rate Limiting và kiểm tra nghiêm ngặt định dạng đầu vào)
-router.post('/register', authRateLimiter(10, 15 * 60 * 1000), async (req, res) => {
+// 1. Đăng ký tài khoản
+router.post('/register', async (req, res) => {
   try {
     const { email, username, password, display_name } = req.body
 
@@ -107,8 +86,8 @@ router.post('/register', authRateLimiter(10, 15 * 60 * 1000), async (req, res) =
   }
 })
 
-// 2. Đăng nhập tài khoản (Kèm Rate Limiting và thông báo đồng nhất chống đoán tài khoản)
-router.post('/login', authRateLimiter(15, 15 * 60 * 1000), async (req, res) => {
+// 2. Đăng nhập tài khoản
+router.post('/login', async (req, res) => {
   try {
     const { login, password } = req.body // login có thể là email hoặc username
 

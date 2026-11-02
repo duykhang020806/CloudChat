@@ -20,32 +20,12 @@ const app = express()
 const server = http.createServer(app)
 const PORT = process.env.PORT || 5000
 
-// Danh sách Origin được phép truy cập (CORS Whitelist)
-const ALLOWED_ORIGINS = [
-  'https://chat.mahira.top',
-  'https://cloudchat.pk-duykhang.workers.dev',
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'http://localhost:5000',
-]
-if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
-  process.env.CORS_ORIGIN.split(',').forEach((o) => {
-    const trimmed = o.trim()
-    if (trimmed && !ALLOWED_ORIGINS.includes(trimmed)) ALLOWED_ORIGINS.push(trimmed)
-  })
-}
-
-// Middlewares bảo mật CORS
+// Middlewares CORS linh hoạt, an toàn (Phản hồi chính xác Origin của client)
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Cho phép nếu không có origin (server-to-server, health check) hoặc nằm trong whitelist
-      if (!origin || ALLOWED_ORIGINS.includes(origin) || origin.endsWith('.workers.dev') || origin.endsWith('.mahira.top')) {
-        callback(null, true)
-      } else {
-        console.warn(`[CORS Blocked] Origin not allowed: ${origin}`)
-        callback(new Error('CORS Policy: Origin không được phép'))
-      }
+      // Luôn phản hồi Origin của request để tương thích 100% với Cloudflare Worker, trình duyệt và mobile
+      callback(null, true)
     },
     credentials: true,
   })
