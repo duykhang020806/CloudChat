@@ -86,7 +86,7 @@ app.get('/', (req, res) => {
 })
 
 // Khởi tạo WebSocket Realtime Server
-setupSocketServer(server, CORS_ORIGIN)
+setupSocketServer(server, process.env.CORS_ORIGIN || '*')
 
 // Khởi chạy máy chủ
 server.listen(PORT, '0.0.0.0', async () => {

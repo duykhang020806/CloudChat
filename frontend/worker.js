@@ -28,6 +28,14 @@ export default {
       newHeaders.set('Host', 'alb-cloudchat-1765117084.us-east-1.elb.amazonaws.com')
       newHeaders.set('X-Forwarded-Proto', 'https')
 
+      // Nếu là kết nối WebSocket (Socket.io), chuyển tiếp trực tiếp để Cloudflare Worker không làm hỏng kết nối
+      if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+        return fetch(albUrl, {
+          method: request.method,
+          headers: newHeaders,
+        })
+      }
+
       try {
         const response = await fetch(albUrl, {
           method: request.method,

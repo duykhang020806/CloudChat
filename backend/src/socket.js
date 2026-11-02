@@ -91,22 +91,28 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
 
     socket.on('disconnect', () => {
       console.log(`[Socket Disconnected] User ${socket.user.username} (ID: ${userId})`)
-      // Chờ 2.5 giây để tránh chuyển offline tức thời khi người dùng chỉ bấm F5 / tải lại trang
+      // Chờ 15 giây để tránh chuyển offline khi F5 / chuyển tab hoặc mạng lag giữa các instance
       setTimeout(async () => {
         const userRoom = io.sockets.adapter.rooms.get(`user_${userId}`)
         if (!userRoom || userRoom.size === 0) {
-          const lastSeen = new Date().toISOString()
           try {
-            await pool.query(
-              'UPDATE users SET is_online = false, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+            // Chỉ đánh dấu offline nếu trong 20s qua không có heartbeat mới từ instance khác
+            const updateRes = await pool.query(
+              `UPDATE users 
+               SET is_online = false, last_seen = CURRENT_TIMESTAMP 
+               WHERE id = $1 AND (last_seen <= CURRENT_TIMESTAMP - INTERVAL '20 seconds' OR is_online = true)
+               RETURNING last_seen`,
               [userId]
             )
-            broadcastNotification('user_status', { userId, isOnline: false, lastSeen })
+            if (updateRes.rows.length > 0) {
+              const lastSeen = updateRes.rows[0].last_seen || new Date().toISOString()
+              broadcastNotification('user_status', { userId, isOnline: false, lastSeen })
+            }
           } catch (err) {
             console.error('Error updating offline status:', err)
           }
         }
-      }, 2500)
+      }, 15000)
     })
   })
 

@@ -13,7 +13,8 @@ router.get('/', authenticateToken, async (req, res) => {
     const friendsQuery = await pool.query(
       `SELECT 
         u.id, u.username, u.display_name, u.avatar_url, u.bio, u.gender, u.dob,
-        u.is_online, u.last_seen, u.is_verified, f.created_at as friendship_date
+        (u.is_online AND (u.last_seen >= CURRENT_TIMESTAMP - INTERVAL '70 seconds')) as is_online,
+        u.last_seen, u.is_verified, f.created_at as friendship_date
        FROM friendships f
        JOIN users u ON (
          CASE 

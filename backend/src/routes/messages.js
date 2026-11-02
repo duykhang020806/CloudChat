@@ -144,6 +144,13 @@ router.post('/', authenticateToken, async (req, res) => {
     // Phát tín hiệu thông báo tin nhắn mới cho tất cả các máy chủ Backend khác qua Postgres NOTIFY
     broadcastNotification('new_message', fullMessage)
 
+    // Cập nhật người gửi đang online và thời gian hoạt động mới nhất
+    pool.query(
+      'UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+      [currentUserId]
+    ).catch(() => {})
+    broadcastNotification('user_status', { userId: currentUserId, isOnline: true, lastSeen: new Date().toISOString() })
+
     res.status(201).json({ message: fullMessage })
   } catch (err) {
     console.error('Send message error:', err)

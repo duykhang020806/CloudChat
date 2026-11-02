@@ -249,9 +249,13 @@ function formatCountdown(sec) {
 
 function parseUtcDate(value) {
   if (!value) return null
-  let str = String(value)
-  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str) && !str.endsWith('Z') && !str.includes('+')) {
-    str = str.replace(' ', 'T') + 'Z'
+  if (value instanceof Date) return value
+  let str = String(value).trim()
+  if (!str) return null
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str)) {
+    if (!str.endsWith('Z') && !/[+-]\d{2}(:\d{2})?$/.test(str)) {
+      str = str.replace(' ', 'T') + 'Z'
+    }
   }
   const date = new Date(str)
   if (Number.isNaN(date.getTime())) return null
@@ -338,12 +342,16 @@ function formatUserStatus(user) {
   if (!date) return 'Ngoại tuyến'
 
   const diffMs = Date.now() - date.getTime()
+  // Nếu chênh lệch nhỏ hơn 2 phút hoặc chênh lệch âm nhẹ do đồng hồ máy chủ
+  if (diffMs <= 120000 && diffMs >= -60000) return 'Vừa mới truy cập'
+  if (diffMs < 0) return 'Vừa mới truy cập'
+
   const diffSec = Math.floor(diffMs / 1000)
   const diffMin = Math.floor(diffSec / 60)
   const diffHours = Math.floor(diffMin / 60)
   const diffDays = Math.floor(diffHours / 24)
 
-  if (diffMin < 1) return 'Vừa mới truy cập'
+  if (diffMin < 2) return 'Vừa mới truy cập'
   if (diffMin < 60) return `Lần cuối ${diffMin} phút trước`
   if (diffHours < 24) return `Lần cuối ${diffHours} giờ trước`
   if (diffDays === 1) return 'Lần cuối hôm qua'
@@ -2529,6 +2537,31 @@ function App() {
     return all.filter((c) => hiddenChats.includes(c.id)).length
   }, [groups, friends, hiddenChats])
 
+  const allHiddenChats = useMemo(() => {
+    const list = []
+    const friendMap = new Map((friends || []).map((f) => [String(f.id), f]))
+    const groupMap = new Map((groups || []).map((g) => [String(g.id), g]))
+
+    for (const id of hiddenChats) {
+      const f = friendMap.get(String(id))
+      if (f) {
+        list.push({ ...f, is_group: false })
+      } else {
+        const g = groupMap.get(String(id))
+        if (g) list.push({ ...g, is_group: true })
+        else {
+          list.push({
+            id,
+            display_name: 'Đoạn chat ' + String(id).slice(0, 6),
+            username: 'chat_' + String(id).slice(0, 6),
+            is_group: false,
+          })
+        }
+      }
+    }
+    return list
+  }, [friends, groups, hiddenChats])
+
   // Modal xác nhận xoá lịch sử trò chuyện
   const [chatToDeleteHistory, setChatToDeleteHistory] = useState(null)
   const [isDeletingChatHistory, setIsDeletingChatHistory] = useState(false)
@@ -2605,11 +2638,12 @@ function App() {
   const handleToggleBlockUser = (user) => {
     if (!user?.id) return
     const uid = String(user.id)
+    const name = user.display_name || user.username
     if (blockedUserIds.includes(uid)) {
-      // Đang bị chặn -> Bỏ chặn trực tiếp
+      // Đang bị chặn -> Bỏ chặn trực tiếp (không tự động khôi phục kết bạn)
       setBlockedUserIds((prev) => {
         const updated = prev.filter((id) => id !== uid)
-        showFloatingToast(`Đã bỏ chặn ${user.display_name || user.username}`)
+        showFloatingToast(`Đã bỏ chặn ${name}. Hãy gửi kết bạn lại để tiếp tục trò chuyện.`)
         try {
           localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
         } catch { }
@@ -2621,22 +2655,39 @@ function App() {
     }
   }
 
-  // Xác nhận chặn người dùng
-  const confirmBlockUser = () => {
+  // Xác nhận chặn người dùng (Đồng thời huỷ kết bạn ngay lập tức)
+  const confirmBlockUser = async () => {
     if (!userToBlock?.id) return
     const uid = String(userToBlock.id)
-    setBlockedUserIds((prev) => {
-      const updated = prev.includes(uid) ? prev : [...prev, uid]
-      showFloatingToast(`Đã chặn ${userToBlock.display_name || userToBlock.username}`)
-      if (activeChat && String(activeChat.id) === uid) {
-        setActiveChat(null)
-      }
-      try {
-        localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
-      } catch { }
-      return updated
-    })
-    setUserToBlock(null)
+    const name = userToBlock.display_name || userToBlock.username
+
+    try {
+      // 1. Huỷ quan hệ bạn bè trên database Backend
+      await friendsApi.rejectRequest(uid).catch((err) => console.warn('Cancel friendship on block:', err))
+
+      // 2. Xoá ngay khỏi danh sách bạn bè
+      setFriends((prev) => prev.filter((f) => String(f.id) !== uid))
+
+      // 3. Đưa vào danh sách chặn
+      setBlockedUserIds((prev) => {
+        const updated = prev.includes(uid) ? prev : [...prev, uid]
+        showFloatingToast(`Đã chặn và huỷ kết bạn với ${name}`)
+        if (activeChat && String(activeChat.id) === uid) {
+          setActiveChat(null)
+        }
+        try {
+          localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+        } catch { }
+        return updated
+      })
+
+      loadFriends()
+    } catch (err) {
+      console.error('Block user error:', err)
+      showFloatingToast('Lỗi khi chặn: ' + (err.message || 'Lỗi'))
+    } finally {
+      setUserToBlock(null)
+    }
   }
 
   // Mở modal chỉnh sửa hồ sơ cá nhân (Giao diện mới)
@@ -5339,6 +5390,17 @@ function App() {
     loadSentFriendRequests()
     loadGroupInvitations()
 
+    // Heartbeat định kỳ giữ trạng thái Online (Đang hoạt động) và cập nhật last_seen
+    authApi.heartbeat().catch(() => {})
+    const heartbeatTimer = setInterval(() => {
+      authApi.heartbeat().catch(() => {})
+    }, 25000)
+
+    const handleWindowFocus = () => {
+      authApi.heartbeat().catch(() => {})
+    }
+    window.addEventListener('focus', handleWindowFocus)
+
     const messageChannel = supabase
       .channel('cloudchat-messages-realtime')
       .on(
@@ -5347,6 +5409,22 @@ function App() {
         async (payload) => {
           const newMsg = payload.new
           if (!newMsg) return
+
+          // Cập nhật người gửi đang hoạt động ngay lập tức
+          if (newMsg.sender_id) {
+            const sId = String(newMsg.sender_id)
+            const nowIso = new Date().toISOString()
+            setFriends((prev) =>
+              prev.map((f) =>
+                String(f.id) === sId ? { ...f, is_online: true, last_seen: nowIso } : f
+              )
+            )
+            setActiveChat((prev) =>
+              prev && String(prev.id) === sId
+                ? { ...prev, is_online: true, last_seen: nowIso }
+                : prev
+            )
+          }
 
           // Bảo mật Realtime: Loại bỏ ngay tin nhắn không thuộc về user hiện tại
           const isMyGroup = newMsg.group_id
@@ -5518,6 +5596,8 @@ function App() {
       .subscribe()
 
     return () => {
+      clearInterval(heartbeatTimer)
+      window.removeEventListener('focus', handleWindowFocus)
       supabase.removeChannel(messageChannel)
       supabase.removeChannel(friendshipChannel)
       supabase.removeChannel(groupMemberChannel)
@@ -5551,6 +5631,15 @@ function App() {
     }
     if (activeChat.is_group) {
       loadGroupDetail(activeChat.id)
+    } else if (activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat') {
+      // Làm mới trạng thái online / last_seen chính xác nhất ngay khi mở chat
+      authApi.getProfilesByIds([activeChat.id]).then((res) => {
+        if (res?.users?.[0]) {
+          const u = res.users[0]
+          setActiveChat((prev) => prev && String(prev.id) === String(u.id) ? { ...prev, is_online: Boolean(u.is_online), last_seen: u.last_seen } : prev)
+          setFriends((prev) => prev.map((f) => String(f.id) === String(u.id) ? { ...f, is_online: Boolean(u.is_online), last_seen: u.last_seen } : f))
+        }
+      }).catch(() => {})
     }
 
     const interval = setInterval(() => {
@@ -6780,25 +6869,28 @@ function App() {
                   </div>
                 </div>
 
-                {/* 👁️‍🗨️ Đoạn chat đã ẩn */}
-                {hiddenCount > 0 && (
-                  <button
-                    className={`tg-menu-item ${showHiddenSection ? 'active' : ''}`}
-                    onClick={() => {
-                      setShowMenu(false)
-                      setShowHiddenSection((prev) => !prev)
-                    }}
-                  >
-                    <span className="tg-menu-icon">
-                      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                        <line x1="1" y1="1" x2="23" y2="23"></line>
-                      </svg>
+                {/* 🚫 Đã chặn / 👁️‍🗨️ Đã ẩn */}
+                <button
+                  className="tg-menu-item"
+                  onClick={() => {
+                    setShowMenu(false)
+                    setSettingsActiveTab('blocked')
+                    setShowSettingsModal(true)
+                  }}
+                >
+                  <span className="tg-menu-icon">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                    </svg>
+                  </span>
+                  <span>Đã chặn / Đã ẩn</span>
+                  {(blockedUserIds.length + allHiddenChats.length) > 0 && (
+                    <span className="tg-menu-badge" style={{ background: '#3b82f6', color: '#fff', fontSize: 10 }}>
+                      {blockedUserIds.length + allHiddenChats.length}
                     </span>
-                    <span>{showHiddenSection ? 'Xem chat thông thường' : 'Đoạn chat đã ẩn'}</span>
-                    <span className="tg-menu-badge" style={{ background: '#3b82f6', color: '#fff', fontSize: 10 }}>{hiddenCount}</span>
-                  </button>
-                )}
+                  )}
+                </button>
 
                 {/* 🔒 Bảo mật: Chỉ hiển thị cho tài khoản đăng ký Email/Mật khẩu (Ẩn nếu đăng nhập bằng OAuth/Google) */}
                 {!isOAuthUser && (
@@ -10308,9 +10400,9 @@ function App() {
                   <circle cx="12" cy="12" r="10" />
                   <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
                 </svg>
-                <span>Đã chặn</span>
-                {blockedUserIds.length > 0 && (
-                  <span className="tg-settings-badge-count">{blockedUserIds.length}</span>
+                <span>Đã chặn / Đã ẩn</span>
+                {(blockedUserIds.length + allHiddenChats.length) > 0 && (
+                  <span className="tg-settings-badge-count">{blockedUserIds.length + allHiddenChats.length}</span>
                 )}
               </button>
             </div>
@@ -10367,12 +10459,18 @@ function App() {
                 </div>
               ) : (
                 <div className="tg-blocked-tab-content">
+                  {/* PHẦN 1: NGƯỜI DÙNG ĐÃ CHẶN */}
+                  <div className="tg-settings-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <span>🚫 Người dùng đã chặn</span>
+                    <span style={{ fontSize: '11px', color: '#828e9f' }}>{blockedUserIds.length} người</span>
+                  </div>
+
                   {blockedUserIds.length === 0 ? (
-                    <div className="tg-blocked-empty-minimal">
+                    <div className="tg-blocked-empty-minimal" style={{ marginBottom: '16px' }}>
                       Chưa có người dùng nào bị chặn
                     </div>
                   ) : (
-                    <div className="tg-blocked-list-container">
+                    <div className="tg-blocked-list-container" style={{ marginBottom: '16px' }}>
                       {blockedUserIds.map((bId) => {
                         const targetUser = friends.find((f) => String(f.id) === String(bId)) || {
                           id: bId,
@@ -10402,6 +10500,61 @@ function App() {
                             >
                               Bỏ chặn
                             </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* PHẦN 2: ĐOẠN CHAT ĐÃ ẨN */}
+                  <div className="tg-settings-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', marginTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '14px' }}>
+                    <span>👁️‍🗨️ Đoạn chat đã ẩn</span>
+                    <span style={{ fontSize: '11px', color: '#828e9f' }}>{allHiddenChats.length} đoạn chat</span>
+                  </div>
+
+                  {allHiddenChats.length === 0 ? (
+                    <div className="tg-blocked-empty-minimal">
+                      Không có đoạn chat nào đang bị ẩn
+                    </div>
+                  ) : (
+                    <div className="tg-blocked-list-container">
+                      {allHiddenChats.map((c) => {
+                        const name = c.is_group ? c.name : (c.display_name || c.username)
+                        return (
+                          <div className="tg-blocked-card-item" key={c.id}>
+                            <div className="tg-blocked-card-left">
+                              <div className="tg-avatar sm">
+                                {c.avatar_url ? (
+                                  <img src={c.avatar_url} alt="" className="avatar-img" />
+                                ) : (
+                                  (name || 'C').charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="tg-blocked-card-info">
+                                <strong className="tg-blocked-name">{name}</strong>
+                                <span className="tg-blocked-handle">{c.is_group ? 'Nhóm chat' : `@${c.username || 'user'}`}</span>
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button
+                                type="button"
+                                className="primary-button"
+                                style={{ padding: '6px 12px', fontSize: '12px' }}
+                                onClick={() => {
+                                  setActiveChat(c)
+                                  setShowSettingsModal(false)
+                                }}
+                              >
+                                Mở chat
+                              </button>
+                              <button
+                                type="button"
+                                className="tg-unblock-action-btn"
+                                onClick={(e) => handleToggleHideChat(c.id, e)}
+                              >
+                                Bỏ ẩn
+                              </button>
+                            </div>
                           </div>
                         )
                       })}

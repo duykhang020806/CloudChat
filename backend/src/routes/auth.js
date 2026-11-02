@@ -257,6 +257,11 @@ router.post('/google', async (req, res) => {
 // 3. Lấy thông tin tài khoản hiện tại (Session check)
 router.get('/me', authenticateToken, async (req, res) => {
   try {
+    await pool.query(
+      'UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+      [req.user.id]
+    ).catch(() => {})
+
     const result = await pool.query(
       `SELECT id, email, username, display_name, avatar_url, bio, gender, dob, is_online, last_seen, is_verified, created_at
        FROM users WHERE id = $1`,
@@ -318,7 +323,9 @@ router.get('/search', authenticateToken, async (req, res) => {
     if (!q) return res.json({ users: [] })
 
     const result = await pool.query(
-      `SELECT id, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
+      `SELECT id, username, display_name, avatar_url, bio,
+        (is_online AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '70 seconds')) as is_online,
+        last_seen, is_verified
        FROM users
        WHERE (username ILIKE $1 OR display_name ILIKE $1 OR email ILIKE $1) AND id != $2
        LIMIT 20`,
@@ -338,7 +345,9 @@ router.post('/by-ids', authenticateToken, async (req, res) => {
     const { ids } = req.body
     if (!Array.isArray(ids) || ids.length === 0) return res.json({ users: [] })
     const result = await pool.query(
-      `SELECT id, email, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
+      `SELECT id, email, username, display_name, avatar_url, bio,
+        (is_online AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '70 seconds')) as is_online,
+        last_seen, is_verified
        FROM users
        WHERE id = ANY($1::uuid[])`,
       [ids]
@@ -347,6 +356,22 @@ router.post('/by-ids', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Get profiles error:', err)
     res.status(500).json({ error: 'Lỗi truy vấn thông tin người dùng' })
+  }
+})
+
+// 8. Heartbeat định kỳ giữ trạng thái Online (Đang hoạt động) và cập nhật last_seen
+router.post('/heartbeat', authenticateToken, async (req, res) => {
+  try {
+    const currentUserId = req.user.id
+    const now = new Date().toISOString()
+    await pool.query(
+      'UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+      [currentUserId]
+    )
+    broadcastNotification('user_status', { userId: currentUserId, isOnline: true, lastSeen: now })
+    res.json({ ok: true, is_online: true, last_seen: now })
+  } catch (err) {
+    res.status(500).json({ error: 'Lỗi cập nhật heartbeat' })
   }
 })
 

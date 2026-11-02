@@ -122,6 +122,10 @@ export const authApi = {
       body: JSON.stringify({ ids }),
     })
   },
+
+  heartbeat: async () => {
+    return await request('/api/auth/heartbeat', { method: 'POST' }).catch(() => {})
+  },
 }
 
 // ============================================================================
