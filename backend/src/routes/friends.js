@@ -72,6 +72,11 @@ router.get('/requests', authenticateToken, async (req, res) => {
        FROM friendships f
        JOIN users u ON f.user_id = u.id
        WHERE f.friend_id = $1 AND f.status = 'pending'
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks b 
+           WHERE (b.blocker_id = $1 AND b.blocked_id = f.user_id)
+              OR (b.blocker_id = f.user_id AND b.blocked_id = $1)
+         )
        ORDER BY f.created_at DESC`,
       [req.user.id]
     )
@@ -91,6 +96,11 @@ router.get('/sent-requests', authenticateToken, async (req, res) => {
        FROM friendships f
        JOIN users u ON f.friend_id = u.id
        WHERE f.user_id = $1 AND f.status = 'pending'
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks b 
+           WHERE (b.blocker_id = $1 AND b.blocked_id = f.friend_id)
+              OR (b.blocker_id = f.friend_id AND b.blocked_id = $1)
+         )
        ORDER BY f.created_at DESC`,
       [req.user.id]
     )
@@ -116,6 +126,21 @@ router.post('/request', authenticateToken, async (req, res) => {
     const targetCheck = await pool.query('SELECT id FROM users WHERE id = $1', [targetUserId])
     if (targetCheck.rows.length === 0) {
       return res.status(404).json({ error: 'Người dùng được yêu cầu kết bạn không tồn tại' })
+    }
+
+    // Kiểm tra xem có bị chặn 2 chiều không
+    const blockCheck = await pool.query(
+      `SELECT blocker_id, blocked_id FROM user_blocks 
+       WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)`,
+      [currentUserId, targetUserId]
+    )
+    if (blockCheck.rows.length > 0) {
+      const isBlocker = String(blockCheck.rows[0].blocker_id) === String(currentUserId)
+      if (isBlocker) {
+        return res.status(400).json({ error: 'Bạn đang chặn người dùng này. Vui lòng mở chặn trước khi kết bạn.' })
+      } else {
+        return res.status(403).json({ error: 'Bạn không thể gửi lời mời kết bạn tới người dùng này.' })
+      }
     }
 
     // Kiểm tra xem đã kết bạn hoặc đã gửi lời mời chưa
@@ -238,6 +263,102 @@ router.put('/reject/:id', authenticateToken, handleRejectOrCancel)
 router.delete('/reject/:id', authenticateToken, handleRejectOrCancel)
 router.delete('/request/:id', authenticateToken, handleRejectOrCancel)
 router.delete('/:id', authenticateToken, handleRejectOrCancel)
+
+// 6. Chặn người dùng (Lưu vào database & huỷ bỏ toàn bộ quan hệ bạn bè/lời mời)
+router.post('/block', authenticateToken, async (req, res) => {
+  try {
+    const currentUserId = req.user.id
+    const { targetUserId } = req.body
+
+    if (!targetUserId || targetUserId === currentUserId) {
+      return res.status(400).json({ error: 'Người dùng không hợp lệ' })
+    }
+
+    // Lưu vào bảng user_blocks
+    await pool.query(
+      `INSERT INTO user_blocks (blocker_id, blocked_id) 
+       VALUES ($1, $2) 
+       ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+      [currentUserId, targetUserId]
+    )
+
+    // Xoá mọi quan hệ bạn bè hoặc lời mời đang chờ giữa 2 người
+    await pool.query(
+      `DELETE FROM friendships 
+       WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
+      [currentUserId, targetUserId]
+    )
+
+    // Phát tín hiệu Realtime qua PostgreSQL LISTEN/NOTIFY
+    broadcastNotification('user_blocked', {
+      blockerId: currentUserId,
+      blockedId: targetUserId,
+    })
+
+    res.json({ ok: true, message: 'Đã chặn người dùng thành công' })
+  } catch (err) {
+    console.error('Block user error:', err)
+    res.status(500).json({ error: 'Lỗi khi chặn người dùng' })
+  }
+})
+
+// 7. Bỏ chặn người dùng
+router.post('/unblock', authenticateToken, async (req, res) => {
+  try {
+    const currentUserId = req.user.id
+    const { targetUserId } = req.body
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Thiếu thông tin người dùng' })
+    }
+
+    await pool.query(
+      `DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [currentUserId, targetUserId]
+    )
+
+    broadcastNotification('user_unblocked', {
+      blockerId: currentUserId,
+      blockedId: targetUserId,
+    })
+
+    res.json({ ok: true, message: 'Đã bỏ chặn người dùng' })
+  } catch (err) {
+    console.error('Unblock user error:', err)
+    res.status(500).json({ error: 'Lỗi khi bỏ chặn người dùng' })
+  }
+})
+
+// 8. Lấy danh sách chặn: Người tôi chặn và người đang chặn tôi
+router.get('/blocks', authenticateToken, async (req, res) => {
+  try {
+    const currentUserId = req.user.id
+
+    // Người tôi đang chặn
+    const blockedQuery = await pool.query(
+      `SELECT b.blocked_id as id, u.username, u.display_name, u.avatar_url 
+       FROM user_blocks b
+       JOIN users u ON b.blocked_id = u.id
+       WHERE b.blocker_id = $1`,
+      [currentUserId]
+    )
+
+    // Người đang chặn tôi
+    const blockedByQuery = await pool.query(
+      `SELECT blocker_id FROM user_blocks WHERE blocked_id = $1`,
+      [currentUserId]
+    )
+
+    res.json({
+      blockedUsers: blockedQuery.rows,
+      blockedUserIds: blockedQuery.rows.map((r) => String(r.id)),
+      blockedByUserIds: blockedByQuery.rows.map((r) => String(r.blocker_id)),
+    })
+  } catch (err) {
+    console.error('Get blocks error:', err)
+    res.status(500).json({ error: 'Lỗi tải danh sách chặn' })
+  }
+})
 
 export default router
 

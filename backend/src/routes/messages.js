@@ -92,6 +92,17 @@ router.post('/', authenticateToken, async (req, res) => {
       }
 
       const receiver = recCheck.rows[0]
+
+      // Kiểm tra chặn 2 chiều (Chặn không cho phép gửi tin nhắn)
+      const blockCheck = await pool.query(
+        `SELECT blocker_id FROM user_blocks 
+         WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)`,
+        [currentUserId, receiverId]
+      )
+      if (blockCheck.rows.length > 0) {
+        return res.status(403).json({ error: 'Không thể gửi tin nhắn cho người dùng này do tài khoản đã bị chặn' })
+      }
+
       // Nếu không phải gửi cho bot thông báo hệ thống, bắt buộc phải là bạn bè
       if (receiver.username !== 'cloudchat') {
         const friendCheck = await pool.query(

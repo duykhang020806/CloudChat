@@ -99,8 +99,19 @@ server.listen(PORT, '0.0.0.0', async () => {
   try {
     await pool.query('UPDATE users SET is_online = false WHERE is_online = true')
     await pool.query("UPDATE users SET is_verified = false WHERE username != 'cloudchat'")
+
+    // Tạo bảng lưu trữ danh sách chặn người dùng nếu chưa tồn tại
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_blocks (
+        id SERIAL PRIMARY KEY,
+        blocker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        blocked_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(blocker_id, blocked_id)
+      )
+    `)
   } catch (e) {
-    console.warn('Reset offline status / verified error:', e.message)
+    console.warn('Reset offline status / init user_blocks error:', e.message)
   }
 
   console.log(`=======================================================`)

@@ -1908,7 +1908,7 @@ function App() {
 
 
 
-  // Blocked Users State (Danh sách đã chặn)
+  // Blocked Users State (Danh sách đã chặn & Danh sách người chặn mình)
   const [blockedUserIds, setBlockedUserIds] = useState(() => {
     try {
       const saved = localStorage.getItem('cloudchat_blocked_users')
@@ -1917,6 +1917,7 @@ function App() {
       return []
     }
   })
+  const [blockedByUserIds, setBlockedByUserIds] = useState([])
 
   // Anti-Spam Login / Register State (Chống spam, honeypot & rate limit)
   const formMountTimeRef = useRef(Date.now())
@@ -2635,35 +2636,42 @@ function App() {
   const [userToBlock, setUserToBlock] = useState(null)
 
   // Xử lý Chặn / Bỏ chặn người dùng
-  const handleToggleBlockUser = (user) => {
+  const handleToggleBlockUser = async (user) => {
     if (!user?.id) return
     const uid = String(user.id)
     const name = user.display_name || user.username
     if (blockedUserIds.includes(uid)) {
-      // Đang bị chặn -> Bỏ chặn trực tiếp (không tự động khôi phục kết bạn)
-      setBlockedUserIds((prev) => {
-        const updated = prev.filter((id) => id !== uid)
+      // Đang bị chặn -> Bỏ chặn trực tiếp trên Backend
+      try {
+        await friendsApi.unblockUser(uid)
+        setBlockedUserIds((prev) => {
+          const updated = prev.filter((id) => id !== uid)
+          try {
+            localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
+          } catch { }
+          return updated
+        })
         showFloatingToast(`Đã bỏ chặn ${name}. Hãy gửi kết bạn lại để tiếp tục trò chuyện.`)
-        try {
-          localStorage.setItem('cloudchat_blocked_users', JSON.stringify(updated))
-        } catch { }
-        return updated
-      })
+        await loadBlocks()
+      } catch (err) {
+        console.error('Unblock user error:', err)
+        showFloatingToast('Lỗi khi bỏ chặn: ' + (err.message || 'Lỗi'))
+      }
     } else {
       // Chưa chặn -> Bật modal xác nhận Chặn
       setUserToBlock(user)
     }
   }
 
-  // Xác nhận chặn người dùng (Đồng thời huỷ kết bạn ngay lập tức)
+  // Xác nhận chặn người dùng (Lưu database & huỷ kết bạn ngay lập tức)
   const confirmBlockUser = async () => {
     if (!userToBlock?.id) return
     const uid = String(userToBlock.id)
     const name = userToBlock.display_name || userToBlock.username
 
     try {
-      // 1. Huỷ quan hệ bạn bè trên database Backend
-      await friendsApi.rejectRequest(uid).catch((err) => console.warn('Cancel friendship on block:', err))
+      // 1. Chặn người dùng trên Database Backend
+      await friendsApi.blockUser(uid)
 
       // 2. Xoá ngay khỏi danh sách bạn bè
       setFriends((prev) => prev.filter((f) => String(f.id) !== uid))
@@ -2681,7 +2689,9 @@ function App() {
         return updated
       })
 
-      loadFriends()
+      await loadBlocks()
+      await loadFriends()
+      await loadFriendRequests()
     } catch (err) {
       console.error('Block user error:', err)
       showFloatingToast('Lỗi khi chặn: ' + (err.message || 'Lỗi'))
@@ -4740,6 +4750,26 @@ function App() {
     }
   }, [showMenu])
 
+  const loadBlocks = async () => {
+    if (!currentUser?.id) return
+    try {
+      const res = await friendsApi.getBlocks()
+      if (res) {
+        if (Array.isArray(res.blockedUserIds)) {
+          setBlockedUserIds(res.blockedUserIds)
+          try {
+            localStorage.setItem('cloudchat_blocked_users', JSON.stringify(res.blockedUserIds))
+          } catch { }
+        }
+        if (Array.isArray(res.blockedByUserIds)) {
+          setBlockedByUserIds(res.blockedByUserIds)
+        }
+      }
+    } catch (err) {
+      console.warn('Load blocks error:', err)
+    }
+  }
+
   const loadFriends = async () => {
     if (!currentUser?.id) return
 
@@ -5389,6 +5419,7 @@ function App() {
     loadFriendRequests()
     loadSentFriendRequests()
     loadGroupInvitations()
+    loadBlocks()
 
     // Heartbeat định kỳ giữ trạng thái Online (Đang hoạt động) và cập nhật last_seen
     authApi.heartbeat().catch(() => {})
@@ -5547,6 +5578,7 @@ function App() {
           loadFriends()
           loadFriendRequests()
           loadSentFriendRequests()
+          loadBlocks()
         }
       )
       .subscribe()
@@ -8793,12 +8825,62 @@ function App() {
                 <div style={{ textAlign: 'center', padding: '14px 20px', color: '#f87171', background: 'rgba(239, 68, 68, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
                   🔒 Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn.
                 </div>
-              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ? (
+              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
+                blockedUserIds.some((id) => String(id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ||
+                blockedByUserIds.some((id) => String(id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ||
+                !friends.some((f) => String(f.id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase())
+              ) ? (
                 (() => {
                   const targetId = String(activeChat.id).trim().toLowerCase()
+                  const isBlockedByMe = blockedUserIds.some((id) => String(id).trim().toLowerCase() === targetId)
+                  const isBlockedByThem = blockedByUserIds.some((id) => String(id).trim().toLowerCase() === targetId)
+                  const name = getFriendName(activeChat) || activeChat.display_name || activeChat.username
+
+                  // 1. Nếu TÔI ĐANG CHẶN người dùng này: Hiển thị trạng thái đã chặn và nút "Bỏ chặn"
+                  if (isBlockedByMe) {
+                    return (
+                      <div className="tg-friend-action-bar" style={{ border: '1px solid rgba(239, 68, 68, 0.35)', background: 'rgba(30, 25, 28, 0.95)' }}>
+                        <div className="tg-friend-bar-info">
+                          <span className="tg-friend-bar-title" style={{ color: '#f87171' }}>
+                            🚫 Bạn đã chặn {name}
+                          </span>
+                          <span className="tg-friend-bar-sub">
+                            Mở chặn nếu bạn muốn kết bạn lại và tiếp tục trò chuyện
+                          </span>
+                        </div>
+                        <div className="tg-friend-bar-actions">
+                          <button
+                            type="button"
+                            className="secondary-button tg-friend-bar-btn"
+                            style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.4)' }}
+                            onClick={() => handleToggleBlockUser(activeChat)}
+                          >
+                            Bỏ chặn
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  // 2. Nếu ĐỐI PHƯƠNG ĐANG CHẶN TÔI: Cấm hoàn toàn mọi hành vi gửi tin nhắn hoặc kết bạn
+                  if (isBlockedByThem) {
+                    return (
+                      <div className="tg-friend-action-bar" style={{ border: '1px solid rgba(239, 68, 68, 0.35)', background: 'rgba(30, 25, 28, 0.95)' }}>
+                        <div className="tg-friend-bar-info">
+                          <span className="tg-friend-bar-title" style={{ color: '#f87171' }}>
+                            🚫 Không thể gửi tin nhắn hoặc kết bạn
+                          </span>
+                          <span className="tg-friend-bar-sub">
+                            Người dùng này hiện không thể nhận tin nhắn hoặc lời mời kết bạn từ bạn
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  // 3. Nếu chưa kết bạn (và không ai chặn ai)
                   const incomingReq = friendRequests.find((r) => String(r.user_id).trim().toLowerCase() === targetId || String(r.id).trim().toLowerCase() === targetId)
                   const outgoingReq = sentFriendRequests.find((r) => String(r.friend_id).trim().toLowerCase() === targetId || String(r.id).trim().toLowerCase() === targetId)
-                  const name = getFriendName(activeChat) || activeChat.display_name || activeChat.username
 
                   return (
                     <div className="tg-friend-action-bar">

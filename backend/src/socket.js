@@ -151,6 +151,16 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
     io.to(`user_${data.userB}`).emit('friendship_updated', data)
   })
 
+  createListenerClient('user_blocked', (data) => {
+    io.to(`user_${data.blockerId}`).emit('block_updated', data)
+    io.to(`user_${data.blockedId}`).emit('block_updated', data)
+  })
+
+  createListenerClient('user_unblocked', (data) => {
+    io.to(`user_${data.blockerId}`).emit('block_updated', data)
+    io.to(`user_${data.blockedId}`).emit('block_updated', data)
+  })
+
   return io
 }
 

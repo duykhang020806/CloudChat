@@ -615,6 +615,9 @@ export const chatClient = {
           socket.on('friendship_updated', (f) => {
             callback({ eventType: 'UPDATE', new: f })
           })
+          socket.on('block_updated', (b) => {
+            callback({ eventType: 'UPDATE', new: b })
+          })
         }
 
         if (filter?.table === 'group_members') {

@@ -172,6 +172,24 @@ export const friendsApi = {
       method: 'PUT',
     })
   },
+
+  blockUser: async (targetUserId) => {
+    return await request('/api/friends/block', {
+      method: 'POST',
+      body: JSON.stringify({ targetUserId }),
+    })
+  },
+
+  unblockUser: async (targetUserId) => {
+    return await request('/api/friends/unblock', {
+      method: 'POST',
+      body: JSON.stringify({ targetUserId }),
+    })
+  },
+
+  getBlocks: async () => {
+    return await request('/api/friends/blocks')
+  },
 }
 
 // ============================================================================
