@@ -445,15 +445,38 @@ export const supabase = {
             } else if (table === 'profiles' || table === 'users') {
               const idInFilter = _filters.find((f) => f.col === 'id' && f.op === 'in')
               const idEqFilter = _filters.find((f) => f.col === 'id' && f.op === 'eq')
-              const searchFilter = _filters.find((f) => f.col === 'username' || f.col === 'display_name')
+              const searchFilter = _filters.find((f) => f.col === 'username' || f.col === 'display_name' || f.col === 'email')
+              const orFilter = _filters.find((f) => f.op === 'or' || f.col === '$or')
 
               if (idEqFilter) {
                 const me = await authApi.getMe()
                 resultData = me.user ? [me.user] : []
               } else if (searchFilter) {
-                const q = searchFilter.val.replace(/%/g, '')
+                const q = String(searchFilter.val || '').replace(/%/g, '').trim()
                 const res = await authApi.searchUsers(q)
                 resultData = res.users || []
+              } else if (orFilter) {
+                let q = ''
+                const valStr = String(orFilter.val || '')
+                const match = valStr.match(/%([^%,]+)%/)
+                if (match) {
+                  q = match[1]
+                } else {
+                  const parts = valStr.split(',')
+                  for (const part of parts) {
+                    if (part.includes('ilike.')) {
+                      q = part.split('ilike.')[1].replace(/%/g, '')
+                      break
+                    }
+                  }
+                }
+                q = q.trim()
+                if (q) {
+                  const res = await authApi.searchUsers(q)
+                  resultData = res.users || []
+                } else {
+                  resultData = []
+                }
               } else {
                 resultData = []
               }

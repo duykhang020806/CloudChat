@@ -283,23 +283,23 @@ router.post('/logout', authenticateToken, async (req, res) => {
   }
 })
 
-// 6. Tìm kiếm người dùng
+// 6. Tìm kiếm người dùng (Hỗ trợ tìm theo username, display_name hoặc email)
 router.get('/search', authenticateToken, async (req, res) => {
   try {
     const q = (req.query.q || '').trim()
     if (!q) return res.json({ users: [] })
 
     const result = await pool.query(
-      `SELECT id, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
+      `SELECT id, email, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
        FROM users
-       WHERE (username ILIKE $1 OR display_name ILIKE $1) AND id != $2
+       WHERE (username ILIKE $1 OR display_name ILIKE $1 OR email ILIKE $1) AND id != $2
        LIMIT 20`,
       [`%${q}%`, req.user.id]
     )
 
     res.json({ users: result.rows })
   } catch (err) {
-    res.status(500).json({ error: 'Lỗi tìm kiếm người dùng' })
+    res.status(500).json({ error: 'Lỗi tìm kiếm người dùng: ' + err.message })
   }
 })
 

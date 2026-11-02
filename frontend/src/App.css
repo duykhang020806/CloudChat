@@ -701,6 +701,7 @@ button {
   padding: 0 12px;
   gap: 8px;
   transition: 0.2s;
+  overflow: hidden;
 }
 
 .tg-search-bar:focus-within {
@@ -716,11 +717,14 @@ button {
 
 .tg-search-bar input {
   flex: 1;
+  min-width: 0;
+  width: 100%;
   border: 0;
   outline: 0;
   background: transparent;
   color: #f1f5f9;
   font-size: 13.5px;
+  padding: 0;
 }
 
 .tg-search-bar input::placeholder {
@@ -728,14 +732,23 @@ button {
 }
 
 .tg-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
   border: 0;
-  background: transparent;
-  color: #727e90;
-  font-size: 13px;
-  padding: 2px 4px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: 0.15s;
 }
 
 .tg-search-clear:hover {
+  background: rgba(255, 255, 255, 0.24);
   color: white;
 }
 
