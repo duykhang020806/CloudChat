@@ -21,6 +21,10 @@ const server = http.createServer(app)
 const PORT = process.env.PORT || 5000
 
 // Middlewares CORS linh hoạt, an toàn (Phản hồi chính xác Origin của client)
+app.use((req, res, next) => {
+  res.setHeader('X-Backend-Host', os.hostname())
+  next()
+})
 app.use(
   cors({
     origin: (origin, callback) => {

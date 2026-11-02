@@ -36,19 +36,51 @@ export default {
         })
       }
 
+      const isReadMethod = ['GET', 'HEAD'].includes(request.method)
+      let requestBody = null
+      if (!isReadMethod) {
+        try {
+          requestBody = await request.arrayBuffer()
+        } catch {
+          requestBody = null
+        }
+      }
+
       try {
-        const response = await fetch(albUrl, {
+        let response = await fetch(albUrl, {
           method: request.method,
           headers: newHeaders,
-          body: ['GET', 'HEAD'].includes(request.method) ? null : request.body,
+          body: isReadMethod ? null : requestBody,
           redirect: 'follow',
         })
+
+        // Tự động thử lại 1 lần nếu gặp lỗi 404 "Cannot POST/GET" (do 1 trong các backend chưa pull code mới) hoặc lỗi 502/503 từ ALB
+        if (
+          (response.status === 404 && url.pathname.startsWith('/api/')) ||
+          response.status === 502 ||
+          response.status === 503
+        ) {
+          const bodyClone = response.clone()
+          const text = await bodyClone.text().catch(() => '')
+          if (text.includes('Cannot POST') || text.includes('Cannot GET') || response.status >= 500) {
+            const retryResponse = await fetch(albUrl, {
+              method: request.method,
+              headers: newHeaders,
+              body: isReadMethod ? null : requestBody,
+              redirect: 'follow',
+            }).catch(() => null)
+            if (retryResponse && retryResponse.status !== 404) {
+              response = retryResponse
+            }
+          }
+        }
 
         const responseHeaders = new Headers(response.headers)
         responseHeaders.set('Access-Control-Allow-Origin', url.origin)
         responseHeaders.set('Access-Control-Allow-Credentials', 'true')
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH')
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        responseHeaders.set('Access-Control-Expose-Headers', 'X-Backend-Host')
 
         return new Response(response.body, {
           status: response.status,
