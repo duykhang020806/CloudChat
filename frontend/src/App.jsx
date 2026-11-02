@@ -6873,29 +6873,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* 🚫 Đã chặn / 👁️‍🗨️ Đã ẩn */}
-                <button
-                  className="tg-menu-item"
-                  onClick={() => {
-                    setShowMenu(false)
-                    setSettingsActiveTab('blocked')
-                    setShowSettingsModal(true)
-                  }}
-                >
-                  <span className="tg-menu-icon">
-                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="10" />
-                      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-                    </svg>
-                  </span>
-                  <span>Đã chặn / Đã ẩn</span>
-                  {(blockedUserIds.length + allHiddenChats.length) > 0 && (
-                    <span className="tg-menu-badge" style={{ background: '#3b82f6', color: '#fff', fontSize: 10 }}>
-                      {blockedUserIds.length + allHiddenChats.length}
-                    </span>
-                  )}
-                </button>
-
                 {/* 🔒 Bảo mật: Chỉ hiển thị cho tài khoản đăng ký Email/Mật khẩu (Ẩn nếu đăng nhập bằng OAuth/Google) */}
                 {!isOAuthUser && (
                   <button
@@ -6935,6 +6912,11 @@ function App() {
                     </svg>
                   </span>
                   <span>Cài đặt</span>
+                  {(blockedUserIds.length + allHiddenChats.length) > 0 && (
+                    <span className="tg-menu-badge" style={{ background: '#3b82f6', color: '#fff', fontSize: 10 }}>
+                      {blockedUserIds.length + allHiddenChats.length}
+                    </span>
+                  )}
                 </button>
 
                 <div className="tg-menu-divider" />
@@ -10467,7 +10449,7 @@ function App() {
                   <circle cx="12" cy="12" r="10" />
                   <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
                 </svg>
-                <span>Đã chặn / Đã ẩn</span>
+                <span>Ẩn / Chặn</span>
                 {(blockedUserIds.length + allHiddenChats.length) > 0 && (
                   <span className="tg-settings-badge-count">{blockedUserIds.length + allHiddenChats.length}</span>
                 )}
