@@ -21,8 +21,16 @@ const server = http.createServer(app)
 const PORT = process.env.PORT || 5000
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*'
 
-// Middlewares cơ bản
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }))
+// Middlewares cơ bản (Hỗ trợ CORS động cho mọi client web/mobile/Cloudflare)
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Phản hồi chính xác Origin của client thay vì wildcard * để tương thích chuẩn bảo mật của trình duyệt
+      callback(null, true)
+    },
+    credentials: true,
+  })
+)
 app.use(express.json({ limit: '25mb' }))
 app.use(express.urlencoded({ extended: true, limit: '25mb' }))
 

@@ -70,10 +70,11 @@ export const authApi = {
     return res
   },
 
-  googleLogin: async (credential) => {
+  googleLogin: async (authPayload) => {
+    const payload = typeof authPayload === 'string' ? { credential: authPayload } : authPayload
     const res = await request('/api/auth/google', {
       method: 'POST',
-      body: JSON.stringify({ credential }),
+      body: JSON.stringify(payload),
     })
     if (res.token) setToken(res.token)
     return res

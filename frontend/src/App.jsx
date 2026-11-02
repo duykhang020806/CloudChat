@@ -5966,11 +5966,11 @@ function App() {
   const handleGoogleLogin = () => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
     if (!clientId || clientId.includes('YOUR_GOOGLE_CLIENT_ID')) {
-      alert('Chưa cấu hình Google Client ID!\n\nVui lòng tạo OAuth 2.0 Client ID (Web Application) trên Google Cloud Console và thêm vào file frontend/.env:\nVITE_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com')
+      alert('Chưa cấu hình Google Client ID!\n\nVui lòng kiểm tra lại file frontend/.env')
       return
     }
 
-    if (!window.google?.accounts?.id) {
+    if (!window.google?.accounts) {
       setError('Thư viện Google Identity chưa tải xong. Vui lòng tải lại trang và thử lại.')
       return
     }
@@ -5979,41 +5979,73 @@ function App() {
     setError('')
 
     try {
-      window.google.accounts.id.initialize({
-        client_id: clientId,
-        callback: async (response) => {
-          try {
-            if (!response.credential) {
-              throw new Error('Không nhận được credential xác thực từ Google')
+      // 1. Dùng Google OAuth 2.0 Token Client (Popup chuẩn - luôn luôn bật khi bấm nút)
+      if (window.google?.accounts?.oauth2) {
+        const tokenClient = window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: 'email profile openid',
+          callback: async (tokenResponse) => {
+            if (tokenResponse.error) {
+              setError('Lỗi xác thực Google: ' + tokenResponse.error)
+              setLoading(false)
+              return
             }
-            const { data, error } = await supabase.auth.signInWithGoogleCredential(response.credential)
-            if (error) throw error
-            if (data?.user) {
-              setCurrentUser(data.user)
-              setPage('chat')
+            try {
+              const { data, error } = await supabase.auth.signInWithGoogleCredential({
+                access_token: tokenResponse.access_token,
+              })
+              if (error) throw error
+              if (data?.user) {
+                setCurrentUser(data.user)
+                setPage('chat')
+              }
+            } catch (err) {
+              console.error('Google token auth error:', err)
+              setError('Lỗi đăng nhập Google: ' + (err.message || 'Không thể đăng nhập'))
+            } finally {
+              setLoading(false)
             }
-          } catch (err) {
-            console.error('Google Auth callback error:', err)
-            setError('Lỗi xác thực Google: ' + (err.message || 'Không thể đăng nhập'))
-          } finally {
+          },
+        })
+        tokenClient.requestAccessToken({ prompt: 'select_account' })
+        return
+      }
+
+      // 2. Fallback sang Google One-Tap / ID Token nếu không có oauth2
+      if (window.google?.accounts?.id) {
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          callback: async (response) => {
+            try {
+              if (!response.credential) throw new Error('Không nhận được mã xác thực')
+              const { data, error } = await supabase.auth.signInWithGoogleCredential({
+                credential: response.credential,
+              })
+              if (error) throw error
+              if (data?.user) {
+                setCurrentUser(data.user)
+                setPage('chat')
+              }
+            } catch (err) {
+              setError('Lỗi xác thực Google: ' + (err.message || 'Không thể đăng nhập'))
+            } finally {
+              setLoading(false)
+            }
+          },
+        })
+        window.google.accounts.id.prompt((notification) => {
+          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
             setLoading(false)
           }
-        },
-      })
-
-      window.google.accounts.id.prompt((notification) => {
-        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-          console.warn('Google One-tap prompt not displayed, reason:', notification.getNotDisplayedReason?.())
-          setLoading(false)
-        }
-      })
+        })
+      }
     } catch (err) {
       setError('Lỗi mở xác thực Google: ' + err.message)
       setLoading(false)
     }
   }
 
-  // Đăng ký qua Supabase Auth
+  // Đăng ký tài khoản
   const handleRegister = async (event) => {
     event.preventDefault()
 
@@ -6046,17 +6078,6 @@ function App() {
     setAuthSuccess('')
 
     try {
-      const { data: existingUser } = await supabase
-        .from('profiles')
-        .select('id')
-        .ilike('username', email)
-        .maybeSingle()
-
-      if (existingUser) {
-        setError('Email này đã được sử dụng. Vui lòng chọn email khác hoặc đăng nhập.')
-        return
-      }
-
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -6069,11 +6090,7 @@ function App() {
       })
 
       if (error) {
-        if (error.message?.includes('already registered')) {
-          setError('Email này đã được đăng ký tài khoản. Vui lòng đăng nhập.')
-        } else {
-          setError(error.message || 'Đăng ký thất bại')
-        }
+        setError(error.message || 'Đăng ký thất bại')
         return
       }
 

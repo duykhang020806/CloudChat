@@ -123,25 +123,50 @@ router.post('/login', async (req, res) => {
 // 2b. Đăng nhập / Đăng ký nhanh bằng Google OAuth
 router.post('/google', async (req, res) => {
   try {
-    const { credential } = req.body
+    const { credential, access_token } = req.body
 
-    if (!credential) {
-      return res.status(400).json({ error: 'Thiếu Google credential token' })
+    if (!credential && !access_token) {
+      return res.status(400).json({ error: 'Thiếu Google credential hoặc access_token' })
     }
 
-    // 1. Xác thực ID Token trực tiếp với máy chủ Google
-    const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`)
-    if (!googleRes.ok) {
-      return res.status(401).json({ error: 'Token Google không hợp lệ hoặc đã hết hạn' })
+    let email = null
+    let name = null
+    let picture = null
+
+    // 1. Xác thực ID Token (Google Identity Services)
+    if (credential) {
+      try {
+        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`)
+        if (googleRes.ok) {
+          const gData = await googleRes.json()
+          email = gData.email?.toLowerCase().trim()
+          name = gData.name || gData.given_name || email.split('@')[0]
+          picture = gData.picture || null
+        }
+      } catch (e) {
+        console.warn('Google id_token validation error:', e)
+      }
     }
 
-    const gData = await googleRes.json()
-    const email = gData.email?.toLowerCase().trim()
-    const name = gData.name || gData.given_name || email.split('@')[0]
-    const picture = gData.picture || null
+    // 2. Fallback xác thực Access Token (Google OAuth 2.0 Popup)
+    if (!email && access_token) {
+      try {
+        const googleRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${access_token}` },
+        })
+        if (googleRes.ok) {
+          const gData = await googleRes.json()
+          email = gData.email?.toLowerCase().trim()
+          name = gData.name || gData.given_name || email.split('@')[0]
+          picture = gData.picture || null
+        }
+      } catch (e) {
+        console.warn('Google access_token validation error:', e)
+      }
+    }
 
     if (!email) {
-      return res.status(400).json({ error: 'Không thể lấy email từ tài khoản Google này' })
+      return res.status(401).json({ error: 'Token Google không hợp lệ hoặc đã hết hạn' })
     }
 
     // 2. Kiểm tra xem người dùng đã tồn tại trong CSDL chưa
