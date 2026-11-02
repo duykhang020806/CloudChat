@@ -2506,6 +2506,98 @@ button {
   flex-shrink: 0;
 }
 
+/* Persistent Friend Action Bar at bottom of chat when not friends */
+.tg-friend-action-bar {
+  margin: 0 auto 16px;
+  max-width: 760px;
+  width: calc(100% - 32px);
+  background: rgba(33, 35, 40, 0.95);
+  backdrop-filter: blur(16px);
+  border-radius: 20px;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+  z-index: 3;
+  flex-shrink: 0;
+  animation: tgFadeIn 0.25s ease-out;
+}
+
+[data-theme="light"] .tg-friend-action-bar {
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tg-friend-bar-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tg-friend-bar-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-theme="light"] .tg-friend-bar-title {
+  color: #0f172a;
+}
+
+.tg-friend-bar-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-theme="light"] .tg-friend-bar-sub {
+  color: #64748b;
+}
+
+.tg-friend-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tg-friend-bar-btn {
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .tg-friend-action-bar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px 14px;
+    gap: 10px;
+    border-radius: 16px;
+  }
+  .tg-friend-bar-actions {
+    justify-content: flex-end;
+  }
+  .tg-friend-bar-btn {
+    flex: 1;
+    text-align: center;
+    padding: 8px 12px;
+  }
+}
+
 .tg-attach-btn {
   font-size: 19px;
   color: #7b8698;

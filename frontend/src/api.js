@@ -123,6 +123,13 @@ export const authApi = {
     })
   },
 
+  getProfilesByIds: async (ids) => {
+    return await request('/api/auth/by-ids', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    })
+  },
+
   heartbeat: async () => {
     return await request('/api/auth/heartbeat', { method: 'POST' }).catch(() => {})
   },

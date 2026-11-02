@@ -5633,13 +5633,17 @@ function App() {
       loadGroupDetail(activeChat.id)
     } else if (activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat') {
       // Làm mới trạng thái online / last_seen chính xác nhất ngay khi mở chat
-      authApi.getProfilesByIds([activeChat.id]).then((res) => {
-        if (res?.users?.[0]) {
-          const u = res.users[0]
-          setActiveChat((prev) => prev && String(prev.id) === String(u.id) ? { ...prev, is_online: Boolean(u.is_online), last_seen: u.last_seen } : prev)
-          setFriends((prev) => prev.map((f) => String(f.id) === String(u.id) ? { ...f, is_online: Boolean(u.is_online), last_seen: u.last_seen } : f))
-        }
-      }).catch(() => {})
+      const fetchProfiles = authApi.getProfilesByIds || authApi.getUsersByIds
+      if (typeof fetchProfiles === 'function') {
+        fetchProfiles([activeChat.id]).then((res) => {
+          if (res?.users?.[0]) {
+            const u = res.users[0]
+            const targetId = String(u.id).trim().toLowerCase()
+            setActiveChat((prev) => prev && String(prev.id).trim().toLowerCase() === targetId ? { ...prev, is_online: Boolean(u.is_online), last_seen: u.last_seen } : prev)
+            setFriends((prev) => prev.map((f) => String(f.id).trim().toLowerCase() === targetId ? { ...f, is_online: Boolean(u.is_online), last_seen: u.last_seen } : f))
+          }
+        }).catch((err) => console.warn('Refresh user profile error:', err))
+      }
     }
 
     const interval = setInterval(() => {
@@ -8807,8 +8811,71 @@ function App() {
                 <div style={{ textAlign: 'center', padding: '14px 20px', color: '#f87171', background: 'rgba(239, 68, 68, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
                   🔒 Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn.
                 </div>
-              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat.id)) ? (
-                null
+              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ? (
+                (() => {
+                  const targetId = String(activeChat.id).trim().toLowerCase()
+                  const incomingReq = friendRequests.find((r) => String(r.user_id).trim().toLowerCase() === targetId || String(r.id).trim().toLowerCase() === targetId)
+                  const outgoingReq = sentFriendRequests.find((r) => String(r.friend_id).trim().toLowerCase() === targetId || String(r.id).trim().toLowerCase() === targetId)
+                  const name = getFriendName(activeChat) || activeChat.display_name || activeChat.username
+
+                  return (
+                    <div className="tg-friend-action-bar">
+                      <div className="tg-friend-bar-info">
+                        <span className="tg-friend-bar-title">
+                          {incomingReq
+                            ? `👋 ${name} đã gửi lời mời kết bạn`
+                            : outgoingReq
+                            ? `⏳ Đang chờ ${name} đồng ý kết bạn`
+                            : `💬 Để nhắn tin, bạn cần kết bạn với ${name}`}
+                        </span>
+                        <span className="tg-friend-bar-sub">
+                          {incomingReq
+                            ? 'Đồng ý kết bạn để cùng trò chuyện và chia sẻ hình ảnh'
+                            : outgoingReq
+                            ? 'Lời mời kết bạn đã gửi thành công. Hãy chờ đối phương xác nhận'
+                            : 'Chấp nhận hoặc gửi kết bạn để bắt đầu trò chuyện'}
+                        </span>
+                      </div>
+                      <div className="tg-friend-bar-actions">
+                        {incomingReq ? (
+                          <>
+                            <button
+                              type="button"
+                              className="primary-button tg-friend-bar-btn"
+                              onClick={() => handleAcceptFriendRequest(incomingReq.id)}
+                            >
+                              ✓ Đồng ý
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button tg-friend-bar-btn"
+                              onClick={() => handleRejectFriendRequest(incomingReq.id)}
+                            >
+                              ✕ Từ chối
+                            </button>
+                          </>
+                        ) : outgoingReq ? (
+                          <button
+                            type="button"
+                            className="secondary-button tg-friend-bar-btn"
+                            onClick={() => handleCancelFriendRequest(outgoingReq.id)}
+                          >
+                            Thu hồi
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="primary-button tg-friend-bar-btn"
+                            onClick={() => handleSendFriendRequest(activeChat.id)}
+                            disabled={searchFriendLoading}
+                          >
+                            {searchFriendLoading ? 'Đang gửi...' : '+ Kết bạn'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()
               ) : (
                 /* Telegram Message Input Pill */
                 <div className="tg-input-area">
