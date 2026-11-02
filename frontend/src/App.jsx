@@ -5670,10 +5670,40 @@ function App() {
       )
       .subscribe()
 
+    const userStatusChannel = supabase
+      .channel('cloudchat-userstatus-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        (payload) => {
+          const status = payload.new
+          if (!status?.id && !status?.userId) return
+          const targetId = String(status.id || status.userId)
+          const isOnline = Boolean(status.is_online !== undefined ? status.is_online : status.isOnline)
+          const lastSeen = status.last_seen || status.lastSeen || new Date().toISOString()
+
+          setFriends((prev) =>
+            prev.map((f) =>
+              String(f.id) === targetId
+                ? { ...f, is_online: isOnline, last_seen: lastSeen }
+                : f
+            )
+          )
+
+          setActiveChat((prev) =>
+            prev && String(prev.id) === targetId
+              ? { ...prev, is_online: isOnline, last_seen: lastSeen }
+              : prev
+          )
+        }
+      )
+      .subscribe()
+
     return () => {
       supabase.removeChannel(messageChannel)
       supabase.removeChannel(friendshipChannel)
       supabase.removeChannel(groupMemberChannel)
+      supabase.removeChannel(userStatusChannel)
     }
   }, [currentUser?.id])
 
@@ -7822,7 +7852,7 @@ function App() {
                                 <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                   {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
                                   {isGroup ? item.name : getFriendName(item)}
-                                  {(item.is_verified || item.username === 'cloudchat') && <VerifiedBadge size={15} />}
+                                  {(item.username === 'cloudchat') && <VerifiedBadge size={15} />}
                                   {isGroup && item.is_community && (
                                     <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
                                       CỘNG ĐỒNG
@@ -7890,7 +7920,7 @@ function App() {
                                 >
                                   <span>{isHidden ? 'Hiện lại chat' : 'Ẩn trò chuyện'}</span>
                                 </button>
-                                {!isGroup && item.id !== CLOUDCHAT_BOT_ID && (
+                                {!isGroup && item.id !== CLOUDCHAT_BOT_ID && friends.some((f) => String(f.id) === String(item.id)) && (
                                   <>
                                     <button
                                       type="button"
@@ -8138,7 +8168,7 @@ function App() {
                   <div className="tg-header-details">
                     <strong style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
-                      {(activeChat.is_verified || activeChat.username === 'cloudchat') && <VerifiedBadge size={16} />}
+                      {(activeChat.username === 'cloudchat') && <VerifiedBadge size={16} />}
                     </strong>
                     <span className={`tg-header-status ${activeChat.is_group ? 'online' : (activeChat.is_online ? 'online' : 'offline')}`}>
                       {activeChat.is_system_bot || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat'
@@ -8258,9 +8288,11 @@ function App() {
                     </div>
                     <h3 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                       {getFriendName(activeChat)}
-                      {(activeChat.is_verified || activeChat.username === 'cloudchat') && <VerifiedBadge size={20} />}
+                      {(activeChat.username === 'cloudchat') && <VerifiedBadge size={20} />}
                     </h3>
-                    <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
+                    {(activeChat.is_group || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat' || friends.some((f) => String(f.id) === String(activeChat.id))) && (
+                      <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
+                    )}
 
                     {/* Nút Kết Bạn hiển thị trực tiếp khi search và bấm vào người bạn chưa kết bạn (Ảnh 3) */}
                     {!activeChat.is_group && !activeChat.is_system_bot && !friends.some((f) => String(f.id) === String(activeChat.id)) && (
@@ -8866,9 +8898,7 @@ function App() {
                   🔒 Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn.
                 </div>
               ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat.id)) ? (
-                <div style={{ textAlign: 'center', padding: '14px 20px', color: '#a78bfa', background: 'rgba(135, 116, 225, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
-                  💬 Bạn cần gửi lời mời kết bạn và được đối phương chấp nhận để bắt đầu trò chuyện.
-                </div>
+                null
               ) : (
                 /* Telegram Message Input Pill */
                 <div className="tg-input-area">
@@ -9065,9 +9095,7 @@ function App() {
               )}
             </div>
           ) : (
-            <div className="tg-no-chat-selected">
-              <span className="tg-no-chat-badge">Chọn một đoạn chat để bắt đầu trò chuyện</span>
-            </div>
+            <div className="tg-no-chat-selected" />
           )}
         </ErrorBoundary>
       </main>
@@ -9669,7 +9697,7 @@ function App() {
               )}
 
               {/* Nút Xoá lịch sử & Chặn / Bỏ chặn người dùng */}
-              {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
+              {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && friends.some((f) => String(f.id) === String(activeChat.id)) && (
                 <div className="tg-sidebar-block-action" style={{ padding: "16px 20px", marginTop: 12 }}>
                   <button
                     type="button"

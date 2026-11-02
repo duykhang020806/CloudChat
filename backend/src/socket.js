@@ -1,6 +1,6 @@
 import { Server } from 'socket.io'
 import jwt from 'jsonwebtoken'
-import { pool, createListenerClient } from './db.js'
+import { pool, createListenerClient, broadcastNotification } from './db.js'
 
 export const setupSocketServer = (httpServer, corsOrigin) => {
   const io = new Server(httpServer, {
@@ -43,6 +43,13 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
     socket.join(`user_${userId}`)
     console.log(`[Socket Connected] User ${socket.user.username} (ID: ${userId}) on Socket ID: ${socket.id}`)
 
+    // Cập nhật người dùng trực tuyến (online)
+    pool.query(
+      'UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+      [userId]
+    ).catch(() => {})
+    broadcastNotification('user_status', { userId, isOnline: true, lastSeen: new Date().toISOString() })
+
     // Tham gia phòng chat nhóm
     socket.on('join_group', (groupId) => {
       socket.join(`group_${groupId}`)
@@ -72,6 +79,22 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
 
     socket.on('disconnect', () => {
       console.log(`[Socket Disconnected] User ${socket.user.username} (ID: ${userId})`)
+      // Chờ 2.5 giây để tránh chuyển offline tức thời khi người dùng chỉ bấm F5 / tải lại trang
+      setTimeout(async () => {
+        const userRoom = io.sockets.adapter.rooms.get(`user_${userId}`)
+        if (!userRoom || userRoom.size === 0) {
+          const lastSeen = new Date().toISOString()
+          try {
+            await pool.query(
+              'UPDATE users SET is_online = false, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
+              [userId]
+            )
+            broadcastNotification('user_status', { userId, isOnline: false, lastSeen })
+          } catch (err) {
+            console.error('Error updating offline status:', err)
+          }
+        }
+      }, 2500)
     })
   })
 

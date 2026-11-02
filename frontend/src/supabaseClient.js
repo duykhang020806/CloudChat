@@ -435,7 +435,15 @@ export const supabase = {
             } else if (table === 'groups') {
               resultData = await groupsApi.getGroups()
             } else if (table === 'friendships') {
-              resultData = await friendsApi.getFriends()
+              const friendsList = await friendsApi.getFriends()
+              resultData = (friendsList || []).map((f) => ({
+                id: f.friendship_id || f.id,
+                user_id: currentSessionUser?.id || '',
+                friend_id: f.id,
+                status: 'accepted',
+                created_at: f.friendship_date || f.created_at || new Date().toISOString(),
+                ...f,
+              }))
             } else if (table === 'group_members') {
               const groupFilter = _filters.find((f) => f.col === 'group_id')
               if (groupFilter) {
@@ -451,6 +459,13 @@ export const supabase = {
               if (idEqFilter) {
                 const me = await authApi.getMe()
                 resultData = me.user ? [me.user] : []
+              } else if (idInFilter) {
+                const rawVal = idInFilter.val
+                const ids = Array.isArray(rawVal)
+                  ? rawVal
+                  : String(rawVal).replace(/[()]/g, '').split(',').map((s) => s.trim()).filter(Boolean)
+                const res = await authApi.getUsersByIds(ids)
+                resultData = res.users || []
               } else if (searchFilter) {
                 const q = String(searchFilter.val || '').replace(/%/g, '').trim()
                 const res = await authApi.searchUsers(q)
@@ -530,6 +545,22 @@ export const supabase = {
         if (filter?.table === 'group_members') {
           socket.on('group_updated', (g) => {
             callback({ eventType: 'UPDATE', new: g })
+          })
+        }
+
+        if (filter?.table === 'users' || filter?.table === 'profiles') {
+          socket.on('user_status_changed', (status) => {
+            callback({
+              eventType: 'UPDATE',
+              new: {
+                id: status.userId,
+                userId: status.userId,
+                is_online: Boolean(status.isOnline),
+                isOnline: Boolean(status.isOnline),
+                last_seen: status.lastSeen,
+                lastSeen: status.lastSeen,
+              },
+            })
           })
         }
 

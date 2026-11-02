@@ -82,7 +82,16 @@ app.get('/', (req, res) => {
 setupSocketServer(server, CORS_ORIGIN)
 
 // Khởi chạy máy chủ
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
+  // Đặt lại trạng thái offline cho các user chưa kịp ngắt kết nối trước đó
+  // và bỏ tích xanh cho tài khoản thường (chỉ giữ cho bot hệ thống cloudchat)
+  try {
+    await pool.query('UPDATE users SET is_online = false WHERE is_online = true')
+    await pool.query("UPDATE users SET is_verified = false WHERE username != 'cloudchat'")
+  } catch (e) {
+    console.warn('Reset offline status / verified error:', e.message)
+  }
+
   console.log(`=======================================================`)
   console.log(` CloudChat Backend is running on port: ${PORT}`)
   console.log(` Machine Hostname: ${os.hostname()}`)

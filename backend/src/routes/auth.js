@@ -191,7 +191,7 @@ router.post('/google', async (req, res) => {
 
       const insertRes = await pool.query(
         `INSERT INTO users (email, username, password_hash, display_name, avatar_url, is_online, last_seen, is_verified)
-         VALUES ($1, $2, $3, $4, $5, true, CURRENT_TIMESTAMP, true)
+         VALUES ($1, $2, $3, $4, $5, true, CURRENT_TIMESTAMP, false)
          RETURNING id, email, username, display_name, avatar_url, bio, gender, dob, is_online, last_seen, is_verified, created_at`,
         [email, finalUsername, passwordHash, name, picture]
       )
@@ -300,6 +300,23 @@ router.get('/search', authenticateToken, async (req, res) => {
     res.json({ users: result.rows })
   } catch (err) {
     res.status(500).json({ error: 'Lỗi tìm kiếm người dùng: ' + err.message })
+  }
+})
+
+// 7. Lấy danh sách profiles theo danh sách ID
+router.post('/by-ids', authenticateToken, async (req, res) => {
+  try {
+    const { ids } = req.body
+    if (!Array.isArray(ids) || ids.length === 0) return res.json({ users: [] })
+    const result = await pool.query(
+      `SELECT id, email, username, display_name, avatar_url, bio, is_online, last_seen, is_verified
+       FROM users
+       WHERE id = ANY($1::uuid[])`,
+      [ids]
+    )
+    res.json({ users: result.rows })
+  } catch (err) {
+    res.status(500).json({ error: 'Lỗi truy vấn profiles: ' + err.message })
   }
 })
 

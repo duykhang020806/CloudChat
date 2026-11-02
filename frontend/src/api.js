@@ -115,6 +115,13 @@ export const authApi = {
   searchUsers: async (query) => {
     return await request(`/api/auth/search?q=${encodeURIComponent(query)}`)
   },
+
+  getUsersByIds: async (ids) => {
+    return await request('/api/auth/by-ids', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    })
+  },
 }
 
 // ============================================================================
