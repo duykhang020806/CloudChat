@@ -11,7 +11,7 @@ export const authenticateToken = (req, res, next) => {
 
   const secret = process.env.JWT_SECRET || 'cloudchat_super_secure_jwt_token_secret_key_2026'
 
-  jwt.verify(token, secret, async (err, decoded) => {
+  jwt.verify(token, secret, { algorithms: ['HS256'] }, async (err, decoded) => {
     if (err || !decoded?.id) {
       return res.status(403).json({ error: 'Token đã hết hạn hoặc không hợp lệ' })
     }

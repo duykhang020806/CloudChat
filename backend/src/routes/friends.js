@@ -28,33 +28,40 @@ router.get('/', authenticateToken, async (req, res) => {
 
     const friends = friendsQuery.rows
 
-    // Lấy tin nhắn cuối cùng với từng người bạn
-    const friendsWithLastMsg = await Promise.all(
-      friends.map(async (friend) => {
-        const lastMsgQuery = await pool.query(
-          `SELECT id, sender_id, content, is_read, created_at
-           FROM messages
-           WHERE (sender_id = $1 AND receiver_id = $2)
-              OR (sender_id = $2 AND receiver_id = $1)
-           ORDER BY created_at DESC
-           LIMIT 1`,
-          [currentUserId, friend.id]
-        )
+    if (friends.length === 0) {
+      return res.json({ friends: [] })
+    }
 
-        const lastMsg = lastMsgQuery.rows[0]
-        return {
-          ...friend,
-          last_message: lastMsg ? lastMsg.content : null,
-          last_message_time: lastMsg ? lastMsg.created_at : null,
-          last_message_sender_id: lastMsg ? lastMsg.sender_id : null,
-        }
-      })
+    // Tối ưu hóa triệt để: Lấy toàn bộ tin nhắn cuối cùng chỉ bằng 1 câu truy vấn SQL (Chống N+1 DoS Query)
+    const lastMsgsQuery = await pool.query(
+      `SELECT DISTINCT ON (partner_id)
+         id, sender_id, content, is_read, created_at,
+         CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END as partner_id
+       FROM messages
+       WHERE (sender_id = $1 OR receiver_id = $1) AND group_id IS NULL
+       ORDER BY partner_id, created_at DESC`,
+      [currentUserId]
     )
+
+    const lastMsgMap = new Map()
+    for (const msg of lastMsgsQuery.rows) {
+      lastMsgMap.set(String(msg.partner_id), msg)
+    }
+
+    const friendsWithLastMsg = friends.map((friend) => {
+      const lastMsg = lastMsgMap.get(String(friend.id))
+      return {
+        ...friend,
+        last_message: lastMsg ? lastMsg.content : null,
+        last_message_time: lastMsg ? lastMsg.created_at : null,
+        last_message_sender_id: lastMsg ? lastMsg.sender_id : null,
+      }
+    })
 
     res.json({ friends: friendsWithLastMsg })
   } catch (err) {
     console.error('Get friends error:', err)
-    res.status(500).json({ error: 'Lỗi tải danh sách bạn bè: ' + err.message })
+    res.status(500).json({ error: 'Lỗi tải danh sách bạn bè' })
   }
 })
 
@@ -72,6 +79,7 @@ router.get('/requests', authenticateToken, async (req, res) => {
 
     res.json({ requests: result.rows })
   } catch (err) {
+    console.error('Get requests error:', err)
     res.status(500).json({ error: 'Lỗi tải lời mời kết bạn' })
   }
 })
@@ -123,7 +131,8 @@ router.post('/request', authenticateToken, async (req, res) => {
 
     res.status(201).json({ message: 'Đã gửi lời mời kết bạn', request: insertResult.rows[0] })
   } catch (err) {
-    res.status(500).json({ error: 'Lỗi gửi lời mời kết bạn: ' + err.message })
+    console.error('Send friend request error:', err)
+    res.status(500).json({ error: 'Lỗi gửi lời mời kết bạn' })
   }
 })
 
@@ -153,7 +162,8 @@ router.put('/accept/:id', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Đã chấp nhận kết bạn', friendship: rel })
   } catch (err) {
-    res.status(500).json({ error: 'Lỗi chấp nhận kết bạn: ' + err.message })
+    console.error('Accept friend error:', err)
+    res.status(500).json({ error: 'Lỗi chấp nhận kết bạn' })
   }
 })
 
@@ -174,7 +184,8 @@ router.put('/reject/:id', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Đã từ chối lời mời kết bạn' })
   } catch (err) {
-    res.status(500).json({ error: 'Lỗi từ chối kết bạn: ' + err.message })
+    console.error('Reject friend error:', err)
+    res.status(500).json({ error: 'Lỗi từ chối kết bạn' })
   }
 })
 

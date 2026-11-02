@@ -19,14 +19,33 @@ dotenv.config()
 const app = express()
 const server = http.createServer(app)
 const PORT = process.env.PORT || 5000
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*'
 
-// Middlewares cơ bản (Hỗ trợ CORS động cho mọi client web/mobile/Cloudflare)
+// Danh sách Origin được phép truy cập (CORS Whitelist)
+const ALLOWED_ORIGINS = [
+  'https://chat.mahira.top',
+  'https://cloudchat.pk-duykhang.workers.dev',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+]
+if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
+  process.env.CORS_ORIGIN.split(',').forEach((o) => {
+    const trimmed = o.trim()
+    if (trimmed && !ALLOWED_ORIGINS.includes(trimmed)) ALLOWED_ORIGINS.push(trimmed)
+  })
+}
+
+// Middlewares bảo mật CORS
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Phản hồi chính xác Origin của client thay vì wildcard * để tương thích chuẩn bảo mật của trình duyệt
-      callback(null, true)
+      // Cho phép nếu không có origin (server-to-server, health check) hoặc nằm trong whitelist
+      if (!origin || ALLOWED_ORIGINS.includes(origin) || origin.endsWith('.workers.dev') || origin.endsWith('.mahira.top')) {
+        callback(null, true)
+      } else {
+        console.warn(`[CORS Blocked] Origin not allowed: ${origin}`)
+        callback(new Error('CORS Policy: Origin không được phép'))
+      }
     },
     credentials: true,
   })
@@ -34,8 +53,16 @@ app.use(
 app.use(express.json({ limit: '25mb' }))
 app.use(express.urlencoded({ extended: true, limit: '25mb' }))
 
-// Phục vụ tệp tĩnh (ảnh, tài liệu, âm thanh) trong thư mục uploads
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')))
+// Phục vụ tệp tĩnh trong uploads kèm HTTP Security Headers chống XSS
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Content-Security-Policy', "default-src 'none'; media-src 'self'; img-src 'self' data:;")
+    next()
+  },
+  express.static(path.join(process.cwd(), 'uploads'))
+)
 
 // ===========================================================================
 // HEALTH CHECK ENDPOINT (DÀNH CHO AWS APPLICATION LOAD BALANCER)

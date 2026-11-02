@@ -22,33 +22,42 @@ router.get('/', authenticateToken, async (req, res) => {
 
     const groups = groupsQuery.rows
 
-    // Lấy tin nhắn cuối cùng của từng nhóm
-    const groupsWithLastMsg = await Promise.all(
-      groups.map(async (grp) => {
-        const lastMsgQuery = await pool.query(
-          `SELECT id, sender_id, content, created_at
-           FROM messages
-           WHERE group_id = $1
-           ORDER BY created_at DESC
-           LIMIT 1`,
-          [grp.id]
-        )
+    if (groups.length === 0) {
+      return res.json({ groups: [] })
+    }
 
-        const lastMsg = lastMsgQuery.rows[0]
-        return {
-          ...grp,
-          is_group: true,
-          last_message: lastMsg ? lastMsg.content : null,
-          last_message_time: lastMsg ? lastMsg.created_at : null,
-          last_message_sender_id: lastMsg ? lastMsg.sender_id : null,
-        }
-      })
+    const groupIds = groups.map((g) => g.id)
+
+    // Lấy tin nhắn cuối cùng của toàn bộ nhóm chỉ bằng 1 câu truy vấn SQL (Chống N+1 DoS Query)
+    const lastMsgsQuery = await pool.query(
+      `SELECT DISTINCT ON (group_id)
+         id, sender_id, group_id, content, created_at
+       FROM messages
+       WHERE group_id = ANY($1::uuid[])
+       ORDER BY group_id, created_at DESC`,
+      [groupIds]
     )
+
+    const lastMsgMap = new Map()
+    for (const msg of lastMsgsQuery.rows) {
+      lastMsgMap.set(String(msg.group_id), msg)
+    }
+
+    const groupsWithLastMsg = groups.map((grp) => {
+      const lastMsg = lastMsgMap.get(String(grp.id))
+      return {
+        ...grp,
+        is_group: true,
+        last_message: lastMsg ? lastMsg.content : null,
+        last_message_time: lastMsg ? lastMsg.created_at : null,
+        last_message_sender_id: lastMsg ? lastMsg.sender_id : null,
+      }
+    })
 
     res.json({ groups: groupsWithLastMsg })
   } catch (err) {
     console.error('Get groups error:', err)
-    res.status(500).json({ error: 'Lỗi tải danh sách nhóm: ' + err.message })
+    res.status(500).json({ error: 'Lỗi tải danh sách nhóm' })
   }
 })
 
@@ -120,7 +129,7 @@ router.post('/', authenticateToken, async (req, res) => {
     })
   } catch (err) {
     console.error('Create group error:', err)
-    res.status(500).json({ error: 'Lỗi tạo nhóm: ' + err.message })
+    res.status(500).json({ error: 'Lỗi tạo nhóm' })
   }
 })
 
@@ -203,7 +212,8 @@ router.post('/:id/members', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Đã thêm thành viên vào nhóm' })
   } catch (err) {
-    res.status(500).json({ error: 'Lỗi thêm thành viên: ' + err.message })
+    console.error('Add member error:', err)
+    res.status(500).json({ error: 'Lỗi thêm thành viên' })
   }
 })
 

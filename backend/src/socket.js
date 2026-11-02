@@ -23,6 +23,7 @@ export const setupSocketServer = (httpServer, corsOrigin) => {
     jwt.verify(
       token,
       process.env.JWT_SECRET || 'cloudchat_super_secure_jwt_token_secret_key_2026',
+      { algorithms: ['HS256'] },
       async (err, decoded) => {
         if (err || !decoded?.id) return next(new Error('Authentication error: Invalid token'))
         try {

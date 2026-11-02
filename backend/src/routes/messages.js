@@ -62,7 +62,7 @@ router.get('/', authenticateToken, async (req, res) => {
     res.json({ messages })
   } catch (err) {
     console.error('Get messages error:', err)
-    res.status(500).json({ error: 'Lỗi tải tin nhắn: ' + err.message })
+    res.status(500).json({ error: 'Lỗi tải tin nhắn' })
   }
 })
 
@@ -80,11 +80,29 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Cần chỉ định người nhận hoặc nhóm nhận' })
     }
 
-    // Nếu gửi 1-1, kiểm tra người nhận có tồn tại không
+    // Nếu gửi 1-1, kiểm tra người nhận có tồn tại không và có phải bạn bè không
     if (receiverId) {
-      const recCheck = await pool.query('SELECT id FROM users WHERE id = $1', [receiverId])
+      if (receiverId === currentUserId) {
+        return res.status(400).json({ error: 'Không thể tự gửi tin nhắn cho chính mình' })
+      }
+
+      const recCheck = await pool.query('SELECT id, username FROM users WHERE id = $1', [receiverId])
       if (recCheck.rows.length === 0) {
         return res.status(404).json({ error: 'Người nhận không tồn tại' })
+      }
+
+      const receiver = recCheck.rows[0]
+      // Nếu không phải gửi cho bot thông báo hệ thống, bắt buộc phải là bạn bè
+      if (receiver.username !== 'cloudchat') {
+        const friendCheck = await pool.query(
+          `SELECT status FROM friendships 
+           WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
+             AND status = 'accepted'`,
+          [currentUserId, receiverId]
+        )
+        if (friendCheck.rows.length === 0) {
+          return res.status(403).json({ error: 'Để nhắn tin, bạn cần gửi lời mời kết bạn và được đối phương chấp nhận' })
+        }
       }
     }
 
@@ -129,7 +147,7 @@ router.post('/', authenticateToken, async (req, res) => {
     res.status(201).json({ message: fullMessage })
   } catch (err) {
     console.error('Send message error:', err)
-    res.status(500).json({ error: 'Lỗi gửi tin nhắn: ' + err.message })
+    res.status(500).json({ error: 'Lỗi gửi tin nhắn' })
   }
 })
 
