@@ -240,6 +240,8 @@ router.post('/google', async (req, res) => {
     }
 
     // 3. Sinh token JWT của CloudChat
+    user.provider = 'google'
+    user.is_oauth = true
     const token = generateToken(user)
     broadcastNotification('user_status', { userId: user.id, isOnline: true })
 
@@ -272,7 +274,14 @@ router.get('/me', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy thông tin tài khoản' })
     }
 
-    res.json({ user: result.rows[0] })
+    const u = result.rows[0]
+    const isGoogle = Boolean(
+      (u.email && u.email.toLowerCase().endsWith('@gmail.com') && u.avatar_url && (u.avatar_url.includes('googleusercontent.com') || u.avatar_url.includes('lh3.google')))
+    )
+    u.provider = isGoogle ? 'google' : 'email'
+    u.is_oauth = isGoogle
+
+    res.json({ user: u })
   } catch (err) {
     res.status(500).json({ error: 'Lỗi kiểm tra phiên đăng nhập' })
   }

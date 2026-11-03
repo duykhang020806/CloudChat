@@ -1771,7 +1771,16 @@ function App() {
   const [currentUser, setCurrentUser] = useState(() => {
     try {
       const saved = localStorage.getItem('cloudchat_current_user')
-      return saved ? JSON.parse(saved) : null
+      if (saved) {
+        const u = JSON.parse(saved)
+        const savedProvider = localStorage.getItem('cloudchat_auth_provider')
+        if (savedProvider) {
+          u.provider = savedProvider
+          u.is_oauth = savedProvider !== 'email'
+        }
+        return u
+      }
+      return null
     } catch {
       return null
     }
@@ -2287,7 +2296,8 @@ function App() {
   const isOAuthUser = Boolean(
     currentUser?.is_oauth ||
     currentUser?.provider === 'google' ||
-    (currentUser?.app_metadata?.provider && currentUser?.app_metadata?.provider !== 'email')
+    (currentUser?.app_metadata?.provider && currentUser?.app_metadata?.provider !== 'email') ||
+    localStorage.getItem('cloudchat_auth_provider') === 'google'
   )
 
   // Sync nicknames per user account
@@ -2484,10 +2494,9 @@ function App() {
         : new Date().toISOString(),
     }
 
-    // Gộp cả bot, nhóm và bạn bè thành 1 danh sách
+    // Gộp bot và bạn bè thành 1 danh sách (đã loại bỏ nhóm hoàn toàn)
     const all = [
       botChat,
-      ...groups.map((g) => ({ ...g, is_group: true })),
       ...friends.map((f) => ({ ...f, is_group: false })),
     ]
 
@@ -2495,7 +2504,7 @@ function App() {
     const filtered = all.filter((chat) => {
       if (chat.id === CLOUDCHAT_BOT_ID) return true
       // Nếu là người dùng và đang bị chặn -> ẩn luôn khỏi danh sách hội thoại
-      if (!chat.is_group && blockedUserIds.includes(String(chat.id))) {
+      if (blockedUserIds.includes(String(chat.id))) {
         return false
       }
       const isHidden = hiddenChats.includes(chat.id)
@@ -2525,55 +2534,26 @@ function App() {
       const timeB = new Date(b.last_message_time || b.created_at || 0).getTime()
       return timeB - timeA
     })
-  }, [groups, friends, pinnedChats, hiddenChats, showHiddenSection, cloudChatBotMessages, blockedUserIds, currentUser?.id])
+  }, [friends, pinnedChats, hiddenChats, showHiddenSection, cloudChatBotMessages, blockedUserIds, currentUser?.id])
 
-  const groupsSorted = useMemo(() => {
-    const filtered = groups.filter((g) => {
-      const isHidden = hiddenChats.includes(g.id)
-      return showHiddenSection ? isHidden : !isHidden
-    })
-
-    return filtered.sort((a, b) => {
-      const aPinned = pinnedChats.includes(a.id)
-      const bPinned = pinnedChats.includes(b.id)
-      if (aPinned && !bPinned) return -1
-      if (!aPinned && bPinned) return 1
-
-      const timeA = new Date(a.last_message_time || a.created_at || 0).getTime()
-      const timeB = new Date(b.last_message_time || b.created_at || 0).getTime()
-      return timeB - timeA
-    })
-  }, [groups, pinnedChats, hiddenChats, showHiddenSection])
+  const groupsSorted = useMemo(() => [], [])
 
   const hiddenCount = useMemo(() => {
-    const all = [...groups, ...friends]
-    return all.filter((c) => hiddenChats.includes(c.id)).length
-  }, [groups, friends, hiddenChats])
+    return (friends || []).filter((c) => hiddenChats.includes(c.id)).length
+  }, [friends, hiddenChats])
 
   const allHiddenChats = useMemo(() => {
     const list = []
     const friendMap = new Map((friends || []).map((f) => [String(f.id), f]))
-    const groupMap = new Map((groups || []).map((g) => [String(g.id), g]))
 
     for (const id of hiddenChats) {
       const f = friendMap.get(String(id))
       if (f) {
         list.push({ ...f, is_group: false })
-      } else {
-        const g = groupMap.get(String(id))
-        if (g) list.push({ ...g, is_group: true })
-        else {
-          list.push({
-            id,
-            display_name: 'Đoạn chat ' + String(id).slice(0, 6),
-            username: 'chat_' + String(id).slice(0, 6),
-            is_group: false,
-          })
-        }
       }
     }
     return list
-  }, [friends, groups, hiddenChats])
+  }, [hiddenChats, friends])
 
   // Modal xác nhận xoá lịch sử trò chuyện
   const [chatToDeleteHistory, setChatToDeleteHistory] = useState(null)
@@ -5288,8 +5268,10 @@ function App() {
         }
       }
 
-      const provider = user.app_metadata?.provider || (user.identities && user.identities[0]?.provider)
+      const savedProvider = localStorage.getItem('cloudchat_auth_provider')
+      const provider = savedProvider || user.app_metadata?.provider || user.provider || (user.identities && user.identities[0]?.provider)
       const isOAuth = Boolean(
+        user.is_oauth ||
         (provider && provider !== 'email') ||
         (user.identities && user.identities.some((i) => i.provider !== 'email'))
       )
@@ -7342,157 +7324,38 @@ function App() {
                 <span>Tất cả</span>
               </button>
               <button
-                className={`tg-folder-tab ${folderTab === 'groups' ? 'active' : ''}`}
-                onClick={() => setFolderTab('groups')}
-              >
-                <span>Nhóm</span>
-                {groups.length > 0 && <span className="tg-tab-badge">{groups.length}</span>}
-              </button>
-              <button
                 className={`tg-folder-tab ${folderTab === 'friends' ? 'active' : ''}`}
                 onClick={() => setFolderTab('friends')}
               >
                 <span>Bạn bè</span>
               </button>
-              {(friendRequests.length > 0 || groupInvitations.length > 0) && (
+              {friendRequests.length > 0 && (
                 <button
                   className={`tg-folder-tab ${folderTab === 'requests' ? 'active' : ''}`}
                   onClick={() => setFolderTab('requests')}
                 >
                   <span>Lời mời</span>
-                  <span className="tg-tab-badge">{friendRequests.length + groupInvitations.length}</span>
+                  <span className="tg-tab-badge danger">{friendRequests.length}</span>
                 </button>
               )}
             </div>
 
             {/* Chat / Friends / Requests List */}
             <div className="tg-chat-list">
-              {/* Lời mời tham gia nhóm đang chờ người dùng xác nhận */}
-              {groupInvitations.length > 0 && folderTab !== 'requests' && (
-                <div className="tg-group-invitation-banner">
-                  <div className="tg-group-invitation-title">
-                    <span>📨 Lời mời vào nhóm ({groupInvitations.length})</span>
-                  </div>
-                  {groupInvitations.map((inv) => (
-                    <div key={inv.group_id} className="tg-group-invitation-item">
-                      <div className="tg-group-invitation-avatar">
-                        {inv.avatar_url ? (
-                          <img src={inv.avatar_url} alt="" />
-                        ) : (
-                          (inv.name || 'G').charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      <div className="tg-group-invitation-info">
-                        <div className="tg-group-invitation-name">{inv.name}</div>
-                        <div className="tg-group-invitation-desc">Mời bởi {inv.creator_name}</div>
-                      </div>
-                      <div className="tg-group-invitation-actions">
-                        <button
-                          type="button"
-                          className="tg-group-invitation-accept"
-                          onClick={() => handleAcceptGroupInvitation(inv)}
-                        >
-                          Đồng ý
-                        </button>
-                        <button
-                          type="button"
-                          className="tg-group-invitation-decline"
-                          onClick={() => handleDeclineGroupInvitation(inv)}
-                        >
-                          Từ chối
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
               {folderTab === 'requests' ? (
-                friendRequests.length > 0 || groupInvitations.length > 0 ? (
+                friendRequests.length > 0 ? (
                   <div className="tg-friend-requests-list">
-                    {/* Danh sách lời mời vào nhóm trong tab Lời mời */}
-                    {groupInvitations.length > 0 && (
-                      <div style={{ marginBottom: 16 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 8px' }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tg-primary, #8774e1)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                            👥 Lời mời vào nhóm ({groupInvitations.length})
-                          </span>
-                        </div>
-                        {groupInvitations.map((inv) => (
-                          <div className="tg-friend-req-card" key={`tab-group-inv-${inv.group_id}`} style={{ marginBottom: 8 }}>
-                            <div className="tg-friend-req-user">
-                              <div
-                                className="tg-avatar sm"
-                                style={{
-                                  background: !inv.avatar_url
-                                    ? getAvatarGradient(inv.group_id || inv.name)
-                                    : undefined,
-                                }}
-                              >
-                                {inv.avatar_url ? (
-                                  <img
-                                    src={inv.avatar_url}
-                                    alt=""
-                                    className="avatar-img"
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = 'none'
-                                    }}
-                                  />
-                                ) : (
-                                  getFriendInitials(inv.name)
-                                )}
-                              </div>
-                              <div className="tg-friend-req-info">
-                                <div className="tg-friend-req-top">
-                                  <span className="tg-friend-req-name" title={inv.name}>
-                                    {inv.name}
-                                  </span>
-                                  <span className="tg-friend-req-time">
-                                    {formatChatListTime(inv.created_at)}
-                                  </span>
-                                </div>
-                                <span className="tg-friend-req-uname">Mời bởi {inv.creator_name}</span>
-                              </div>
-                            </div>
-                            <div className="tg-friend-req-actions">
-                              <button
-                                className="tg-req-accept-btn"
-                                onClick={() => handleAcceptGroupInvitation(inv)}
-                              >
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12"></polyline>
-                                </svg>
-                                Đồng ý
-                              </button>
-                              <button
-                                className="tg-req-reject-btn"
-                                onClick={() => handleDeclineGroupInvitation(inv)}
-                              >
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                                </svg>
-                                Từ chối
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
                     {/* Danh sách lời mời kết bạn */}
-                    {friendRequests.length > 0 && (
-                      <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 6px' }}>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: '#8b96a7', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                            📥 Lời mời kết bạn ({friendRequests.length})
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              loadSentFriendRequests()
-                              setFriendRequestsModalTab('sent')
-                              setShowFriendRequestsModal(true)
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 6px 6px' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#8b96a7', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                        📥 Lời mời kết bạn ({friendRequests.length})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          loadSentFriendRequests()
+                          setFriendRequestsModalTab('sent')
+                          setShowFriendRequestsModal(true)
                             }}
                             style={{
                               background: 'transparent',
@@ -7572,8 +7435,6 @@ function App() {
                             </div>
                           )
                         })}
-                      </>
-                    )}
                   </div>
                 ) : (
                   <div className="tg-empty-list">
@@ -7589,153 +7450,6 @@ function App() {
                     >
                       + Thêm bạn bè mới
                     </button>
-                  </div>
-                )
-              ) : folderTab === 'groups' ? (
-                groupsSorted.length > 0 ? (
-                  <>
-                    <div className="tg-create-group-bar">
-                      <button
-                        type="button"
-                        className="tg-create-group-btn"
-                        onClick={() => {
-                          setSelectedGroupMemberIds([])
-                          setGroupNameInput('')
-                          setGroupAvatarInput('')
-                          setCreateGroupError('')
-                          setShowCreateGroupModal(true)
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="12" y1="5" x2="12" y2="19"></line>
-                          <line x1="5" y1="12" x2="19" y2="12"></line>
-                        </svg>
-                        <span>Tạo nhóm chat mới</span>
-                      </button>
-                    </div>
-                    {groupsSorted.map((group) => {
-                      const isPinned = pinnedChats.includes(group.id)
-                      const isHidden = hiddenChats.includes(group.id)
-                      const isMenuOpen = activeChatMenuId === group.id
-                      return (
-                        <div
-                          className={`tg-chat-item-wrapper ${activeChat?.id === group.id ? 'active' : ''}`}
-                          key={group.id}
-                        >
-                          <button
-                            className={`tg-chat-item ${activeChat?.id === group.id ? 'active' : ''}`}
-                            onClick={() => setActiveChat(group)}
-                          >
-                            <div
-                              className="tg-avatar"
-                              style={{
-                                background: !group.avatar_url
-                                  ? getAvatarGradient(group.id || group.name)
-                                  : undefined,
-                              }}
-                            >
-                              {group.avatar_url ? (
-                                <img
-                                  src={group.avatar_url}
-                                  alt={group.name}
-                                  className="avatar-img"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none'
-                                  }}
-                                />
-                              ) : (
-                                getFriendInitials(group.name)
-                              )}
-                            </div>
-
-                            <div className="tg-chat-info">
-                              <div className="tg-chat-top">
-                                <span className="tg-chat-name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  {isPinned && <span className="tg-pin-icon" title="Đã ghim">📌</span>}
-                                  {group.name}
-                                  {group.is_community ? (
-                                    <span style={{ fontSize: 10, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>
-                                      CỘNG ĐỒNG
-                                    </span>
-                                  ) : (
-                                    <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1', padding: '1px 6px', borderRadius: 8 }}>
-                                      {group.member_count} tv
-                                    </span>
-                                  )}
-                                </span>
-                                <span className="tg-chat-time">
-                                  {formatChatListTime(group.last_message_time || group.created_at)}
-                                </span>
-                              </div>
-                              <div className="tg-chat-bottom">
-                                <span className="tg-chat-preview">
-                                  {formatLastMessagePreview(group, currentUser)}
-                                </span>
-                              </div>
-                            </div>
-                          </button>
-
-                          {/* Nút 3 chấm trên từng nhóm */}
-                          <div className="tg-chat-item-actions">
-                            <button
-                              type="button"
-                              className="tg-chat-more-btn"
-                              title="Tùy chọn cuộc trò chuyện"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setActiveChatMenuId(isMenuOpen ? null : group.id)
-                              }}
-                            >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                <circle cx="12" cy="5" r="2.2"></circle>
-                                <circle cx="12" cy="12" r="2.2"></circle>
-                                <circle cx="12" cy="19" r="2.2"></circle>
-                              </svg>
-                            </button>
-
-                            {/* Context Menu Dropdown */}
-                            {isMenuOpen && (
-                              <div className="tg-chat-context-menu" onClick={(e) => e.stopPropagation()}>
-                                <button
-                                  type="button"
-                                  className="tg-chat-menu-action"
-                                  onClick={(e) => handleTogglePinChat(group.id, e)}
-                                >
-                                  <span>{isPinned ? 'Bỏ ghim chat' : 'Ghim đoạn chat'}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  className="tg-chat-menu-action"
-                                  onClick={(e) => handleToggleHideChat(group.id, e)}
-                                >
-                                  <span>{isHidden ? 'Hiện lại chat' : 'Ẩn trò chuyện'}</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </>
-                ) : (
-                  <div className="tg-empty-list">
-                    <p>{showHiddenSection ? 'Không có nhóm nào bị ẩn.' : 'Chưa tham gia nhóm chat nào.'}</p>
-                    {!showHiddenSection && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        style={{ marginTop: 10, fontSize: 12, padding: '7px 14px' }}
-                        onClick={() => {
-                          setSelectedGroupMemberIds([])
-                          setGroupNameInput('')
-                          setGroupAvatarInput('')
-                          setCreateGroupError('')
-                          setShowCreateGroupModal(true)
-                        }}
-                      >
-                        + Tạo nhóm chat mới
-                      </button>
-                    )}
                   </div>
                 )
               ) : folderTab === 'all' ? (
@@ -8092,8 +7806,6 @@ function App() {
                           e.currentTarget.style.display = 'none'
                         }}
                       />
-                    ) : activeChat.is_group ? (
-                      getFriendInitials(activeChat.name)
                     ) : (
                       <img
                         src={getDefaultAvatar(getFriendName(activeChat))}
@@ -8101,22 +7813,20 @@ function App() {
                         className="avatar-img"
                       />
                     )}
-                    {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && (() => {
+                    {activeChat.id !== CLOUDCHAT_BOT_ID && (() => {
                       const isFriendOnline = Boolean(activeChat.is_online) || (messages.length > 0 && String(messages[messages.length - 1]?.sender_id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase() && (Date.now() - (parseUtcDate(messages[messages.length - 1]?.created_at)?.getTime() || 0) < 150000))
                       return <div className={`tg-online-dot ${isFriendOnline ? 'online' : 'offline'}`} />
                     })()}
                   </div>
                   <div className="tg-header-details">
                     <strong style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
+                      {getFriendName(activeChat)}
                       {(activeChat.username === 'cloudchat') && <VerifiedBadge size={16} />}
                     </strong>
-                    <span className={`tg-header-status ${activeChat.is_group ? 'online' : ((Boolean(activeChat.is_online) || (messages.length > 0 && String(messages[messages.length - 1]?.sender_id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase() && (Date.now() - (parseUtcDate(messages[messages.length - 1]?.created_at)?.getTime() || 0) < 150000))) ? 'online' : 'offline')}`}>
+                    <span className={`tg-header-status ${((Boolean(activeChat.is_online) || (messages.length > 0 && String(messages[messages.length - 1]?.sender_id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase() && (Date.now() - (parseUtcDate(messages[messages.length - 1]?.created_at)?.getTime() || 0) < 150000))) ? 'online' : 'offline')}`}>
                       {activeChat.is_system_bot || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat'
                         ? 'Kênh thông báo'
-                        : activeChat.is_group
-                          ? `👥 Nhóm chat • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên`
-                          : formatUserStatus(activeChat, messages)}
+                        : formatUserStatus(activeChat, messages)}
                     </span>
                   </div>
                 </div>
@@ -8231,12 +7941,12 @@ function App() {
                       {getFriendName(activeChat)}
                       {(activeChat.username === 'cloudchat') && <VerifiedBadge size={20} />}
                     </h3>
-                    {(activeChat.is_group || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat' || friends.some((f) => String(f.id) === String(activeChat.id))) && (
+                    {(activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat' || friends.some((f) => String(f.id) === String(activeChat.id))) && (
                       <p>Chưa có tin nhắn nào ở đây. Hãy gửi lời chào đầu tiên!</p>
                     )}
 
-                    {/* Nút Kết Bạn hiển thị trực tiếp khi search và bấm vào người bạn chưa kết bạn (Ảnh 3) */}
-                    {!activeChat.is_group && !activeChat.is_system_bot && !friends.some((f) => String(f.id) === String(activeChat.id)) && (
+                    {/* Nút Kết Bạn hiển thị trực tiếp khi search và bấm vào người bạn chưa kết bạn */}
+                    {!activeChat.is_system_bot && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && !friends.some((f) => String(f.id) === String(activeChat.id)) && (
                       <div className="tg-chat-empty-friend-prompt">
                         <p className="tg-empty-friend-subtext">
                           Để nhắn tin, bạn cần gửi lời kết bạn với người này!
@@ -8474,20 +8184,6 @@ function App() {
                                       style={isEmojiOnly ? { background: 'transparent', backgroundColor: 'transparent', boxShadow: 'none', border: 'none', padding: 0, minWidth: 0 } : undefined}
                                       title={formatFullDateTime(item.created_at)}
                                     >
-                                      {/* Nếu là trong nhóm và là tin nhắn của người khác, hiển thị tên người gửi */}
-                                      {activeChat.is_group && !isMine && isFirstInSequence && (
-                                        <div
-                                          style={{
-                                            fontSize: 12,
-                                            fontWeight: 700,
-                                            color: '#a78bfa',
-                                            marginBottom: 4,
-                                          }}
-                                        >
-                                          {item.sender_name || item.sender_username || 'Thành viên'}
-                                        </div>
-                                      )}
-
                                       {/* Replied Message Quote */}
                                       {item.reply_to_id && (
                                         <div
@@ -8834,11 +8530,7 @@ function App() {
                     </button>
                   </div>
                 </div>
-              ) : activeChat.is_group && !groups.some((g) => String(g.id) === String(activeChat.id)) ? (
-                <div style={{ textAlign: 'center', padding: '14px 20px', color: '#f87171', background: 'rgba(239, 68, 68, 0.12)', borderRadius: '12px', margin: '10px 16px', fontSize: '13px', fontWeight: 600 }}>
-                  🔒 Bạn chưa tham gia nhóm này nên không thể gửi tin nhắn.
-                </div>
-              ) : !activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
+              ) : activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
                 blockedUserIds.some((id) => String(id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ||
                 blockedByUserIds.some((id) => String(id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase()) ||
                 !friends.some((f) => String(f.id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase())
@@ -9187,18 +8879,9 @@ function App() {
             </div>
 
             <div className="tg-info-body">
-              {/* User or Group Card */}
+              {/* User Card */}
               <div className="tg-info-user-card">
-                <div
-                  className="tg-info-avatar-large"
-                  style={activeChat.is_group && groupDetailData?.is_creator ? { cursor: 'pointer' } : {}}
-                  onClick={() => {
-                    if (activeChat.is_group && groupDetailData?.is_creator) {
-                      groupAvatarInputRef.current?.click()
-                    }
-                  }}
-                  title={activeChat.is_group && groupDetailData?.is_creator ? 'Nhấp để đổi ảnh đại diện nhóm' : ''}
-                >
+                <div className="tg-info-avatar-large">
                   {activeChat.avatar_url ? (
                     <img
                       src={activeChat.avatar_url}
@@ -9207,315 +8890,49 @@ function App() {
                         e.currentTarget.style.display = 'none'
                       }}
                     />
-                  ) : activeChat.is_group ? (
-                    getFriendInitials(activeChat.name)
                   ) : (
                     (getFriendName(activeChat) || 'U').charAt(0).toUpperCase()
                   )}
+                </div>
 
-                  {activeChat.is_group && groupDetailData?.is_creator && (
+                {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
+                <div className="tg-info-name-wrap">
+                  <h2>{getFriendName(activeChat)}</h2>
+                  {activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && (
                     <button
-                      type="button"
-                      className="tg-group-avatar-camera-badge"
-                      title="Đổi ảnh đại diện nhóm"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        groupAvatarInputRef.current?.click()
+                      className="tg-edit-nickname-btn"
+                      title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
+                      onClick={() => {
+                        setNicknameInput(
+                          nicknames[activeChat.id] ||
+                          activeChat.display_name ||
+                          activeChat.username ||
+                          ''
+                        )
+                        setEditingNickname(true)
                       }}
                     >
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                        <circle cx="12" cy="13" r="4"></circle>
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
                       </svg>
                     </button>
                   )}
                 </div>
 
-                {activeChat.is_group && groupDetailData?.is_creator && (
-                  <input
-                    type="file"
-                    ref={groupAvatarInputRef}
-                    style={{ display: 'none' }}
-                    accept="image/*"
-                    onChange={handleGroupAvatarSelect}
-                  />
+                {nicknames[activeChat.id] && (
+                  <p className="tg-info-original-name">
+                    Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
+                  </p>
+                )}
+                {!nicknames[activeChat.id] && activeChat.username && (
+                  <p className="tg-info-original-name">@{activeChat.username}</p>
                 )}
 
-                {activeChat.is_group ? (
-                  <>
-                    <div className="tg-info-name-wrap">
-                      <h2>{activeChat.name}</h2>
-                      {groupDetailData?.is_creator && (
-                        <button
-                          className="tg-edit-nickname-btn"
-                          title="Đổi tên nhóm"
-                          onClick={() => {
-                            setRenameGroupNameInput(activeChat.name || '')
-                            setShowRenameGroupModal(true)
-                          }}
-                        >
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    {/* Tên và Nút Đổi Biệt Danh (Chỉ 1 mình mình thấy) */}
-                    <div className="tg-info-name-wrap">
-                      <h2>{getFriendName(activeChat)}</h2>
-                      <button
-                        className="tg-edit-nickname-btn"
-                        title="Đặt tên gợi nhớ (chỉ mình bạn nhìn thấy)"
-                        onClick={() => {
-                          setNicknameInput(
-                            nicknames[activeChat.id] ||
-                            activeChat.display_name ||
-                            activeChat.username ||
-                            ''
-                          )
-                          setEditingNickname(true)
-                        }}
-                      >
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                        </svg>
-                      </button>
-                    </div>
-
-                    {nicknames[activeChat.id] && (
-                      <p className="tg-info-original-name">
-                        Tên thật: {activeChat.display_name || activeChat.username} (@{activeChat.username})
-                      </p>
-                    )}
-                    {!nicknames[activeChat.id] && (
-                      <p className="tg-info-original-name">@{activeChat.username}</p>
-                    )}
-
-                    <p className="tg-info-bio">
-                      {activeChat.bio || 'Chưa có tiểu sử'}
-                    </p>
-                  </>
-                )}
-
-
+                <p className="tg-info-bio">
+                  {activeChat.bio || 'Chưa có tiểu sử'}
+                </p>
               </div>
-
-              {/* NẾU LÀ NHÓM CHAT: PHẦN QUẢN LÝ THÀNH VIÊN VÀ QUY TẮC HIỂN THỊ */}
-              {activeChat.is_group && (
-                <div
-                  className="tg-accordion-section tg-group-members-section"
-                  style={{
-                    borderBottom: '1px solid var(--tg-border, rgba(255,255,255,0.08))',
-                    paddingBottom: 12,
-                    overflow: 'visible',
-                    position: 'relative',
-                    zIndex: 30,
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px 8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span className="tg-group-members-header" style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                        Thành viên ({groupDetailData?.member_count || activeChat.member_count || 1})
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMemberSelectedIds([])
-                        setAddMemberError('')
-                        setShowAddGroupMemberModal(true)
-                      }}
-                      style={{
-                        background: 'rgba(135, 116, 225, 0.2)',
-                        border: '1px solid #8774e1',
-                        color: 'var(--tg-primary, #8774e1)',
-                        padding: '4px 10px',
-                        borderRadius: 14,
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      + Mời thành viên
-                    </button>
-                  </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '4px 16px', overflow: 'visible' }}>
-                    {(groupDetailData?.members || []).map((m) => (
-                      <div
-                        key={m.id}
-                        className="tg-group-member-item"
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '6px 8px',
-                          borderRadius: 8,
-                          position: 'relative',
-                          zIndex: activeMemberMenuId === m.id ? 50 : 1,
-                          overflow: 'visible',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                          <div
-                            className="tg-avatar sm"
-                            style={{
-                              width: 32,
-                              height: 32,
-                              fontSize: 13,
-                              flexShrink: 0,
-                              background: !m.avatar_url ? getAvatarGradient(m.id || m.username) : undefined,
-                            }}
-                          >
-                            {m.avatar_url ? (
-                              <img src={m.avatar_url} alt="" className="avatar-img" />
-                            ) : (
-                              (m.display_name || m.username || 'U').charAt(0).toUpperCase()
-                            )}
-                          </div>
-                          <div style={{ minWidth: 0 }}>
-                            <div className="tg-group-member-name" style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {m.display_name || m.username}
-                              {m.id === currentUser?.id && <span style={{ color: 'var(--tg-text-secondary)', fontSize: 11 }}> (Bạn)</span>}
-                            </div>
-                            <div className="tg-group-member-username" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>@{m.username}</div>
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                          {m.role === 'creator' || m.role === 'admin' ? (
-                            <span style={{ fontSize: 10, background: 'rgba(135, 116, 225, 0.2)', color: 'var(--tg-primary, #8774e1)', padding: '2px 7px', borderRadius: 8, fontWeight: 700 }}>
-                              Quản trị viên
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: 10, color: 'var(--tg-text-secondary)' }}>Thành viên</span>
-                          )}
-
-                          {groupDetailData?.is_creator && m.id !== currentUser?.id && (
-                            <div
-                              className="tg-member-actions-dropdown-wrapper"
-                              style={{
-                                position: 'relative',
-                                zIndex: activeMemberMenuId === m.id ? 60 : 1,
-                              }}
-                            >
-                              <button
-                                type="button"
-                                className="tg-icon-btn tg-member-menu-btn"
-                                title="Quản lý thành viên"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setActiveMemberMenuId(activeMemberMenuId === m.id ? null : m.id)
-                                }}
-                                style={{ width: 26, height: 26, borderRadius: 6, padding: 0, fontSize: 12 }}
-                              >
-                                •••
-                              </button>
-                              {activeMemberMenuId === m.id && (
-                                <div
-                                  className="tg-member-actions-menu"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <button
-                                    type="button"
-                                    className="tg-member-action-item"
-                                    onClick={() => {
-                                      setActiveMemberMenuId(null)
-                                      handleToggleAdminRole(m)
-                                    }}
-                                  >
-                                    {m.role === 'admin' ? '👤 Hạ quyền thành viên' : '👑 Bổ nhiệm Quản trị viên'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="tg-member-action-item danger"
-                                    onClick={() => {
-                                      setActiveMemberMenuId(null)
-                                      setMemberToKickModal(m)
-                                    }}
-                                  >
-                                    🚫 Loại khỏi nhóm
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Lời mời vào nhóm đang chờ đồng ý (chỉ nhóm trưởng thấy) */}
-                  {groupDetailData?.pending_members && groupDetailData.pending_members.length > 0 && groupDetailData.is_creator && (
-                    <div style={{ marginTop: 12, padding: '0 16px' }}>
-                      <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--tg-text-secondary)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 6 }}>
-                        Đang chờ đồng ý ({groupDetailData.pending_members.length})
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {groupDetailData.pending_members.map((p) => (
-                          <div
-                            key={p.id}
-                            className="tg-group-member-item"
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              padding: '6px 8px',
-                              borderRadius: 8,
-                              opacity: 0.85,
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                              <div
-                                className="tg-avatar sm"
-                                style={{
-                                  width: 28,
-                                  height: 28,
-                                  fontSize: 12,
-                                  flexShrink: 0,
-                                  background: !p.avatar_url ? getAvatarGradient(p.id || p.username) : undefined,
-                                }}
-                              >
-                                {p.avatar_url ? (
-                                  <img src={p.avatar_url} alt="" className="avatar-img" />
-                                ) : (
-                                  (p.display_name || p.username || 'U').charAt(0).toUpperCase()
-                                )}
-                              </div>
-                              <div style={{ minWidth: 0 }}>
-                                <div className="tg-group-member-name" style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {p.display_name || p.username}
-                                </div>
-                                <div className="tg-group-member-username" style={{ fontSize: 10 }}>@{p.username}</div>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRevokeGroupInvitation(p)}
-                              style={{
-                                background: 'rgba(239, 68, 68, 0.1)',
-                                border: '1px solid rgba(239, 68, 68, 0.25)',
-                                color: '#ef4444',
-                                borderRadius: 6,
-                                padding: '2px 8px',
-                                fontSize: 11,
-                                cursor: 'pointer',
-                              }}
-                            >
-                              Huỷ lời mời
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Phần Lịch Sử Ảnh/Video (Chỉ hiện ảnh/video thực tế của 2 người) */}
               <div className="tg-accordion-section">
@@ -9686,72 +9103,8 @@ function App() {
                 )}
               </div>
 
-              {/* Nút Giải tán nhóm (Nhóm trưởng) hoặc Rời khỏi nhóm (Thành viên) */}
-              {activeChat.is_group && (
-                <div className="tg-sidebar-block-action" style={{ padding: "16px 20px", marginTop: 12 }}>
-                  {groupDetailData?.is_creator ? (
-                    <button
-                      type="button"
-                      className="tg-clear-history-btn"
-                      onClick={() => setShowDisbandConfirmModal(true)}
-                      style={{
-                        width: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 8,
-                        padding: "11px 16px",
-                        borderRadius: 12,
-                        background: "rgba(239, 68, 68, 0.12)",
-                        border: "1px solid rgba(239, 68, 68, 0.35)",
-                        color: "#ef4444",
-                        fontSize: 14,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        transition: "all 0.2s ease",
-                      }}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="3 6 5 6 21 6"></polyline>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                      </svg>
-                      <span>Giải tán nhóm</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="tg-clear-history-btn"
-                      onClick={() => setShowLeaveGroupConfirmModal(true)}
-                      style={{
-                        width: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 8,
-                        padding: "11px 16px",
-                        borderRadius: 12,
-                        background: "rgba(239, 68, 68, 0.1)",
-                        border: "1px solid rgba(239, 68, 68, 0.25)",
-                        color: "#ef4444",
-                        fontSize: 14,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        transition: "all 0.2s ease",
-                      }}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                        <polyline points="16 17 21 12 16 7"></polyline>
-                        <line x1="21" y1="12" x2="9" y2="12"></line>
-                      </svg>
-                      <span>Rời khỏi nhóm</span>
-                    </button>
-                  )}
-                </div>
-              )}
-
               {/* Nút Xoá lịch sử & Chặn / Bỏ chặn người dùng */}
-              {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && friends.some((f) => String(f.id) === String(activeChat.id)) && (
+              {activeChat.id !== CLOUDCHAT_BOT_ID && activeChat.username !== 'cloudchat' && friends.some((f) => String(f.id) === String(activeChat.id)) && (
                 <div className="tg-sidebar-block-action" style={{ padding: "16px 20px", marginTop: 12 }}>
                   <button
                     type="button"
@@ -10905,558 +10258,6 @@ function App() {
                 }}
               >
                 📋 Sao chép nội dung
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Tạo nhóm mới (Gôm thành viên vào nhóm) */}
-      {showCreateGroupModal && (
-        <div className="modal-overlay" onClick={() => setShowCreateGroupModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
-            <div className="modal-header">
-              <div className="modal-title-wrap">
-                <div className="modal-icon" style={{ background: 'rgba(135, 116, 225, 0.2)', color: '#8774e1' }}>
-                  👥
-                </div>
-                <div>
-                  <h3>Tạo nhóm chat mới</h3>
-
-                </div>
-              </div>
-              <button className="modal-close-button" onClick={() => setShowCreateGroupModal(false)}>
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateGroup} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {createGroupError && (
-                <div className="modal-alert error" style={{ margin: 0 }}>
-                  {createGroupError}
-                </div>
-              )}
-
-              <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 6 }}>
-                  Tên nhóm *
-                </label>
-                <input
-                  type="text"
-                  className="tg-msg-input"
-                  style={{ width: '100%', borderRadius: 10, padding: '10px 14px', border: '1px solid rgba(255,255,255,0.1)' }}
-                  placeholder="Ví dụ: Team CloudChat, Hội Bạn Thân..."
-                  value={groupNameInput}
-                  onChange={(e) => setGroupNameInput(e.target.value)}
-                  autoFocus
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 6 }}>
-                  Chọn bạn bè vào nhóm ({selectedGroupMemberIds.length}/49)
-                </label>
-                <div
-                  style={{
-                    maxHeight: 200,
-                    overflowY: 'auto',
-                    background: 'rgba(0,0,0,0.2)',
-                    borderRadius: 10,
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    padding: 8,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 4,
-                  }}
-                >
-                  {friends.length === 0 ? (
-                    <div style={{ textAlign: 'center', color: '#64748b', fontSize: 12, padding: 16 }}>
-                      Chưa có bạn bè nào để thêm. Bạn vẫn có thể tạo nhóm và thêm sau!
-                    </div>
-                  ) : (
-                    friends.map((f) => {
-                      const isSelected = selectedGroupMemberIds.includes(f.id)
-                      return (
-                        <div
-                          key={f.id}
-                          onClick={() => {
-                            setSelectedGroupMemberIds((prev) => {
-                              if (prev.includes(f.id)) {
-                                return prev.filter((id) => id !== f.id)
-                              }
-                              if (prev.length >= 49) {
-                                alert('Nhóm thường giới hạn tối đa 50 người (tính cả người tạo). Muốn nhiều hơn cần nâng cấp lên Cộng đồng.')
-                                return prev
-                              }
-                              return [...prev, f.id]
-                            })
-                          }}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '6px 10px',
-                            borderRadius: 8,
-                            cursor: 'pointer',
-                            background: isSelected ? 'rgba(135, 116, 225, 0.2)' : 'transparent',
-                            border: isSelected ? '1px solid rgba(135, 116, 225, 0.4)' : '1px solid transparent',
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <div className="tg-avatar sm" style={{ width: 28, height: 28, fontSize: 12 }}>
-                              {f.avatar_url ? (
-                                <img src={f.avatar_url} alt="" className="avatar-img" />
-                              ) : (
-                                getFriendInitials(getFriendName(f))
-                              )}
-                            </div>
-                            <span style={{ fontSize: 13, color: '#f1f5f9' }}>{getFriendName(f)}</span>
-                          </div>
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => { }}
-                            style={{ cursor: 'pointer' }}
-                          />
-                        </div>
-                      )
-                    })
-                  )}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setShowCreateGroupModal(false)}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={createGroupLoading || !groupNameInput.trim()}
-                >
-                  {createGroupLoading ? 'Đang tạo...' : 'Tạo nhóm'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Thêm thành viên vào nhóm hiện tại */}
-      {showAddGroupMemberModal && (
-        <div className="modal-overlay" onClick={() => setShowAddGroupMemberModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
-            <div className="modal-header">
-              <div className="modal-title-wrap">
-                <div className="modal-icon" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8' }}>
-                  ➕
-                </div>
-                <div>
-                  <h3>Thêm thành viên</h3>
-
-                </div>
-              </div>
-              <button className="modal-close-button" onClick={() => setShowAddGroupMemberModal(false)}>
-                ✕
-              </button>
-            </div>
-
-            <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {addMemberError && (
-                <div className="modal-alert error" style={{ margin: 0 }}>
-                  {addMemberError}
-                </div>
-              )}
-
-              <div
-                style={{
-                  maxHeight: 240,
-                  overflowY: 'auto',
-                  background: 'rgba(0,0,0,0.2)',
-                  borderRadius: 10,
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  padding: 8,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                }}
-              >
-                {(() => {
-                  const currentMemberIds = new Set(
-                    (groupDetailData?.members || []).map((m) => m.id)
-                  )
-                  const candidates = friends.filter((f) => !currentMemberIds.has(f.id))
-
-                  if (candidates.length === 0) {
-                    return (
-                      <div style={{ textAlign: 'center', color: '#64748b', fontSize: 12, padding: 20 }}>
-                        Tất cả bạn bè của bạn đã có mặt trong nhóm này rồi!
-                      </div>
-                    )
-                  }
-
-                  return candidates.map((f) => {
-                    const isSelected = addMemberSelectedIds.includes(f.id)
-                    return (
-                      <div
-                        key={f.id}
-                        onClick={() => {
-                          setAddMemberSelectedIds((prev) => {
-                            if (prev.includes(f.id)) {
-                              return prev.filter((id) => id !== f.id)
-                            }
-                            return [...prev, f.id]
-                          })
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '6px 10px',
-                          borderRadius: 8,
-                          cursor: 'pointer',
-                          background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-                          border: isSelected ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid transparent',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div className="tg-avatar sm" style={{ width: 28, height: 28, fontSize: 12 }}>
-                            {f.avatar_url ? (
-                              <img src={f.avatar_url} alt="" className="avatar-img" />
-                            ) : (
-                              getFriendInitials(getFriendName(f))
-                            )}
-                          </div>
-                          <span style={{ fontSize: 13, color: '#f1f5f9' }}>{getFriendName(f)}</span>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => { }}
-                          style={{ cursor: 'pointer' }}
-                        />
-                      </div>
-                    )
-                  })
-                })()}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setShowAddGroupMemberModal(false)}
-                >
-                  Hủy
-                </button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={addMemberLoading || addMemberSelectedIds.length === 0}
-                  onClick={handleAddMembersToGroup}
-                >
-                  {addMemberLoading ? 'Đang thêm...' : `Thêm (${addMemberSelectedIds.length})`}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Hộp thoại xác nhận xoá trò chuyện Khớp chuẩn 100% Ảnh */}
-      {chatToDeleteHistory && (
-        <div
-          className="tg-confirm-modal-overlay"
-          onClick={() => {
-            if (!isDeletingChatHistory) setChatToDeleteHistory(null)
-          }}
-        >
-          <div
-            className="tg-confirm-modal-card"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Xác nhận</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => {
-                  if (!isDeletingChatHistory) setChatToDeleteHistory(null)
-                }}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="tg-confirm-modal-body">
-              <p>Toàn bộ nội dung trò chuyện sẽ bị xóa vĩnh viễn.</p>
-              <p>Bạn có chắc chắn muốn xóa?</p>
-            </div>
-
-            {/* Footer */}
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setChatToDeleteHistory(null)}
-                disabled={isDeletingChatHistory}
-              >
-                Không
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                onClick={confirmClearChatHistory}
-                disabled={isDeletingChatHistory}
-              >
-                {isDeletingChatHistory ? 'Đang xóa...' : 'Xóa'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Hộp thoại xác nhận Chặn người dùng Giống chuẩn 100% Xác nhận xoá trò chuyện */}
-      {userToBlock && (
-        <div
-          className="tg-confirm-modal-overlay"
-          onClick={() => setUserToBlock(null)}
-        >
-          <div
-            className="tg-confirm-modal-card"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Xác nhận chặn</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => setUserToBlock(null)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="tg-confirm-modal-body">
-              <p>Người này sẽ không thể gửi tin nhắn hoặc gọi điện cho bạn nữa.</p>
-              <p>Bạn có chắc chắn muốn chặn <strong>{getFriendName(userToBlock)}</strong>?</p>
-            </div>
-
-            {/* Footer */}
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setUserToBlock(null)}
-              >
-                Không
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                onClick={confirmBlockUser}
-              >
-                Chặn
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Đổi tên nhóm (Nhóm trưởng) */}
-      {showRenameGroupModal && (
-        <div className="tg-confirm-modal-overlay" onClick={() => !renameGroupLoading && setShowRenameGroupModal(false)}>
-          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Đổi tên nhóm</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => !renameGroupLoading && setShowRenameGroupModal(false)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="tg-confirm-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <p style={{ margin: 0, fontSize: 13, color: 'var(--tg-text-secondary)' }}>
-                Nhập tên mới cho nhóm trò chuyện của bạn:
-              </p>
-              <input
-                type="text"
-                className="fpt-input"
-                value={renameGroupNameInput}
-                onChange={(e) => setRenameGroupNameInput(e.target.value)}
-                placeholder="Tên nhóm mới..."
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    handleRenameGroup()
-                  }
-                }}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  border: '1px solid var(--tg-border, rgba(255,255,255,0.15))',
-                  background: 'var(--tg-input-bg, rgba(0,0,0,0.2))',
-                  color: 'var(--tg-text-primary, #ffffff)',
-                  fontSize: 14,
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setShowRenameGroupModal(false)}
-                disabled={renameGroupLoading}
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                style={{ background: 'var(--tg-primary, #8774e1)', borderColor: 'var(--tg-primary, #8774e1)' }}
-                onClick={handleRenameGroup}
-                disabled={renameGroupLoading || !renameGroupNameInput.trim()}
-              >
-                {renameGroupLoading ? 'Đang lưu...' : 'Lưu thay đổi'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Xác nhận giải tán nhóm (Nhóm trưởng) */}
-      {showDisbandConfirmModal && (
-        <div className="tg-confirm-modal-overlay" onClick={() => !disbandGroupLoading && setShowDisbandConfirmModal(false)}>
-          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Xác nhận giải tán nhóm</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => !disbandGroupLoading && setShowDisbandConfirmModal(false)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="tg-confirm-modal-body">
-              <p>Tất cả tin nhắn, hình ảnh và thành viên trong nhóm sẽ bị xóa vĩnh viễn.</p>
-              <p>Hành động này không thể hoàn tác. Bạn có chắc chắn muốn giải tán nhóm?</p>
-            </div>
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setShowDisbandConfirmModal(false)}
-                disabled={disbandGroupLoading}
-              >
-                Không
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                onClick={handleDisbandGroup}
-                disabled={disbandGroupLoading}
-              >
-                {disbandGroupLoading ? 'Đang giải tán...' : 'Giải tán nhóm'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Xác nhận rời khỏi nhóm (Thành viên) */}
-      {showLeaveGroupConfirmModal && (
-        <div className="tg-confirm-modal-overlay" onClick={() => !leaveGroupLoading && setShowLeaveGroupConfirmModal(false)}>
-          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Xác nhận rời khỏi nhóm</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => !leaveGroupLoading && setShowLeaveGroupConfirmModal(false)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="tg-confirm-modal-body">
-              <p>Bạn sẽ không còn nhận được tin nhắn và thông báo từ nhóm này.</p>
-              <p>Bạn có chắc chắn muốn rời khỏi nhóm?</p>
-            </div>
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setShowLeaveGroupConfirmModal(false)}
-                disabled={leaveGroupLoading}
-              >
-                Không
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                onClick={handleLeaveGroup}
-                disabled={leaveGroupLoading}
-              >
-                {leaveGroupLoading ? 'Đang rời...' : 'Rời khỏi nhóm'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Xác nhận loại thành viên khỏi nhóm */}
-      {memberToKickModal && (
-        <div className="tg-confirm-modal-overlay" onClick={() => setMemberToKickModal(null)}>
-          <div className="tg-confirm-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="tg-confirm-modal-header">
-              <h3 className="tg-confirm-modal-title">Xác nhận loại thành viên</h3>
-              <button
-                type="button"
-                className="tg-confirm-modal-close"
-                onClick={() => setMemberToKickModal(null)}
-                title="Đóng"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="tg-confirm-modal-body">
-              <p>
-                Bạn có chắc chắn muốn loại <strong>{memberToKickModal.display_name || memberToKickModal.username}</strong> khỏi nhóm trò chuyện này không?
-              </p>
-            </div>
-            <div className="tg-confirm-modal-footer">
-              <button
-                type="button"
-                className="tg-confirm-btn-cancel"
-                onClick={() => setMemberToKickModal(null)}
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                className="tg-confirm-btn-delete"
-                onClick={() => handleKickMember(memberToKickModal)}
-              >
-                Loại thành viên
               </button>
             </div>
           </div>

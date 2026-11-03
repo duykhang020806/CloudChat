@@ -10,7 +10,7 @@ import { setupSocketServer } from './socket.js'
 
 import authRoutes from './routes/auth.js'
 import friendsRoutes from './routes/friends.js'
-import groupsRoutes from './routes/groups.js'
+// import groupsRoutes from './routes/groups.js'
 import messagesRoutes from './routes/messages.js'
 import uploadRoutes from './routes/upload.js'
 
@@ -75,7 +75,7 @@ app.get('/health', async (req, res) => {
 // Định tuyến API
 app.use('/api/auth', authRoutes)
 app.use('/api/friends', friendsRoutes)
-app.use('/api/groups', groupsRoutes)
+// app.use('/api/groups', groupsRoutes)
 app.use('/api/messages', messagesRoutes)
 app.use('/api/upload', uploadRoutes)
 

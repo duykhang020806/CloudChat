@@ -56,6 +56,12 @@ export const chatClient = {
           localStorage.setItem('cloudchat_current_user', JSON.stringify(user))
         }
         initSocket(token)
+        const savedProvider = localStorage.getItem('cloudchat_auth_provider') || user?.provider || (user?.is_oauth ? 'google' : 'email')
+        const isOAuth = savedProvider !== 'email'
+        if (user) {
+          user.provider = savedProvider
+          user.is_oauth = isOAuth
+        }
         return {
           data: {
             session: {
@@ -67,7 +73,9 @@ export const chatClient = {
                   username: user.username,
                   display_name: user.display_name,
                 },
-                app_metadata: { provider: 'email' },
+                app_metadata: { provider: savedProvider },
+                provider: savedProvider,
+                is_oauth: isOAuth,
               },
             },
           },
@@ -82,8 +90,11 @@ export const chatClient = {
       try {
         const res = await authApi.login(email, password)
         const user = res.user
+        user.provider = 'email'
+        user.is_oauth = false
         currentSessionUser = user
         localStorage.setItem('cloudchat_current_user', JSON.stringify(user))
+        localStorage.setItem('cloudchat_auth_provider', 'email')
         initSocket(res.token)
 
         const session = {
@@ -96,6 +107,8 @@ export const chatClient = {
               display_name: user.display_name,
             },
             app_metadata: { provider: 'email' },
+            provider: 'email',
+            is_oauth: false,
           },
         }
 
@@ -113,8 +126,11 @@ export const chatClient = {
 
         const res = await authApi.register(email, username, password, displayName)
         const user = res.user
+        user.provider = 'email'
+        user.is_oauth = false
         currentSessionUser = user
         localStorage.setItem('cloudchat_current_user', JSON.stringify(user))
+        localStorage.setItem('cloudchat_auth_provider', 'email')
         initSocket(res.token)
 
         const session = {
@@ -124,6 +140,8 @@ export const chatClient = {
             email: user.email,
             user_metadata: { username: user.username, display_name: user.display_name },
             app_metadata: { provider: 'email' },
+            provider: 'email',
+            is_oauth: false,
           },
         }
 
@@ -139,6 +157,11 @@ export const chatClient = {
         await authApi.logout()
       } catch { }
       currentSessionUser = null
+      try {
+        localStorage.removeItem('cloudchat_auth_provider')
+        localStorage.removeItem('cloudchat_current_user')
+        localStorage.removeItem('cloudchat_token')
+      } catch { }
       notifyAuthChange('SIGNED_OUT', null)
       return { error: null }
     },
@@ -174,8 +197,11 @@ export const chatClient = {
       try {
         const res = await authApi.googleLogin(credential)
         const user = res.user
+        user.provider = 'google'
+        user.is_oauth = true
         currentSessionUser = user
         localStorage.setItem('cloudchat_current_user', JSON.stringify(user))
+        localStorage.setItem('cloudchat_auth_provider', 'google')
         initSocket(res.token)
 
         const session = {
@@ -189,6 +215,8 @@ export const chatClient = {
               avatar_url: user.avatar_url,
             },
             app_metadata: { provider: 'google' },
+            provider: 'google',
+            is_oauth: true,
           },
         }
 
