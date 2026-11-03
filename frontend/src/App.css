@@ -1434,9 +1434,11 @@ button {
 
 /* Messages Scroll Section */
 .tg-messages-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: contain;
   padding: 20px 14%;
   display: flex;
   flex-direction: column;
@@ -2527,10 +2529,20 @@ button {
   animation: tgFadeIn 0.25s ease-out;
 }
 
+.tg-friend-action-bar.blocked-notice {
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+  background: rgba(30, 25, 28, 0.95) !important;
+}
+
 [data-theme="light"] .tg-friend-action-bar {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .tg-friend-action-bar.blocked-notice {
+  background: rgba(254, 242, 242, 0.96) !important;
+  border: 1px solid rgba(239, 68, 68, 0.3) !important;
 }
 
 .tg-friend-bar-info {

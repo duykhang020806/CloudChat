@@ -333,17 +333,29 @@ function formatChatListTime(value) {
   })
 }
 
-function formatUserStatus(user) {
+function formatUserStatus(user, recentMessages = []) {
   if (!user) return ''
   if (user.is_online) return 'Đang hoạt động'
+
+  // Nếu đối phương vừa gửi tin nhắn trong vòng 2.5 phút qua -> Trạng thái chắc chắn là đang hoạt động
+  if (Array.isArray(recentMessages) && recentMessages.length > 0) {
+    const lastMsg = recentMessages[recentMessages.length - 1]
+    if (lastMsg && String(lastMsg.sender_id).trim().toLowerCase() === String(user.id).trim().toLowerCase()) {
+      const msgDate = parseUtcDate(lastMsg.created_at)
+      if (msgDate && (Date.now() - msgDate.getTime() < 150000)) {
+        return 'Đang hoạt động'
+      }
+    }
+  }
+
   if (!user.last_seen) return 'Ngoại tuyến'
 
   const date = parseUtcDate(user.last_seen)
   if (!date) return 'Ngoại tuyến'
 
   const diffMs = Date.now() - date.getTime()
-  // Nếu chênh lệch nhỏ hơn 2 phút hoặc chênh lệch âm nhẹ do đồng hồ máy chủ
-  if (diffMs <= 120000 && diffMs >= -60000) return 'Vừa mới truy cập'
+  // Nếu chênh lệch nhỏ hơn 2.5 phút hoặc chênh lệch âm nhẹ do đồng hồ máy chủ
+  if (diffMs <= 150000 && diffMs >= -60000) return 'Vừa mới truy cập'
   if (diffMs < 0) return 'Vừa mới truy cập'
 
   const diffSec = Math.floor(diffMs / 1000)
@@ -4822,7 +4834,8 @@ function App() {
 
       setActiveChat((current) => {
         if (current && !current.is_group) {
-          const updated = nextFriends.find((friend) => friend.id === current.id)
+          const curId = String(current.id).trim().toLowerCase()
+          const updated = nextFriends.find((friend) => String(friend.id).trim().toLowerCase() === curId)
           if (updated) return { ...current, ...updated }
         }
         return current
@@ -5440,15 +5453,15 @@ function App() {
 
           // Cập nhật người gửi đang hoạt động ngay lập tức
           if (newMsg.sender_id) {
-            const sId = String(newMsg.sender_id)
+            const sId = String(newMsg.sender_id).trim().toLowerCase()
             const nowIso = new Date().toISOString()
             setFriends((prev) =>
               prev.map((f) =>
-                String(f.id) === sId ? { ...f, is_online: true, last_seen: nowIso } : f
+                String(f.id).trim().toLowerCase() === sId ? { ...f, is_online: true, last_seen: nowIso } : f
               )
             )
             setActiveChat((prev) =>
-              prev && String(prev.id) === sId
+              prev && String(prev.id).trim().toLowerCase() === sId
                 ? { ...prev, is_online: true, last_seen: nowIso }
                 : prev
             )
@@ -5603,20 +5616,20 @@ function App() {
         (payload) => {
           const status = payload.new
           if (!status?.id && !status?.userId) return
-          const targetId = String(status.id || status.userId)
+          const targetId = String(status.id || status.userId).trim().toLowerCase()
           const isOnline = Boolean(status.is_online !== undefined ? status.is_online : status.isOnline)
           const lastSeen = status.last_seen || status.lastSeen || new Date().toISOString()
 
           setFriends((prev) =>
             prev.map((f) =>
-              String(f.id) === targetId
+              String(f.id).trim().toLowerCase() === targetId
                 ? { ...f, is_online: isOnline, last_seen: lastSeen }
                 : f
             )
           )
 
           setActiveChat((prev) =>
-            prev && String(prev.id) === targetId
+            prev && String(prev.id).trim().toLowerCase() === targetId
               ? { ...prev, is_online: isOnline, last_seen: lastSeen }
               : prev
           )
@@ -5716,10 +5729,12 @@ function App() {
       return
     }
 
-    // 2. Khi chính bạn vừa gửi tin nhắn: Cuộn mượt nhẹ nhàng xuống tin nhắn vừa gửi
+    // 2. Khi chính bạn vừa gửi tin nhắn: Cuộn mượt nhẹ nhàng xuống đáy hộp tin nhắn (không cuộn khung ngoài trang web)
     if (userSentMessageRef.current) {
       userSentMessageRef.current = false
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+      }
       return
     }
 
@@ -8086,21 +8101,22 @@ function App() {
                         className="avatar-img"
                       />
                     )}
-                    {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && (
-                      <div className={`tg-online-dot ${activeChat.is_online ? 'online' : 'offline'}`} />
-                    )}
+                    {!activeChat.is_group && activeChat.id !== CLOUDCHAT_BOT_ID && (() => {
+                      const isFriendOnline = Boolean(activeChat.is_online) || (messages.length > 0 && String(messages[messages.length - 1]?.sender_id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase() && (Date.now() - (parseUtcDate(messages[messages.length - 1]?.created_at)?.getTime() || 0) < 150000))
+                      return <div className={`tg-online-dot ${isFriendOnline ? 'online' : 'offline'}`} />
+                    })()}
                   </div>
                   <div className="tg-header-details">
                     <strong style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                       {activeChat.is_group ? activeChat.name : getFriendName(activeChat)}
                       {(activeChat.username === 'cloudchat') && <VerifiedBadge size={16} />}
                     </strong>
-                    <span className={`tg-header-status ${activeChat.is_group ? 'online' : (activeChat.is_online ? 'online' : 'offline')}`}>
+                    <span className={`tg-header-status ${activeChat.is_group ? 'online' : ((Boolean(activeChat.is_online) || (messages.length > 0 && String(messages[messages.length - 1]?.sender_id).trim().toLowerCase() === String(activeChat.id).trim().toLowerCase() && (Date.now() - (parseUtcDate(messages[messages.length - 1]?.created_at)?.getTime() || 0) < 150000))) ? 'online' : 'offline')}`}>
                       {activeChat.is_system_bot || activeChat.id === CLOUDCHAT_BOT_ID || activeChat.username === 'cloudchat'
                         ? 'Kênh thông báo'
                         : activeChat.is_group
                           ? `👥 Nhóm chat • ${groupDetailData?.member_count || activeChat.member_count || 1} thành viên`
-                          : formatUserStatus(activeChat)}
+                          : formatUserStatus(activeChat, messages)}
                     </span>
                   </div>
                 </div>
@@ -8836,7 +8852,7 @@ function App() {
                   // 1. Nếu TÔI ĐANG CHẶN người dùng này: Hiển thị trạng thái đã chặn và nút "Bỏ chặn"
                   if (isBlockedByMe) {
                     return (
-                      <div className="tg-friend-action-bar" style={{ border: '1px solid rgba(239, 68, 68, 0.35)', background: 'rgba(30, 25, 28, 0.95)' }}>
+                      <div className="tg-friend-action-bar blocked-notice">
                         <div className="tg-friend-bar-info">
                           <span className="tg-friend-bar-title" style={{ color: '#f87171' }}>
                             🚫 Bạn đã chặn {name}
@@ -8862,7 +8878,7 @@ function App() {
                   // 2. Nếu ĐỐI PHƯƠNG ĐANG CHẶN TÔI: Cấm hoàn toàn mọi hành vi gửi tin nhắn hoặc kết bạn
                   if (isBlockedByThem) {
                     return (
-                      <div className="tg-friend-action-bar" style={{ border: '1px solid rgba(239, 68, 68, 0.35)', background: 'rgba(30, 25, 28, 0.95)' }}>
+                      <div className="tg-friend-action-bar blocked-notice">
                         <div className="tg-friend-bar-info">
                           <span className="tg-friend-bar-title" style={{ color: '#f87171' }}>
                             🚫 Không thể gửi tin nhắn hoặc kết bạn

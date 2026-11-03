@@ -324,7 +324,7 @@ router.get('/search', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `SELECT id, username, display_name, avatar_url, bio,
-        (is_online IS TRUE AND last_seen IS NOT NULL AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '70 seconds')) as is_online,
+        (is_online IS TRUE AND last_seen IS NOT NULL AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '150 seconds')) as is_online,
         last_seen, is_verified
        FROM users
        WHERE (username ILIKE $1 OR display_name ILIKE $1 OR email ILIKE $1) AND id != $2
@@ -346,7 +346,7 @@ router.post('/by-ids', authenticateToken, async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) return res.json({ users: [] })
     const result = await pool.query(
       `SELECT id, email, username, display_name, avatar_url, bio,
-        (is_online IS TRUE AND last_seen IS NOT NULL AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '70 seconds')) as is_online,
+        (is_online IS TRUE AND last_seen IS NOT NULL AND (last_seen >= CURRENT_TIMESTAMP - INTERVAL '150 seconds')) as is_online,
         last_seen, is_verified
        FROM users
        WHERE id = ANY($1::uuid[])`,
