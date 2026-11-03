@@ -5074,6 +5074,12 @@ function App() {
         return
       }
 
+      // Optimistic update: chuyển ngay sang trạng thái đã gửi lời mời để chống click lặp
+      setSentFriendRequests((prev) => [
+        { id: 'temp-' + Date.now(), user_id: currentUser.id, friend_id: targetId, status: 'pending' },
+        ...prev.filter((r) => String(r.friend_id) !== String(targetId)),
+      ])
+
       // 2. Gửi lời mời kết bạn lên server Node.js & PostgreSQL
       const res = await friendsApi.sendRequest(targetId)
       if (res?.status === 'accepted') {
@@ -5088,8 +5094,17 @@ function App() {
     } catch (err) {
       console.error('Send friend request error:', err)
       const msg = err.message || 'Không thể gửi lời mời kết bạn'
-      setSearchFriendError(msg)
-      showFloatingToast(msg)
+      if (msg.includes('đang chờ xử lý') || msg.includes('đã tồn tại') || msg.includes('chờ')) {
+        showFloatingToast('Lời mời kết bạn đang chờ đối phương đồng ý')
+        await loadSentFriendRequests()
+      } else if (msg.includes('đã là bạn bè')) {
+        showFloatingToast('Hai bạn đã là bạn bè của nhau rồi')
+        await loadFriends()
+      } else {
+        setSearchFriendError(msg)
+        showFloatingToast(msg)
+        await loadSentFriendRequests()
+      }
     } finally {
       setSearchFriendLoading(false)
     }
@@ -6017,8 +6032,15 @@ function App() {
     event.preventDefault()
 
     const email = (registerEmail || username).trim().toLowerCase()
-    const cleanBaseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '') || 'user'
-    const displayName = registerDisplayName.trim() || cleanBaseUsername
+    let cleanBaseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '')
+    if (cleanBaseUsername.length < 3) {
+      cleanBaseUsername = (cleanBaseUsername + '_user').slice(0, 4)
+    }
+    if (cleanBaseUsername.length > 20) {
+      cleanBaseUsername = cleanBaseUsername.slice(0, 20)
+    }
+    cleanBaseUsername = `${cleanBaseUsername}_${Math.floor(100 + Math.random() * 900)}`
+    const displayName = registerDisplayName.trim() || email.split('@')[0] || 'User'
 
     if (!email || !password.trim()) {
       setError('Vui lòng nhập email và mật khẩu')

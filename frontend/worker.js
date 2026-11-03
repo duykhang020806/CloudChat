@@ -54,9 +54,11 @@ export default {
           redirect: 'follow',
         })
 
-        // Tự động thử lại nếu gặp lỗi 404 "Cannot POST/GET" (do 1 trong các backend chưa pull code mới) hoặc lỗi 502/503 từ ALB
+        // Tự động thử lại nếu gặp lỗi từ backend (404, 500, 502, 503) do desync giữa các instance EC2
+        const isApi = url.pathname.startsWith('/api/')
         if (
-          (response.status === 404 && url.pathname.startsWith('/api/')) ||
+          (response.status === 404 && isApi) ||
+          response.status === 500 ||
           response.status === 502 ||
           response.status === 503
         ) {
@@ -73,7 +75,7 @@ export default {
                 body: isReadMethod ? null : requestBody,
                 redirect: 'follow',
               }).catch(() => null)
-              if (retryResponse && retryResponse.status !== 404) {
+              if (retryResponse && retryResponse.status < 500 && retryResponse.status !== 404) {
                 response = retryResponse
                 break
               }

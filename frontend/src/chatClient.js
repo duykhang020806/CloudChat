@@ -122,13 +122,13 @@ export const chatClient = {
     signUp: async ({ email, password, options }) => {
       try {
         let username = options?.data?.username
-        if (!username || username.includes('@')) {
-          username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '')
+        if (!username || username.includes('@') || !/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+          let base = (username || email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '')
+          if (base.length < 3) base = (base + '_user').slice(0, 4)
+          if (base.length > 20) base = base.slice(0, 20)
+          username = `${base}_${Math.floor(100 + Math.random() * 900)}`
         }
-        if (!username || username.length < 3) {
-          username = 'user_' + Math.floor(1000 + Math.random() * 9000)
-        }
-        const displayName = options?.data?.display_name || username
+        const displayName = options?.data?.display_name || email.split('@')[0] || username
 
         const res = await authApi.register(email, username, password, displayName)
         const user = res.user

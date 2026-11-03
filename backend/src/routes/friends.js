@@ -118,7 +118,7 @@ router.post('/request', authenticateToken, async (req, res) => {
     const { targetUserId } = req.body
     const currentUserId = req.user.id
 
-    if (!targetUserId || targetUserId === currentUserId) {
+    if (!targetUserId || String(targetUserId) === String(currentUserId)) {
       return res.status(400).json({ error: 'Người dùng không hợp lệ' })
     }
 
@@ -129,18 +129,23 @@ router.post('/request', authenticateToken, async (req, res) => {
     }
 
     // Kiểm tra xem có bị chặn 2 chiều không
-    const blockCheck = await pool.query(
-      `SELECT blocker_id, blocked_id FROM user_blocks 
-       WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)`,
-      [currentUserId, targetUserId]
-    )
-    if (blockCheck.rows.length > 0) {
-      const isBlocker = String(blockCheck.rows[0].blocker_id) === String(currentUserId)
-      if (isBlocker) {
-        return res.status(400).json({ error: 'Bạn đang chặn người dùng này. Vui lòng mở chặn trước khi kết bạn.' })
-      } else {
-        return res.status(403).json({ error: 'Bạn không thể gửi lời mời kết bạn tới người dùng này.' })
+    try {
+      await ensureBlocksTable()
+      const blockCheck = await pool.query(
+        `SELECT blocker_id, blocked_id FROM user_blocks 
+         WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)`,
+        [currentUserId, targetUserId]
+      )
+      if (blockCheck.rows.length > 0) {
+        const isBlocker = String(blockCheck.rows[0].blocker_id) === String(currentUserId)
+        if (isBlocker) {
+          return res.status(400).json({ error: 'Bạn đang chặn người dùng này. Vui lòng mở chặn trước khi kết bạn.' })
+        } else {
+          return res.status(403).json({ error: 'Bạn không thể gửi lời mời kết bạn tới người dùng này.' })
+        }
       }
+    } catch (blockErr) {
+      console.warn('Block check error fallback:', blockErr.message)
     }
 
     // Kiểm tra xem đã kết bạn hoặc đã gửi lời mời chưa
@@ -153,7 +158,7 @@ router.post('/request', authenticateToken, async (req, res) => {
     if (existing.rows.length > 0) {
       const rel = existing.rows[0]
       if (rel.status === 'accepted') {
-        return res.status(400).json({ error: 'Hai bạn đã là bạn bè của nhau rồi' })
+        return res.json({ message: 'Hai bạn đã là bạn bè của nhau rồi', status: 'accepted', friendship: rel })
       }
 
       // Trường hợp 1: Đối phương đã gửi lời mời cho mình trước đó -> Tự động chấp nhận luôn!
@@ -162,44 +167,71 @@ router.post('/request', authenticateToken, async (req, res) => {
           "UPDATE friendships SET status = 'accepted' WHERE id = $1 RETURNING *",
           [rel.id]
         )
-        broadcastNotification('friend_accepted', {
-          userA: rel.user_id,
-          userB: rel.friend_id,
-        })
+        try {
+          broadcastNotification('friend_accepted', {
+            userA: rel.user_id,
+            userB: rel.friend_id,
+          })
+        } catch {}
         return res.json({ message: 'Đã chấp nhận kết bạn thành công', request: acceptRes.rows[0], status: 'accepted' })
       }
 
-      // Trường hợp 2: Lời mời cũ đang chờ hoặc bị huỷ -> Làm mới lại lời mời thành pending
+      // Trường hợp 2: Mình đã gửi lời mời trước đó và đang pending -> Trả về thành công luôn (idempotent)
+      if (String(rel.user_id) === String(currentUserId) && rel.status === 'pending') {
+        return res.json({ message: 'Đã gửi lời mời kết bạn thành công', request: rel, status: 'pending' })
+      }
+
+      // Trường hợp 3: Lời mời cũ bị huỷ/từ chối -> Làm mới lại lời mời thành pending
       const renewRes = await pool.query(
         "UPDATE friendships SET user_id = $1, friend_id = $2, status = 'pending', created_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *",
         [currentUserId, targetUserId, rel.id]
       )
-      broadcastNotification('friend_request', {
-        fromUserId: currentUserId,
-        toUserId: targetUserId,
-        requestId: rel.id,
-      })
+      try {
+        broadcastNotification('friend_request', {
+          fromUserId: currentUserId,
+          toUserId: targetUserId,
+          requestId: rel.id,
+        })
+      } catch {}
       return res.json({ message: 'Đã gửi lời mời kết bạn thành công', request: renewRes.rows[0], status: 'pending' })
     }
 
-    const insertResult = await pool.query(
-      `INSERT INTO friendships (user_id, friend_id, status)
-       VALUES ($1, $2, 'pending')
-       RETURNING *`,
-      [currentUserId, targetUserId]
-    )
+    let insertedRequest
+    try {
+      const insertResult = await pool.query(
+        `INSERT INTO friendships (user_id, friend_id, status)
+         VALUES ($1, $2, 'pending')
+         RETURNING *`,
+        [currentUserId, targetUserId]
+      )
+      insertedRequest = insertResult.rows[0]
+    } catch (insertErr) {
+      if (insertErr.code === '23505') {
+        // Unique violation: row already exists, fetch it
+        const fetchRes = await pool.query(
+          `SELECT * FROM friendships 
+           WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
+          [currentUserId, targetUserId]
+        )
+        insertedRequest = fetchRes.rows[0]
+      } else {
+        throw insertErr
+      }
+    }
 
     // Phát tín hiệu Realtime cho các backend khác
-    broadcastNotification('friend_request', {
-      fromUserId: currentUserId,
-      toUserId: targetUserId,
-      requestId: insertResult.rows[0].id,
-    })
+    try {
+      broadcastNotification('friend_request', {
+        fromUserId: currentUserId,
+        toUserId: targetUserId,
+        requestId: insertedRequest?.id,
+      })
+    } catch {}
 
-    res.status(201).json({ message: 'Đã gửi lời mời kết bạn', request: insertResult.rows[0] })
+    res.status(201).json({ message: 'Đã gửi lời mời kết bạn', request: insertedRequest, status: 'pending' })
   } catch (err) {
     console.error('Send friend request error:', err)
-    res.status(500).json({ error: 'Lỗi gửi lời mời kết bạn' })
+    res.status(500).json({ error: 'Lỗi gửi lời mời kết bạn: ' + (err.message || 'Lỗi server') })
   }
 })
 
