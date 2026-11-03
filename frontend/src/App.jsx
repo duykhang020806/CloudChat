@@ -6017,7 +6017,8 @@ function App() {
     event.preventDefault()
 
     const email = (registerEmail || username).trim().toLowerCase()
-    const displayName = registerDisplayName.trim() || (email ? email.split('@')[0] : 'User')
+    const cleanBaseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '') || 'user'
+    const displayName = registerDisplayName.trim() || cleanBaseUsername
 
     if (!email || !password.trim()) {
       setError('Vui lòng nhập email và mật khẩu')
@@ -6050,7 +6051,7 @@ function App() {
         password,
         options: {
           data: {
-            username: email,
+            username: cleanBaseUsername,
             display_name: displayName,
           },
         },
@@ -6061,14 +6062,18 @@ function App() {
         return
       }
 
+      const finalUsername = data?.user?.username || data?.user?.user_metadata?.username || cleanBaseUsername
+      const finalDisplayName = data?.user?.display_name || data?.user?.user_metadata?.display_name || displayName
+      const finalAvatar = data?.user?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(email)}`
+
       if (data?.user) {
         await supabase
           .from('profiles')
           .upsert({
             id: data.user.id,
-            username: email,
-            display_name: displayName,
-            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(email)}`,
+            username: finalUsername,
+            display_name: finalDisplayName,
+            avatar_url: finalAvatar,
             bio: '',
             is_online: true,
             last_seen: new Date().toISOString(),
@@ -6086,9 +6091,12 @@ function App() {
       if (data?.session) {
         setCurrentUser({
           id: data.user.id,
-          username: email,
-          display_name: displayName,
-          avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(email)}`,
+          email,
+          username: finalUsername,
+          display_name: finalDisplayName,
+          avatar_url: finalAvatar,
+          is_oauth: false,
+          provider: 'email',
         })
         setPage('chat')
       } else {

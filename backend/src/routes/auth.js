@@ -18,14 +18,14 @@ const generateToken = (user) => {
 // 1. Đăng ký tài khoản
 router.post('/register', async (req, res) => {
   try {
-    const { email, username, password, display_name } = req.body
+    const { email, password, display_name } = req.body
+    let { username } = req.body
 
-    if (!email || !username || !password) {
-      return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ email, username và mật khẩu' })
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ email và mật khẩu' })
     }
 
     const cleanEmail = email.toLowerCase().trim()
-    const cleanUsername = username.toLowerCase().trim()
 
     // 1. Kiểm tra định dạng Email theo chuẩn RFC
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -33,10 +33,17 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Địa chỉ email không đúng định dạng hợp lệ' })
     }
 
-    // 2. Kiểm tra định dạng Username (3-30 ký tự an toàn)
-    const usernameRegex = /^[a-zA-Z0-9_]{3,30}$/
-    if (!usernameRegex.test(cleanUsername)) {
-      return res.status(400).json({ error: 'Tên người dùng phải từ 3 đến 30 ký tự, chỉ gồm chữ cái, số và dấu gạch dưới' })
+    // 2. Chuẩn hóa hoặc tự động sinh Username an toàn từ email
+    let cleanUsername = (username || cleanEmail.split('@')[0]).toLowerCase().trim()
+    // Nếu username truyền vào chứa @ (do client truyền nhầm email) hoặc chứa ký tự đặc biệt -> làm sạch
+    if (cleanUsername.includes('@') || !/^[a-zA-Z0-9_]{3,30}$/.test(cleanUsername)) {
+      cleanUsername = cleanUsername.split('@')[0].replace(/[^a-z0-9_]/g, '')
+    }
+    if (cleanUsername.length < 3) {
+      cleanUsername = 'user_' + Math.floor(1000 + Math.random() * 9000)
+    }
+    if (cleanUsername.length > 30) {
+      cleanUsername = cleanUsername.slice(0, 30)
     }
 
     // 3. Kiểm tra độ dài mật khẩu (tối thiểu 6 ký tự)
@@ -44,18 +51,23 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Mật khẩu phải có độ dài tối thiểu từ 6 ký tự trở lên' })
     }
 
-    // Kiểm tra username hoặc email đã tồn tại chưa
-    const existing = await pool.query(
-      'SELECT id, email, username FROM users WHERE email = $1 OR username = $2',
-      [cleanEmail, cleanUsername]
+    // Kiểm tra email đã tồn tại chưa
+    const existingEmail = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [cleanEmail]
     )
+    if (existingEmail.rows.length > 0) {
+      return res.status(400).json({ error: 'Email này đã được sử dụng' })
+    }
 
-    if (existing.rows.length > 0) {
-      const match = existing.rows[0]
-      if (match.email === cleanEmail) {
-        return res.status(400).json({ error: 'Email này đã được sử dụng' })
-      }
-      return res.status(400).json({ error: 'Username này đã tồn tại, vui lòng chọn tên khác' })
+    // Kiểm tra username đã tồn tại chưa, nếu trùng thì tự động thêm số ngẫu nhiên duy nhất
+    let finalUsername = cleanUsername
+    const existingUname = await pool.query(
+      'SELECT id FROM users WHERE username = $1',
+      [finalUsername]
+    )
+    if (existingUname.rows.length > 0) {
+      finalUsername = `${cleanUsername.slice(0, 24)}_${Math.floor(100 + Math.random() * 900)}`
     }
 
     // Hash mật khẩu
@@ -69,7 +81,7 @@ router.post('/register', async (req, res) => {
       `INSERT INTO users (email, username, password_hash, display_name, is_online, last_seen)
        VALUES ($1, $2, $3, $4, true, CURRENT_TIMESTAMP)
        RETURNING id, email, username, display_name, avatar_url, bio, gender, dob, is_online, last_seen, is_verified, created_at`,
-      [cleanEmail, cleanUsername, passwordHash, finalDisplayName]
+      [cleanEmail, finalUsername, passwordHash, finalDisplayName]
     )
 
     const newUser = result.rows[0]
